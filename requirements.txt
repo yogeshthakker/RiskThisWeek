@@ -1,0 +1,2 @@
+python-pptx>=0.6.21   # the PowerPoint slide; without it you get HTML and Markdown only
+anthropic>=2.5.0      # only for --ai

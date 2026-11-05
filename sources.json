@@ -1,0 +1,24 @@
+{
+  "_comment": "Sources for `python rbi.py risk-week`. weight raises an item's score; kind 'google' runs each query as a Google News search limited to the period. Edit freely: add a feed, drop one, change a query.",
+  "feeds": [
+    {"name": "RBI press releases", "url": "https://www.rbi.org.in/pressreleases_rss.xml", "weight": 3.0, "primary": true},
+    {"name": "RBI notifications", "url": "https://www.rbi.org.in/notifications_rss.xml", "weight": 3.0, "primary": true},
+    {"name": "SEBI", "url": "https://www.sebi.gov.in/sebirss.xml", "weight": 1.5, "primary": true},
+    {"name": "ET BFSI", "url": "https://bfsi.economictimes.indiatimes.com/rss/topstories", "weight": 1.5}
+  ],
+  "google_news": {
+    "weight": 1.0,
+    "queries": [
+      "RBI penalty bank",
+      "RBI circular banks",
+      "RBI draft directions banks",
+      "bank NPA asset quality India",
+      "bank fraud India",
+      "cyber attack bank India",
+      "bank liquidity deposits India",
+      "NBFC RBI risk",
+      "unsecured loans microfinance stress India",
+      "Basel capital adequacy RBI"
+    ]
+  }
+}
