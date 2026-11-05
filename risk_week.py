@@ -28,7 +28,9 @@ What it does, in order:
    fails (no key, daily limit reached, network), the keyword ranking stands.
    Keys can also live in a .env file next to this script.
 6. Write.    risk-week-<date>.md, .html and, when python-pptx is installed,
-   .pptx (one slide with the top items, one with "also on the radar").
+   .pptx (one slide with the top items and a "From the CRO's desk" box, one with
+   "also on the radar"). The CRO box holds notes from cro_desk.txt or --cro, and
+   the one item to act on first (picked by the AI, or the top item without it).
 
 Every item links to its source. News items are machine-selected: check the
 source before presenting a figure or a name.
@@ -218,6 +220,9 @@ class Result:
     errors: list[str] = field(default_factory=list)
     ai: str = "off"
     routine: list[Item] = field(default_factory=list)   # left out of the ranking, listed at the end
+    cro_notes: list[str] = field(default_factory=list)  # from the CRO's desk (cro_desk.txt / --cro)
+    cro_focus: "CroFocus | None" = None                 # the one item to act on first
+    ai_log: list = field(default_factory=list)          # raw AI replies, saved next to the output
 
 
 # ---------------------------------------------------------------------------
@@ -559,32 +564,84 @@ AI_SCHEMA = {
                 },
                 "required": ["id", "headline", "category", "why_it_matters"],
             },
+        },
+        "cro_focus": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "integer"},
+                "message": {"type": "string"},
+            },
+            "required": ["id", "message"],
+        },
+    },
+    "required": ["items", "cro_focus"],
+}
+
+WHY_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "items": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {"id": {"type": "integer"}, "why_it_matters": {"type": "string"}},
+                "required": ["id", "why_it_matters"],
+            },
         }
     },
     "required": ["items"],
 }
 
+_WHY_KEYS = ("why_it_matters", "whyItMatters", "why it matters", "why", "summary", "impact")
 
-def explain(stories: list[Story], provider, top: int,
-            bank: str = DEFAULT_PROFILE["bank"]) -> tuple[list[Story], str]:
-    """Let the LLM pick and phrase the top items. Returns (chosen, status)."""
+
+def _why(r: dict) -> str:
+    """The 'why it matters' text, whichever key the model used."""
+    for k in _WHY_KEYS:
+        if str(r.get(k) or "").strip():
+            return _clean(str(r[k]), 320)
+    return ""
+
+
+@dataclass
+class CroFocus:
+    story: "Story"
+    message: str
+
+
+def _candidates(stories: list[Story]) -> str:
     lines = []
     for n, s in enumerate(stories, 1):
         d = s.as_dict()
         lines.append(f"[{n}] ({d['category']}; {d['source']}; {d['date']}) {s.lead.title}"
                      + (f" — {s.lead.summary}" if s.lead.summary else ""))
+    return "\n".join(lines)
+
+
+def explain(stories: list[Story], provider, top: int, bank: str = DEFAULT_PROFILE["bank"],
+            log: list | None = None) -> tuple[list[Story], str, CroFocus | None]:
+    """Let the LLM pick and phrase the top items and the CRO's focus. Returns (chosen, status, focus).
+
+    Every reply is appended to `log` (when given), so a run can be checked afterwards.
+    """
     user = (
         f"Pick the {top} most noteworthy items. For each give: id (the number in brackets), a headline "
         f"of at most 12 words, a category from: {', '.join(CATEGORIES)}, and why_it_matters: one or two "
-        f"sentences (at most 40 words) on what it means for us, {bank}: the risk, or what to check or "
-        f"prepare.\n\nCandidates:\n"
-        + "\n".join(lines)
+        f"sentences (at most 30 words) on what it means for us, {bank}: the risk, or what to check or "
+        f"prepare. Every item must have a why_it_matters.\n"
+        f"Then cro_focus: the id of the one item (from your picks) the Chief Risk Officer should act on "
+        f"first, and message: at most 35 words on what the CRO should ask the risk team to check or do "
+        f"this week.\n\nCandidates:\n" + _candidates(stories)
     )
+    system = AI_SYSTEM.format(bank=bank)
     try:
-        reply = provider.json_call(AI_SYSTEM.format(bank=bank), user, response_schema=AI_SCHEMA,
-                                   max_output_tokens=1500)
+        reply = provider.json_call(system, user, response_schema=AI_SCHEMA, max_output_tokens=2000)
     except Exception as e:  # noqa: BLE001 — fall back to the keyword ranking
-        return [], f"failed ({type(e).__name__}); keyword ranking used"
+        if log is not None:
+            log.append({"request": "pick", "error": f"{type(e).__name__}: {e}"[:500]})
+        return [], f"failed ({type(e).__name__}); keyword ranking used", None
+    if log is not None:
+        log.append({"request": "pick", "reply": reply})
     chosen: list[Story] = []
     for r in (reply or {}).get("items") or []:
         try:
@@ -595,15 +652,50 @@ def explain(stories: list[Story], provider, top: int,
             continue
         s = stories[idx]
         s.headline = _clean(str(r.get("headline", "")), 120)
-        s.why = _clean(str(r.get("why_it_matters", "")), 320)
+        s.why = _why(r)
         if r.get("category") in CATEGORIES:
             s.category = r["category"]
         chosen.append(s)
         if len(chosen) == top:
             break
     if not chosen:
-        return [], "reply had no usable items; keyword ranking used"
-    return chosen, f"{getattr(provider, 'name', 'llm')} ({getattr(provider, 'model', '')})"
+        return [], "reply had no usable items; keyword ranking used", None
+
+    focus = None
+    cf = (reply or {}).get("cro_focus") or {}
+    try:
+        idx = int(cf.get("id")) - 1
+        if 0 <= idx < len(stories) and str(cf.get("message") or "").strip():
+            focus = CroFocus(stories[idx], _clean(str(cf["message"]), 260))
+    except (TypeError, ValueError):
+        pass
+
+    missing = [s for s in chosen if not s.why]
+    if missing:
+        fill_why(missing, provider, bank, log)
+    return chosen, f"{getattr(provider, 'name', 'llm')} ({getattr(provider, 'model', '')})", focus
+
+
+def fill_why(stories: list[Story], provider, bank: str, log: list | None = None) -> None:
+    """One more request for items that came back without a 'why it matters' line."""
+    user = (f"For each item give id (the number in brackets) and why_it_matters: one or two sentences "
+            f"(at most 30 words) on what it means for us, {bank}.\n\nItems:\n" + _candidates(stories))
+    try:
+        reply = provider.json_call(AI_SYSTEM.format(bank=bank), user, response_schema=WHY_SCHEMA,
+                                   max_output_tokens=1200)
+    except Exception as e:  # noqa: BLE001 — the feed's own summary stays
+        if log is not None:
+            log.append({"request": "fill_why", "error": f"{type(e).__name__}: {e}"[:500]})
+        return
+    if log is not None:
+        log.append({"request": "fill_why", "reply": reply})
+    for r in (reply or {}).get("items") or []:
+        try:
+            idx = int(r.get("id")) - 1
+        except (TypeError, ValueError):
+            continue
+        if 0 <= idx < len(stories) and not stories[idx].why:
+            stories[idx].why = _why(r)
 
 
 def load_dotenv(*paths: Path) -> None:
@@ -730,7 +822,7 @@ def _strict(schema):
 
 def run(days: int = 7, top: int = 5, provider=None, sources: dict | None = None,
         fetcher: Callable[[str], bytes] = fetch, now: datetime | None = None,
-        log: Callable[[str], None] = lambda s: None) -> Result:
+        log: Callable[[str], None] = lambda s: None, cro_notes: list[str] | None = None) -> Result:
     end = now or datetime.now(IST)
     start = end - timedelta(days=days)
     sources = sources or load_sources()
@@ -745,16 +837,35 @@ def run(days: int = 7, top: int = 5, provider=None, sources: dict | None = None,
     routine = _dedupe_routine(routine)
     chosen, radar = pick(stories, top)
     ai = "off"
+    focus = None
+    ai_log: list = []
     if provider is not None and stories:
         pool = [s for s in stories if s.category != "Other"][: max(20, top * 4)]
-        picked, ai = explain(pool, provider, top, profile.bank)
+        picked, ai, focus = explain(pool, provider, top, profile.bank, ai_log)
         if picked:
             if len(picked) < top:
                 picked += [s for s in chosen if s not in picked][: top - len(picked)]
             chosen = picked
             radar = [s for s in stories if s not in chosen and s.category != "Other"][:top]
+    if focus is None and chosen:
+        focus = CroFocus(chosen[0], "")         # no AI: the top-ranked item
     return Result(start=start, end=end, top=chosen, radar=radar, collected=len(raw),
-                  kept=len(kept), errors=errors, ai=ai, routine=routine)
+                  kept=len(kept), errors=errors, ai=ai, routine=routine,
+                  cro_notes=list(cro_notes or []), cro_focus=focus, ai_log=ai_log)
+
+
+def load_cro_notes(path: Path) -> list[str]:
+    """One note per line ('- ' bullets allowed); blank lines and '#' comments skipped."""
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    notes = []
+    for line in lines:
+        line = line.strip()
+        if line and not line.startswith("#"):
+            notes.append(re.sub(r"^[-*•]\s*", "", line))
+    return notes
 
 
 def _dedupe_routine(items: list[Item]) -> list[Item]:
@@ -775,6 +886,18 @@ def _title(res: Result) -> str:
     return f"This Week in Risk — week ending {res.end.strftime('%d %b %Y')}"
 
 
+def cro_box(res: Result) -> dict | None:
+    """What goes in the 'From the CRO's desk' box: your notes first, then this week's focus item."""
+    focus = None
+    if res.cro_focus:
+        st, msg = res.cro_focus.story, res.cro_focus.message
+        focus = {"headline": st.as_dict()["headline"], "link": st.lead.link,
+                 "message": msg or _clean(st.why or st.lead.summary, 220)}
+    if not res.cro_notes and not focus:
+        return None
+    return {"notes": res.cro_notes, "focus": focus}
+
+
 def _when(item: Item) -> str:
     return item.published.astimezone(IST).strftime("%d %b") if item.published else ""
 
@@ -783,6 +906,16 @@ def to_markdown(res: Result) -> str:
     out = [f"# {_title(res)}", "",
            f"_Indian banking risk management, {res.start.strftime('%d %b')} – {res.end.strftime('%d %b %Y')}. "
            f"{res.collected} items read, {res.kept} relevant. Summaries: {res.ai}._", ""]
+    box = cro_box(res)
+    if box:
+        out += ["> ### From the CRO's desk", ">"]
+        out += [f"> - {n}" for n in box["notes"]]
+        if box["focus"]:
+            f = box["focus"]
+            out += [">" if box["notes"] else "", f"> **Focus this week:** [{f['headline']}]({f['link']})"]
+            if f["message"]:
+                out += [">", f"> {f['message']}"]
+        out = [x for x in out if x != ""] + [""]
     for n, s in enumerate(res.top, 1):
         d = s.as_dict()
         out += [f"## {n}. [{d['headline']}]({d['link']})",
@@ -808,6 +941,15 @@ def to_markdown(res: Result) -> str:
 def to_console(res: Result, files: dict) -> str:
     """A short summary with plain web addresses, which terminals turn into links."""
     out = [_title(res), f"{res.collected} items read, {res.kept} relevant. Summaries: {res.ai}", ""]
+    box = cro_box(res)
+    if box:
+        out.append("FROM THE CRO'S DESK")
+        out += [f"  • {n}" for n in box["notes"]]
+        if box["focus"]:
+            f = box["focus"]
+            out += [f"  Focus this week: {f['headline']}"] + ([f"  {f['message']}"] if f["message"] else [])
+            out.append(f"  {f['link']}")
+        out.append("")
     for n, s in enumerate(res.top, 1):
         d = s.as_dict()
         out += [f"{n}. {d['headline']}", f"   {d['category']} · {d['source']} · {d['date']}"]
@@ -839,6 +981,17 @@ def to_html(res: Result) -> str:
         )
     radar = "".join(f'<li><a href="{e(s.lead.link)}" target="_blank" rel="noopener">{e(s.as_dict()["headline"])}</a> '
                     f'<span class="meta">{e(s.category)}</span></li>' for s in res.radar)
+    box = cro_box(res)
+    cro = ""
+    if box:
+        notes = "".join(f"<li>{e(n)}</li>" for n in box["notes"])
+        cro = '<aside class="cro"><h2>From the CRO\'s desk</h2>' + (f"<ul>{notes}</ul>" if notes else "")
+        if box["focus"]:
+            f = box["focus"]
+            cro += (f'<p class="focus">Focus this week</p><p><a href="{e(f["link"])}" target="_blank" '
+                    f'rel="noopener"><strong>{e(f["headline"])}</strong></a></p>'
+                    + (f"<p>{e(f['message'])}</p>" if f["message"] else ""))
+        cro += "</aside>"
     routine = "".join(f'<li><a href="{e(i.link)}" target="_blank" rel="noopener">{e(i.title)}</a> '
                       f'<span class="meta">{e(i.publisher or i.source)}, {e(_when(i))}</span></li>'
                       for i in res.routine)
@@ -853,12 +1006,16 @@ ol{{list-style:none;padding:0;margin:0}} li{{display:flex;gap:14px;padding:14px 
 .n{{font-weight:700;font-size:1.4rem;color:var(--accent);min-width:1.4em}} h2{{font-size:1.1rem;margin:0}}
 a{{color:var(--accent);text-decoration:none}} a:hover{{text-decoration:underline}} p{{margin:4px 0}}
 .meta{{color:var(--muted);font-size:.85rem}} .read{{font-size:.85rem}}
-details{{margin-top:28px}} summary{{cursor:pointer;font-weight:600}} .tag{{background:var(--tag);border-radius:4px;padding:1px 6px;color:var(--fg)}}
+details{{margin-top:28px}} summary{{cursor:pointer;font-weight:600}}
+.cro{{background:var(--tag);border-left:4px solid var(--accent);border-radius:6px;padding:14px 18px;margin:0 0 20px}}
+.cro h2{{margin:0 0 6px;font-size:1.15rem}} .cro ul{{margin:4px 0 8px;padding-left:20px}} .cro li{{display:list-item;border:0;padding:2px 0}}
+.cro .focus{{color:var(--accent);font-weight:700;font-size:.85rem;text-transform:uppercase;letter-spacing:.04em;margin-top:8px}} .tag{{background:var(--tag);border-radius:4px;padding:1px 6px;color:var(--fg)}}
 ul.radar li{{display:list-item;border:0;padding:3px 0}} h3{{margin-top:28px}} footer{{color:var(--muted);font-size:.8rem;margin-top:24px}}
 </style></head><body><main>
 <h1>{e(_title(res))}</h1>
 <p class="sub">Indian banking risk management, {res.start.strftime('%d %b')} – {res.end.strftime('%d %b %Y')} ·
 {res.collected} items read, {res.kept} relevant · summaries: {e(res.ai)}</p>
+{cro}
 <ol>{''.join(cards)}</ol>
 {f'<h3>Also on the radar</h3><ul class="radar">{radar}</ul>' if radar else ''}
 {f'<details><summary>Routine enforcement, not ranked ({len(res.routine)})</summary>'
@@ -897,34 +1054,76 @@ def to_pptx(res: Result, path: Path) -> bool:
     header(s1, _title(res), f"Top {len(res.top)} for Indian banking risk management · "
                             f"{res.start.strftime('%d %b')} – {res.end.strftime('%d %b %Y')} · "
                             f"headlines and 'Read' open the article (Ctrl+click while editing)")
+    box = cro_box(res)
+    text_w = 8.25 if box else 11.7          # leave the right-hand side for the CRO panel
+    head_pt, why_pt, why_len = (15, 11.5, 215) if box else (17, 13, 240)
     row_h = min(1.15, 5.9 / max(len(res.top), 1))
     for n, s in enumerate(res.top):
         d = s.as_dict()
         y = Inches(1.45 + n * row_h)
-        num = s1.shapes.add_textbox(Inches(0.5), y, Inches(0.6), Inches(row_h)).text_frame
+        num = s1.shapes.add_textbox(Inches(0.4), y, Inches(0.6), Inches(row_h)).text_frame
         num.text = str(n + 1)
-        num.paragraphs[0].runs[0].font.size = Pt(28)
+        num.paragraphs[0].runs[0].font.size = Pt(26)
         num.paragraphs[0].runs[0].font.bold = True
         num.paragraphs[0].runs[0].font.color.rgb = accent
-        tf = s1.shapes.add_textbox(Inches(1.15), y, Inches(11.7), Inches(row_h)).text_frame
+        tf = s1.shapes.add_textbox(Inches(0.95), y, Inches(text_w), Inches(row_h)).text_frame
         tf.word_wrap = True
         p = tf.paragraphs[0]
         r = p.add_run()
         r.text = d["headline"]
-        r.font.size, r.font.bold, r.font.color.rgb = Pt(17), True, navy
+        r.font.size, r.font.bold, r.font.color.rgb = Pt(head_pt), True, navy
         r.hyperlink.address = d["link"] or None
         r2 = p.add_run()
         r2.text = f"   {d['category']} · {d['source']} · {d['date']}   "
-        r2.font.size, r2.font.color.rgb = Pt(11), grey
+        r2.font.size, r2.font.color.rgb = Pt(10), grey
         if d["link"]:
             r3 = p.add_run()
             r3.text = "Read ↗"
-            r3.font.size, r3.font.bold, r3.font.color.rgb = Pt(11), True, accent
+            r3.font.size, r3.font.bold, r3.font.color.rgb = Pt(10), True, accent
             r3.hyperlink.address = d["link"]
         if d["why_it_matters"]:
             q = tf.add_paragraph()
-            q.text = _clean(d["why_it_matters"], 240)
-            q.runs[0].font.size = Pt(13)
+            q.text = _clean(d["why_it_matters"], why_len)
+            q.runs[0].font.size = Pt(why_pt)
+
+    if box:
+        from pptx.enum.shapes import MSO_SHAPE
+        panel = s1.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, Inches(9.45), Inches(1.45),
+                                    Inches(3.5), Inches(5.75))
+        panel.adjustments[0] = 0.04
+        panel.fill.solid()
+        panel.fill.fore_color.rgb = RGBColor(0xE8, 0xF0, 0xFA)
+        panel.line.color.rgb = accent
+        panel.line.width = Pt(1.5)
+        panel.shadow.inherit = False
+        tf = panel.text_frame
+        tf.word_wrap = True
+        tf.vertical_anchor = 1          # top
+        for side in ("left", "right", "top", "bottom"):
+            setattr(tf, f"margin_{side}", Inches(0.18))
+
+        def para(text: str, size: float, bold: bool = False, color=navy, link: str | None = None,
+                 space: float = 6):
+            p = tf.paragraphs[0] if not tf.paragraphs[0].runs else tf.add_paragraph()
+            p.alignment = 1             # left
+            r = p.add_run()
+            r.text = text
+            r.font.size, r.font.bold, r.font.color.rgb = Pt(size), bold, color
+            if link:
+                r.hyperlink.address = link
+            p.space_after = Pt(space)
+            return p
+
+        para("From the CRO's desk", 17, True, navy, space=10)
+        for note in box["notes"]:
+            para(f"• {note}", 12, False, navy, space=6)
+        if box["focus"]:
+            f = box["focus"]
+            para("Focus this week", 12, True, accent,
+                 space=3)
+            para(f["headline"], 12.5, True, navy, link=f["link"] or None, space=4)
+            if f["message"]:
+                para(f["message"], 11.5, False, navy, space=4)
 
     if res.radar:
         s2 = prs.slides.add_slide(blank)
@@ -959,6 +1158,9 @@ def write(res: Result, out_dir: Path | str | None = None) -> dict:
     files = {"markdown": d / f"{stem}.md", "html": d / f"{stem}.html"}
     files["markdown"].write_text(to_markdown(res), encoding="utf-8")
     files["html"].write_text(to_html(res), encoding="utf-8")
+    if res.ai_log:
+        files["ai_reply"] = d / f"{stem}-ai-reply.json"
+        files["ai_reply"].write_text(json.dumps(res.ai_log, indent=2, ensure_ascii=False), encoding="utf-8")
     pptx = d / f"{stem}.pptx"
     if to_pptx(res, pptx):
         files["pptx"] = pptx
@@ -981,6 +1183,10 @@ def main(argv: list[str] | None = None) -> int:
                                    "or set RISK_WEEK_MODEL)")
     p.add_argument("--json", action="store_true", help="also print the items as JSON")
     p.add_argument("--open", action="store_true", help="open the HTML page in the browser when done")
+    p.add_argument("--cro", action="append", default=[], metavar="TEXT",
+                   help="a note for the 'From the CRO's desk' box (repeatable)")
+    p.add_argument("--cro-file", default=str(Path(__file__).resolve().parent / "cro_desk.txt"),
+                   help="file with CRO notes, one per line (default cro_desk.txt next to this script)")
     a = p.parse_args(argv)
 
     load_dotenv(Path(__file__).resolve().parent / ".env", Path.cwd() / ".env")
@@ -991,8 +1197,9 @@ def main(argv: list[str] | None = None) -> int:
         except Exception as e:  # noqa: BLE001 — missing package or key: keep going without AI
             print(f"[risk-week] AI unavailable ({type(e).__name__}: {e}); using keyword ranking", file=sys.stderr)
     print("Reading sources:", file=sys.stderr)
+    notes = load_cro_notes(Path(a.cro_file)) + a.cro
     res = run(days=a.days, top=a.top, provider=provider, sources=load_sources(a.sources),
-              log=lambda m: print(m, file=sys.stderr))
+              log=lambda m: print(m, file=sys.stderr), cro_notes=notes)
     files = write(res, a.out_dir)
     print(to_console(res, files))
     if a.json:

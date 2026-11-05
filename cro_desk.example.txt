@@ -1,0 +1,5 @@
+# Notes for the "From the CRO's desk" box, one per line.
+# Copy this file to cro_desk.txt and edit it each week; cro_desk.txt is not committed to git.
+# Lines starting with # are ignored. Keep each note to one short line.
+Risk Appetite Statement review goes to the Board on 20 Nov
+RBI inspection (ISE) data requests: responses due Friday

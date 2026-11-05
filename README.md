@@ -13,13 +13,26 @@ This writes three files to `./output/` (`--open` also opens the web page):
 
 | File | Use |
 |---|---|
-| `risk-week-<date>.pptx` | Slide 1: the top 5. Slide 2: "Also on the radar" (the next 5) |
+| `risk-week-<date>.pptx` | Slide 1: the top 5, with the "From the CRO's desk" box on the right. Slide 2: "Also on the radar" (the next 5) |
 | `risk-week-<date>.html` | The same as a web page, plus the routine enforcement left out of the ranking |
 | `risk-week-<date>.md` | The same as text notes |
 
 **Links.** Every headline links to its article. On the slide, click a headline or "Read ↗"
 during Slide Show, or Ctrl+click while editing. On the web page, links open in a new tab.
 The terminal summary prints plain web addresses and the page's address.
+
+## From the CRO's desk
+
+A highlighted box on the slide, and at the top of the page, holds what the CRO should see first:
+
+1. **Your notes.** Copy `cro_desk.example.txt` to `cro_desk.txt` and write one note per line,
+   for example "Risk Appetite Statement review goes to the Board on 20 Nov". They can be
+   news or any update from the CRO's desk. You can also add a note for one run:
+   `python risk_week.py --cro "RBI inspection data requests due Friday"` (repeatable).
+   `cro_desk.txt` is not committed to git, so internal notes stay on your machine.
+2. **Focus this week.** One news item to act on first. With `--ai`, Gemini picks it from the
+   top 5 and writes what the CRO should ask the risk team to check or do. Without AI, it is
+   the top-ranked item.
 
 ## Where the news comes from
 
@@ -84,7 +97,9 @@ request, far inside the free daily limit (your project's limit is shown in AI St
 Nothing extra needs installing for Gemini.
 
 If the call fails for any reason (no key, daily limit reached, no network), the keyword
-ranking is used and the output says why.
+ranking is used and the output says why. If an item comes back without a "why it matters"
+line, one short follow-up request fills it in. Every AI reply is saved as
+`output/risk-week-<date>-ai-reply.json`, so you can see exactly what the AI returned.
 
 On the free tier Google may use what is sent to improve its products. This tool sends
 only public news headlines and summaries, so that is fine here; don't reuse a free key
@@ -106,6 +121,8 @@ Change either model with `--model` or `RISK_WEEK_MODEL`.
 | `--provider` | `gemini` | `gemini` (free tier) or `claude` |
 | `--json` | off | Also print the items as JSON |
 | `--open` | off | Open the web page in the browser when done |
+| `--cro TEXT` | none | A note for the CRO box (repeatable) |
+| `--cro-file FILE` | `cro_desk.txt` | File with CRO notes, one per line |
 
 ## Tests
 

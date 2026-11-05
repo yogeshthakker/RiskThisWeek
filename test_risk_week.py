@@ -229,6 +229,97 @@ class TestAI(unittest.TestCase):
         self.assertEqual(len(res.top), 3)
 
 
+class SeqAI:
+    """Answers each request with the next reply in the list."""
+    name, model = "seq", "seq-1"
+
+    def __init__(self, *replies):
+        self.replies = list(replies)
+        self.prompts = []
+
+    def json_call(self, system_prompt, user_content, response_schema=None, max_output_tokens=1200):
+        self.prompts.append(user_content)
+        return self.replies.pop(0)
+
+
+class TestSummariesAndCro(unittest.TestCase):
+    def pick(self, items, focus=None):
+        return {"items": items, "cro_focus": focus or {"id": 1, "message": "Ask Treasury to size it."}}
+
+    def test_missing_why_filled_by_second_request(self):
+        ai = SeqAI(
+            self.pick([{"id": 1, "headline": "A", "category": "Capital", "why_it_matters": ""},
+                       {"id": 2, "headline": "B", "category": "Capital", "why_it_matters": " "},
+                       {"id": 3, "headline": "C", "category": "Capital", "why_it_matters": "Has one."}]),
+            {"items": [{"id": 1, "why_it_matters": "Filled A."}, {"id": 2, "why_it_matters": "Filled B."}]},
+        )
+        res = rw.run(top=3, sources=SOURCES, fetcher=fetcher, now=NOW, provider=ai)
+        self.assertEqual([s.why for s in res.top], ["Filled A.", "Filled B.", "Has one."])
+        self.assertEqual(len(ai.prompts), 2)
+        self.assertNotIn("Has one", ai.prompts[1])                # only the missing ones are asked again
+        self.assertEqual([e["request"] for e in res.ai_log], ["pick", "fill_why"])
+
+    def test_other_key_names_accepted(self):
+        ai = SeqAI(self.pick([{"id": 1, "headline": "A", "category": "Capital", "why": "Via 'why'."}]))
+        res = rw.run(top=1, sources=SOURCES, fetcher=fetcher, now=NOW, provider=ai)
+        self.assertEqual(res.top[0].why, "Via 'why'.")
+        self.assertEqual(len(ai.prompts), 1)
+
+    def test_cro_focus_from_ai(self):
+        ai = SeqAI(self.pick([{"id": 1, "headline": "A", "category": "Capital", "why_it_matters": "x"},
+                              {"id": 2, "headline": "B", "category": "Capital", "why_it_matters": "y"}],
+                             {"id": 2, "message": "Ask Credit to check exposure."}))
+        res = rw.run(top=2, sources=SOURCES, fetcher=fetcher, now=NOW, provider=ai,
+                     cro_notes=["RAS review to Board on 20 Nov"])
+        box = rw.cro_box(res)
+        self.assertEqual(box["notes"], ["RAS review to Board on 20 Nov"])
+        self.assertEqual(box["focus"]["headline"], "B")
+        self.assertEqual(box["focus"]["message"], "Ask Credit to check exposure.")
+        self.assertIn("cro_focus", ai.prompts[0])
+
+    def test_cro_focus_without_ai_is_top_item(self):
+        res = rw.run(top=3, sources=SOURCES, fetcher=fetcher, now=NOW)
+        self.assertIs(res.cro_focus.story, res.top[0])
+        self.assertIsNotNone(rw.cro_box(res))
+
+    def test_cro_box_in_every_format(self):
+        res = rw.run(top=3, sources=SOURCES, fetcher=fetcher, now=NOW, cro_notes=["Board RAS review 20 Nov"],
+                     provider=SeqAI(self.pick([{"id": 1, "headline": "A", "category": "Capital",
+                                                "why_it_matters": "x"}])))
+        with tempfile.TemporaryDirectory() as d:
+            files = rw.write(res, d)
+            md = pathlib.Path(files["markdown"]).read_text(encoding="utf-8")
+            self.assertIn("> ### From the CRO's desk", md)
+            self.assertIn("> - Board RAS review 20 Nov", md)
+            self.assertIn("**Focus this week:**", md)
+            page = pathlib.Path(files["html"]).read_text(encoding="utf-8")
+            self.assertIn('<aside class="cro">', page)
+            self.assertIn("Board RAS review 20 Nov", page)
+            self.assertIn('"request": "pick"', pathlib.Path(files["ai_reply"]).read_text(encoding="utf-8"))
+            self.assertIn("FROM THE CRO'S DESK", rw.to_console(res, files))
+            try:
+                from pptx import Presentation
+            except ImportError:
+                return
+            texts = [sh.text_frame.text for sh in Presentation(files["pptx"]).slides[0].shapes
+                     if sh.has_text_frame]
+            panel = [x for x in texts if x.startswith("From the CRO's desk")]
+            self.assertEqual(len(panel), 1)
+            self.assertIn("Board RAS review 20 Nov", panel[0])
+            self.assertIn("Focus this week", panel[0])
+
+    def test_notes_file(self):
+        with tempfile.TemporaryDirectory() as d:
+            f = pathlib.Path(d) / "cro_desk.txt"
+            f.write_text("# comment\n\n- First note\nSecond note\n• Third\n", encoding="utf-8")
+            self.assertEqual(rw.load_cro_notes(f), ["First note", "Second note", "Third"])
+            self.assertEqual(rw.load_cro_notes(pathlib.Path(d) / "missing.txt"), [])
+
+    def test_example_notes_file_parses(self):
+        notes = rw.load_cro_notes(pathlib.Path(__file__).resolve().parent / "cro_desk.example.txt")
+        self.assertEqual(len(notes), 2)
+
+
 def gemini_reply(obj):
     return {"candidates": [{"content": {"parts": [{"text": json.dumps(obj)}]}, "finishReason": "STOP"}]}
 
