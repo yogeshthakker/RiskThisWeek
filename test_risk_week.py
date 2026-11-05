@@ -75,6 +75,7 @@ class FakeAI:
 
     def json_call(self, system_prompt, user_content, response_schema=None, max_output_tokens=1200):
         self.prompt = user_content
+        self.system = system_prompt
         return self.reply
 
 
@@ -105,15 +106,17 @@ class TestRun(unittest.TestCase):
         self.assertEqual(len(cyber), 1)
         self.assertEqual(cyber[0].sources, ["ET", "Mint"] if cyber[0].lead.publisher == "ET" else ["Mint", "ET"])
 
-    def test_routine_enforcement_rolled_up(self):
-        roll = [s for s in self.res.top + self.res.radar if s.lead.title.startswith("RBI enforcement round-up")]
-        self.assertEqual(len(roll), 1)
-        self.assertIn("2 action", roll[0].lead.title)
-        self.assertIn("Pusad", roll[0].lead.summary)
+    def test_routine_enforcement_left_out_and_listed(self):
+        ranked = " ".join(s.lead.title for s in self.res.top + self.res.radar)
+        self.assertNotIn("Pusad", ranked)
+        self.assertNotIn("Alpha Finance", ranked)
+        listed = " ".join(i.title for i in self.res.routine)
+        self.assertIn("Pusad", listed)
+        self.assertIn("Alpha Finance", listed)
 
     def test_rbi_draft_ranks_first_and_lookback_ranked_low(self):
         self.assertIn("expected credit loss", self.titles[0])
-        self.assertNotIn("DHFL", " ".join(self.titles))
+        self.assertIn("DHFL", self.titles[-1])               # only there to fill the list
 
     def test_one_bad_source_reported_not_fatal(self):
         src = dict(SOURCES, feeds=SOURCES["feeds"] + [{"name": "Broken", "url": "nope"}])
@@ -126,12 +129,76 @@ class TestRun(unittest.TestCase):
             files = rw.write(self.res, d)
             md = pathlib.Path(files["markdown"]).read_text(encoding="utf-8")
             self.assertIn("This Week in Risk", md)
-            self.assertIn("<ol>", pathlib.Path(files["html"]).read_text(encoding="utf-8"))
+            self.assertIn("## 1. [RBI issues draft directions", md)        # headline is the link
+            self.assertIn("](https://rbi/2)", md)
+            self.assertIn("Routine enforcement, not ranked (3)", md)
+            page = pathlib.Path(files["html"]).read_text(encoding="utf-8")
+            self.assertIn('href="https://rbi/2" target="_blank"', page)
+            self.assertIn("<details>", page)
             try:
-                import pptx  # noqa: F401
-                self.assertTrue(pathlib.Path(files["pptx"]).stat().st_size > 0)
+                from pptx import Presentation
             except ImportError:
                 self.assertNotIn("pptx", files)
+                return
+            slide = Presentation(files["pptx"]).slides[0]
+            links = [(r.text, r.hyperlink.address) for sh in slide.shapes if sh.has_text_frame
+                     for para in sh.text_frame.paragraphs for r in para.runs if r.hyperlink.address]
+            self.assertIn(("Read ↗", "https://rbi/2"), links)
+            self.assertTrue(any(text.startswith("RBI issues draft") for text, _ in links))
+
+    def test_console_has_plain_links(self):
+        out = rw.to_console(self.res, {"html": "/tmp/x.html"})
+        self.assertIn("\n   https://rbi/2\n", out)
+        self.assertIn("file:///tmp/x.html", out)
+
+
+PROFILE = rw.Profile.from_sources({"profile": {
+    "focus": {"weight": 1.6, "terms": ["\\bfema\\b", "liquidity"]},
+    "less_relevant": {"weight": 2.2, "terms": ["co-?operative", "farmer|drought"]},
+    "foreign_banks": ["HSBC", "Standard Chartered"],
+    "penalty_threshold_crore": 10,
+}})
+
+
+def item(title, summary=""):
+    return rw.Item(title=title, link="l", source="s", published=NOW, summary=summary)
+
+
+class TestProfile(unittest.TestCase):
+    def test_amounts(self):
+        self.assertEqual(rw.amount_crore("RBI imposes ₹1.57 crore penalty"), 1.57)
+        self.assertEqual(rw.amount_crore("fine of Rs 50 lakh"), 0.5)
+        self.assertEqual(rw.amount_crore("Rs 2,500 crore and ₹3 crore"), 2500)
+        self.assertIsNone(rw.amount_crore("RBI imposes penalty on bank"))
+
+    def test_routine_or_not(self):
+        routine = lambda t: rw.is_routine_enforcement(item(t), PROFILE)  # noqa: E731
+        self.assertTrue(routine("RBI imposes ₹1.57 crore penalty on Punjab National Bank"))
+        self.assertTrue(routine("RBI imposes monetary penalty on XYZ Co-operative Bank"))
+        self.assertFalse(routine("RBI imposes ₹25 crore penalty on large private bank"))       # big
+        self.assertFalse(routine("RBI fines HSBC India ₹2 crore for KYC lapses"))              # peer
+        self.assertFalse(routine("RBI bars fintech bank from onboarding new customers, penalty"))  # restriction
+        self.assertFalse(routine("RBI issues draft liquidity framework for banks"))            # not enforcement
+
+    def test_relevance_moves_scores(self):
+        fema = rw.relevance(item("RBI amends FEMA rules for liquidity facility"), PROFILE)
+        coop = rw.relevance(item("Drought hit farmers get co-operative bank relief"), PROFILE)
+        peer = rw.relevance(item("Standard Chartered India sells unit"), PROFILE)
+        self.assertGreater(fema, 0)
+        self.assertLess(coop, 0)
+        self.assertGreater(peer, 0)
+
+    def test_profile_reaches_ai_prompt(self):
+        ai = FakeAI({"items": []})
+        src = dict(SOURCES, profile={"bank": "TestBank India branch"})
+        rw.run(top=3, sources=src, fetcher=fetcher, now=NOW, provider=ai)
+        self.assertIn("TestBank India branch", ai.prompt)
+        self.assertIn("TestBank India branch", ai.system)
+
+    def test_shipped_profile_is_valid(self):
+        p = rw.Profile.from_sources(rw.load_sources())
+        self.assertTrue(p.focus and p.less and p.peers)
+        self.assertTrue(rw.is_routine_enforcement(item("RBI imposes ₹2.5 lakh penalty on Canara Bank"), p))
 
 
 class TestStrictSchema(unittest.TestCase):
