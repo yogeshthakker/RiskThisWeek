@@ -2,7 +2,8 @@
 
     python risk_week.py                     # last 7 days, top 5: slide + HTML + Markdown in ./output
     python risk_week.py --days 14 --top 7
-    python risk_week.py --ai                # Claude picks the final list and writes "why it matters"
+    python risk_week.py --ai                # Gemini (free tier) picks the list and writes "why it matters"
+    python risk_week.py --ai --provider claude
 
 What it does, in order:
 
@@ -17,10 +18,12 @@ What it does, in order:
 4. Score.    By risk category (credit, liquidity, capital, cyber and fraud,
    AML/KYC, regulation, enforcement, governance, climate), source (RBI first),
    severity words and recency. At most two items per category reach the top.
-5. Explain.  Optional (--ai, needs ANTHROPIC_API_KEY): Claude picks the final
-   list from the top candidates and writes a headline and a "why it matters"
-   line for each, using only the candidate text. If the call fails, the
-   keyword ranking stands.
+5. Explain.  Optional (--ai). Gemini on Google's free tier (GEMINI_API_KEY,
+   model gemini-3.5-flash-lite) or Claude (--provider claude, ANTHROPIC_API_KEY)
+   picks the final list from the top candidates and writes a headline and a
+   "why it matters" line for each, using only the candidate text. If the call
+   fails (no key, daily limit reached, network), the keyword ranking stands.
+   Keys can also live in a .env file next to this script.
 6. Write.    risk-week-<date>.md, .html and, when python-pptx is installed,
    .pptx (one slide with the top items, one with "also on the radar").
 
@@ -32,9 +35,11 @@ from __future__ import annotations
 import html
 import json
 import math
+import os
 import re
 import sys
 import urllib.parse
+import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
@@ -47,6 +52,7 @@ IST = timezone(timedelta(hours=5, minutes=30))
 DEFAULT_SOURCES = Path(__file__).resolve().parent / "sources.json"
 DEFAULT_OUT = Path("output")
 USER_AGENT = "Mozilla/5.0 (compatible; risk-week)"
+GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 
 # ---------------------------------------------------------------------------
 # Vocabulary
@@ -504,6 +510,82 @@ def explain(stories: list[Story], provider, top: int) -> tuple[list[Story], str]
     return chosen, f"{getattr(provider, 'name', 'llm')} ({getattr(provider, 'model', '')})"
 
 
+def load_dotenv(*paths: Path) -> None:
+    """KEY=VALUE lines from .env files; a variable already set in the environment wins."""
+    for path in paths:
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            key = key.strip().removeprefix("export ").strip()
+            if key and key not in os.environ:
+                os.environ[key] = value.strip().strip('"').strip("'")
+
+
+def _post_json(url: str, body: dict, headers: dict, timeout: float = 90) -> dict:
+    req = urllib.request.Request(url, data=json.dumps(body).encode(), method="POST",
+                                 headers={"Content-Type": "application/json", **headers})
+    with urllib.request.urlopen(req, timeout=timeout) as r:  # noqa: S310 — fixed https endpoint
+        return json.loads(r.read())
+
+
+class GeminiProvider:
+    """One JSON-mode call to Gemini over Google's REST API: no extra package needed.
+
+    Needs GEMINI_API_KEY (free from aistudio.google.com/apikey). The default model,
+    gemini-3.5-flash-lite, is on the free tier; one run makes one request. On the
+    free tier Google may use what is sent to improve its products: here that is
+    public news headlines only.
+    """
+
+    name = "gemini"
+    DEFAULT_MODEL = "gemini-3.5-flash-lite"
+
+    def __init__(self, model: str | None = None, post: Callable[..., dict] = _post_json):
+        self.key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+        if not self.key:
+            raise RuntimeError("set GEMINI_API_KEY (free key: https://aistudio.google.com/apikey)")
+        self.model = model or os.environ.get("RISK_WEEK_MODEL") or self.DEFAULT_MODEL
+        self.post = post
+
+    def json_call(self, system_prompt, user_content, response_schema=None, max_output_tokens=1500) -> dict:
+        config: dict = {"temperature": 0.2, "maxOutputTokens": max(max_output_tokens, 2048),
+                        "responseMimeType": "application/json"}
+        if response_schema:
+            config["responseJsonSchema"] = response_schema
+        body = {
+            "systemInstruction": {"parts": [{"text": system_prompt}]},
+            "contents": [{"role": "user", "parts": [{"text": user_content}]}],
+            "generationConfig": config,
+        }
+        try:
+            reply = self.post(GEMINI_URL.format(model=urllib.parse.quote(self.model)), body,
+                              {"x-goog-api-key": self.key})
+        except urllib.error.HTTPError as e:
+            detail = e.read().decode("utf-8", "replace")[:300]
+            if e.code == 429:
+                raise RuntimeError(f"Gemini free-tier limit reached for {self.model} "
+                                   "(daily limits reset at midnight Pacific time)") from e
+            if e.code == 404:
+                raise RuntimeError(f"Gemini model '{self.model}' not found; set --model or RISK_WEEK_MODEL") from e
+            raise RuntimeError(f"Gemini HTTP {e.code}: {detail}") from e
+        candidates = reply.get("candidates") or []
+        if not candidates:
+            raise RuntimeError(f"Gemini returned no answer: {str(reply.get('promptFeedback', ''))[:200]}")
+        parts = (candidates[0].get("content") or {}).get("parts") or []
+        text = "".join(p.get("text", "") for p in parts if not p.get("thought")).strip()
+        if not text:
+            raise RuntimeError(f"Gemini returned an empty answer ({candidates[0].get('finishReason')})")
+        if text.startswith("```"):
+            text = text.strip("`").removeprefix("json").strip()
+        return json.loads(text)
+
+
 class ClaudeProvider:
     """One structured-output call to Claude. Needs `pip install anthropic` and ANTHROPIC_API_KEY."""
 
@@ -732,15 +814,19 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--top", type=int, default=5, help="how many items (default 5)")
     p.add_argument("--out-dir", default=str(DEFAULT_OUT), help="folder for the files (default ./output)")
     p.add_argument("--sources", help="sources JSON (default sources.json next to this script)")
-    p.add_argument("--ai", action="store_true", help="let Claude pick and explain the items (ANTHROPIC_API_KEY)")
-    p.add_argument("--model", help="Claude model (default claude-opus-5-5, or RISK_WEEK_MODEL)")
+    p.add_argument("--ai", action="store_true", help="let an AI pick and explain the items")
+    p.add_argument("--provider", choices=["gemini", "claude"], default="gemini",
+                   help="gemini: free tier, GEMINI_API_KEY (default); claude: ANTHROPIC_API_KEY")
+    p.add_argument("--model", help="model name (default gemini-3.5-flash-lite or claude-opus-5-5; "
+                                   "or set RISK_WEEK_MODEL)")
     p.add_argument("--json", action="store_true", help="also print the items as JSON")
     a = p.parse_args(argv)
 
+    load_dotenv(Path(__file__).resolve().parent / ".env", Path.cwd() / ".env")
     provider = None
     if a.ai:
         try:
-            provider = ClaudeProvider(a.model)
+            provider = GeminiProvider(a.model) if a.provider == "gemini" else ClaudeProvider(a.model)
         except Exception as e:  # noqa: BLE001 — missing package or key: keep going without AI
             print(f"[risk-week] AI unavailable ({type(e).__name__}: {e}); using keyword ranking", file=sys.stderr)
     print("Reading sources:", file=sys.stderr)

@@ -1,8 +1,13 @@
+import io
+import json
+import os
 import pathlib
 import sys
 import tempfile
 import unittest
+import urllib.error
 from datetime import datetime
+from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import risk_week as rw  # noqa: E402
@@ -155,6 +160,75 @@ class TestAI(unittest.TestCase):
         res = rw.run(top=3, sources=SOURCES, fetcher=fetcher, now=NOW, provider=FakeAI({"answer": "x"}))
         self.assertIn("keyword ranking used", res.ai)
         self.assertEqual(len(res.top), 3)
+
+
+def gemini_reply(obj):
+    return {"candidates": [{"content": {"parts": [{"text": json.dumps(obj)}]}, "finishReason": "STOP"}]}
+
+
+class TestGemini(unittest.TestCase):
+    def setUp(self):
+        self.env = mock.patch.dict(os.environ, {"GEMINI_API_KEY": "k"}, clear=False)
+        self.env.start()
+        os.environ.pop("RISK_WEEK_MODEL", None)
+
+    def tearDown(self):
+        self.env.stop()
+
+    def test_request_shape_and_answer(self):
+        calls = []
+
+        def post(url, body, headers):
+            calls.append((url, body, headers))
+            return gemini_reply({"items": [{"id": 1, "headline": "H", "category": "Capital",
+                                            "why_it_matters": "W"}]})
+
+        g = rw.GeminiProvider(post=post)
+        self.assertEqual(g.model, "gemini-3.5-flash-lite")
+        out = g.json_call("sys", "user", rw.AI_SCHEMA)
+        self.assertEqual(out["items"][0]["headline"], "H")
+        url, body, headers = calls[0]
+        self.assertIn("/models/gemini-3.5-flash-lite:generateContent", url)
+        self.assertEqual(headers, {"x-goog-api-key": "k"})
+        self.assertNotIn("k", url)                                   # key in a header, not the URL
+        self.assertEqual(body["generationConfig"]["responseMimeType"], "application/json")
+        self.assertEqual(body["generationConfig"]["responseJsonSchema"], rw.AI_SCHEMA)
+        self.assertEqual(body["systemInstruction"]["parts"][0]["text"], "sys")
+
+    def test_used_by_run(self):
+        post = lambda url, body, headers: gemini_reply({"items": [  # noqa: E731
+            {"id": 1, "headline": "Gemini headline", "category": "Credit risk", "why_it_matters": "W"}]})
+        res = rw.run(top=3, sources=SOURCES, fetcher=fetcher, now=NOW, provider=rw.GeminiProvider(post=post))
+        self.assertEqual(res.top[0].headline, "Gemini headline")
+        self.assertTrue(res.ai.startswith("gemini (gemini-3.5-flash-lite)"))
+
+    def test_daily_limit_falls_back_to_keywords(self):
+        def post(url, body, headers):
+            raise urllib.error.HTTPError(url, 429, "Too Many Requests", {}, io.BytesIO(b"quota"))
+
+        res = rw.run(top=3, sources=SOURCES, fetcher=fetcher, now=NOW, provider=rw.GeminiProvider(post=post))
+        self.assertIn("keyword ranking used", res.ai)
+        self.assertEqual(len(res.top), 3)
+
+    def test_fenced_json_and_thoughts_tolerated(self):
+        post = lambda url, body, headers: {"candidates": [{"content": {"parts": [  # noqa: E731
+            {"text": "thinking...", "thought": True}, {"text": '```json\n{"items": []}\n```'}]}}]}
+        self.assertEqual(rw.GeminiProvider(post=post).json_call("s", "u"), {"items": []})
+
+    def test_missing_key(self):
+        with mock.patch.dict(os.environ, {}, clear=True):
+            with self.assertRaises(RuntimeError):
+                rw.GeminiProvider()
+
+    def test_dotenv_does_not_override(self):
+        with tempfile.TemporaryDirectory() as d:
+            env = pathlib.Path(d) / ".env"
+            env.write_text("# key\nexport RW_TEST_A='one'\nGEMINI_API_KEY=from-file\n", encoding="utf-8")
+            with mock.patch.dict(os.environ, {"GEMINI_API_KEY": "real"}):
+                rw.load_dotenv(env, pathlib.Path(d) / "missing")
+                self.assertEqual(os.environ["RW_TEST_A"], "one")
+                self.assertEqual(os.environ["GEMINI_API_KEY"], "real")
+            os.environ.pop("RW_TEST_A", None)
 
 
 if __name__ == "__main__":
