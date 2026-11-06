@@ -320,6 +320,97 @@ class TestSummariesAndCro(unittest.TestCase):
         self.assertEqual(len(notes), 2)
 
 
+
+class TestFeedFormats(unittest.TestCase):
+    def test_gzip_bare_ampersand_and_rss1(self):
+        import gzip
+        amp = (b'<?xml version="1.0"?><rss><channel><item><title>Margins for FX & IRS segment</title>'
+               b'<link>https://ccil/1</link><pubDate>Thu, 05 Nov 2026 10:00:00</pubDate></item></channel></rss>')
+        self.assertEqual(rw.parse_feed(gzip.compress(amp), "CCIL")[0].title, "Margins for FX & IRS segment")
+        rdf = (b'<?xml version="1.0"?><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" '
+               b'xmlns="http://purl.org/rss/1.0/" xmlns:dc="http://purl.org/dc/elements/1.1/">'
+               b'<channel><title>BIS</title></channel><item><title>Basel speech</title><link>https://bis/1</link>'
+               b'<dc:date>2026-11-04T10:00:00Z</dc:date></item></rdf:RDF>')
+        got = rw.parse_feed(rdf, "BIS")
+        self.assertEqual((got[0].title, got[0].link), ("Basel speech", "https://bis/1"))
+        self.assertEqual(got[0].published.day, 4)
+
+
+class TestPriorities(unittest.TestCase):
+    def test_msme_and_russia_outrank_other_focus(self):
+        prof = rw.Profile.from_sources(rw.load_sources())
+        msme = rw.relevance(item("RBI widens credit guarantee cover for MSME loans"), prof)
+        russia = rw.relevance(item("Indian banks halt payments for Russian oil after sanctions"), prof)
+        other = rw.relevance(item("RBI amends FEMA rules for liquidity facility"), prof)
+        self.assertGreater(msme, other)
+        self.assertGreater(russia, other)
+        self.assertEqual(rw.categorise(item("Banks step up MSME lending via TReDS"))[0], "MSME lending")
+
+    def test_priority_topic_gets_a_slot_and_the_focus(self):
+        news = rss(*[(f"RBI tightens cyber security norms for banks, round {n}", f"https://g/c{n}",
+                      "", "Wed, 04 Nov 2026 08:00:00 GMT", f"P{n}") for n in range(3)],
+                   ("Bank of Baroda sees MSME loan demand rise", "https://g/m", "", "Tue, 03 Nov 2026 08:00:00 GMT", "M"))
+        src = {"feeds": [{"name": "RBI", "url": "rbi", "weight": 3, "primary": True}],
+               "google_news": {"queries": ["x"]},
+               "profile": {"priority": {"weight": 0, "topics": {"MSME lending": ["\\bmsmes?\\b"]}}}}
+        f = lambda u: RBI if u == "rbi" else news
+        res = rw.run(top=2, sources=src, fetcher=f, now=NOW)
+        self.assertIn("https://g/m", [s.lead.link for s in res.top])
+        self.assertEqual(res.cro_focus.story.lead.link, "https://g/m")
+        no = rw.run(top=2, sources=dict(src, profile={}), fetcher=f, now=NOW)
+        self.assertNotIn("https://g/m", [s.lead.link for s in no.top])
+
+    def test_guidance_reaches_ai(self):
+        ai = FakeAI({"items": []})
+        src = dict(SOURCES, profile={"guidance": "MSME lending first"})
+        rw.run(top=3, sources=src, fetcher=fetcher, now=NOW, provider=ai)
+        self.assertIn("MSME lending first", ai.system)
+
+
+class TestPending(unittest.TestCase):
+    TODAY = datetime(2026, 11, 6).date()
+
+    def load(self, text):
+        with tempfile.TemporaryDirectory() as d:
+            f = pathlib.Path(d) / "pending_items.txt"
+            f.write_text(text, encoding="utf-8")
+            return rw.load_pending(f, self.TODAY)
+
+    def test_parse_order_and_overdue(self):
+        got = self.load("# comment\n\nLater | A | 20 Nov 2026 | Open\n"
+                        "Closed one | B | 01 Nov 2026 | Done\nLate one | C | 2026-11-02 | In progress\n"
+                        "- No details\n")
+        self.assertEqual([p.item for p in got], ["Late one", "Later", "No details", "Closed one"])
+        self.assertTrue(got[0].overdue)
+        self.assertFalse(got[3].overdue)
+        self.assertEqual(rw._status(got[0]), "Overdue (In progress)")
+        self.assertEqual(rw._status(got[2]), "Open")
+        self.assertEqual(rw.load_pending(pathlib.Path("/no/such/file"), self.TODAY), [])
+
+    def test_example_file_parses(self):
+        got = rw.load_pending(pathlib.Path(__file__).resolve().parent / "pending_items.example.txt", self.TODAY)
+        self.assertEqual(len(got), 4)
+
+    def test_pending_in_every_format(self):
+        pend = self.load("Board RAS paper | CRO office | 01 Nov 2026 | Open\nMSME policy | Credit | 20 Nov 2026 |\n")
+        res = rw.run(top=3, sources=SOURCES, fetcher=fetcher, now=NOW, pending=pend)
+        with tempfile.TemporaryDirectory() as d:
+            files = rw.write(res, d)
+            md = pathlib.Path(files["markdown"]).read_text(encoding="utf-8")
+            self.assertIn("## Pending items", md)
+            self.assertIn("| Board RAS paper | CRO office | 01 Nov 2026 | **Overdue (Open)** |", md)
+            self.assertIn('class="late"', pathlib.Path(files["html"]).read_text(encoding="utf-8"))
+            self.assertIn("PENDING ITEMS", rw.to_console(res, files))
+            try:
+                from pptx import Presentation
+            except ImportError:
+                return
+            slide = Presentation(files["pptx"]).slides[1]
+            tables = [sh.table for sh in slide.shapes if sh.has_table]
+            self.assertEqual(len(tables), 1)
+            self.assertEqual(tables[0].cell(1, 0).text, "Board RAS paper")
+            self.assertEqual(tables[0].cell(1, 3).text, "Overdue (Open)")
+
 def gemini_reply(obj):
     return {"candidates": [{"content": {"parts": [{"text": json.dumps(obj)}]}, "finishReason": "STOP"}]}
 

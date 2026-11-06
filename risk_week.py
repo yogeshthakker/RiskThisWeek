@@ -7,9 +7,9 @@
 
 What it does, in order:
 
-1. Collect.  Reads the feeds and Google News searches in sources.json (RBI press
-   releases and notifications, SEBI, ET BFSI, and searches such as
-   "RBI penalty bank" or "bank fraud India"), keeping items from the period.
+1. Collect.  Reads the feeds and Google News searches in sources.json (RBI, CCIL,
+   SEBI, FSB, Risk.net, business press, and searches on MSME lending, India–Russia,
+   sanctions and foreign-bank topics), keeping items from the period.
 2. Filter.   Drops routine market notices (T-bill auctions, money market
    operations, VRRR results, ...), look-back stories and anything not about banking.
    Fines and directions aimed at one bank below the profile's threshold (and not
@@ -29,14 +29,16 @@ What it does, in order:
    Keys can also live in a .env file next to this script.
 6. Write.    risk-week-<date>.md, .html and, when python-pptx is installed,
    .pptx (one slide with the top items and a "From the CRO's desk" box, one with
-   "also on the radar"). The CRO box holds notes from cro_desk.txt or --cro, and
-   the one item to act on first (picked by the AI, or the top item without it).
+   the pending items from pending_items.txt, one with "also on the radar"). The CRO
+   box holds notes from cro_desk.txt or --cro, and the one item to act on first
+   (picked by the AI, or without it the top item on a priority topic such as MSME).
 
 Every item links to its source. News items are machine-selected: check the
 source before presenting a figure or a name.
 """
 from __future__ import annotations
 
+import gzip
 import html
 import json
 import math
@@ -48,7 +50,7 @@ import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Callable
@@ -68,7 +70,7 @@ NOISE = re.compile(
     r"money market operations|auction|t-bill|treasury bill|cut-off|reverse repo \(vrrr\)|"
     r"variable rate (reverse )?repo|weekly statistical supplement|reserve money|"
     r"government stock|state government securities|sovereign gold bond.*(price|redemption)|"
-    r"lending and deposit rates of scheduled|recovery certificate|release order|"
+    r"lending and deposit rates of scheduled|recovery certificate|release order|foreign exchange turnover data|"
     r"settlement order|exemption order|corrigendum|"
     r"gold price|sensex|nifty|stock(s)? to (buy|watch)|share price|market (live|today)",
     re.I,
@@ -78,12 +80,17 @@ NOISE = re.compile(
 BANKING = re.compile(
     r"\bbank|\brbi\b|reserve bank|\bnbfc|lender|lending|\bloan|credit|deposit|\bnpa|"
     r"co-operative|cooperative|microfinance|fintech|payment|upi\b|kyc|basel|liquidity|"
-    r"repo rate|\bmpc\b|sebi|insolvency|ibc\b|\bfraud",
+    r"repo rate|\bmpc\b|sebi|insolvency|ibc\b|\bfraud|\bmsmes?\b|\bsmes?\b|treds|cgtmse|"
+    r"working capital|sanction|micro,? small and medium",
     re.I,
 )
 
 # Category -> (weight, pattern). An item takes the category with the most hits.
 CATEGORIES: dict[str, tuple[float, re.Pattern]] = {
+    "MSME lending": (2.0, re.compile(
+        r"\bmsmes?\b|\bsmes?\b|micro,? small and medium|small (and medium )?(business|enterprise)|"
+        r"\budyam\b|cgtmse|credit guarantee|\btreds\b|trade receivables|invoice (discount|financ)|"
+        r"supply[- ]chain financ|working capital|\bmudra\b|\beclgs\b|\bsidbi\b", re.I)),
     "Enforcement & supervisory action": (1.8, re.compile(
         r"penalt|imposes|fine[ds]?\b|section 35a|cancel(s|led)? (the )?licen[cs]e|licen[cs]e cancel|"
         r"show[- ]cause|debar|restriction|curbs|moratorium|superseded? the board|barred", re.I)),
@@ -222,6 +229,7 @@ class Result:
     routine: list[Item] = field(default_factory=list)   # left out of the ranking, listed at the end
     cro_notes: list[str] = field(default_factory=list)  # from the CRO's desk (cro_desk.txt / --cro)
     cro_focus: "CroFocus | None" = None                 # the one item to act on first
+    pending: list["Pending"] = field(default_factory=list)  # from pending_items.txt, for the status meeting
     ai_log: list = field(default_factory=list)          # raw AI replies, saved next to the output
 
 
@@ -232,7 +240,10 @@ class Result:
 def fetch(url: str, timeout: float = 25) -> bytes:
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": "application/rss+xml, */*"})
     with urllib.request.urlopen(req, timeout=timeout) as r:  # noqa: S310 — fixed https feeds
-        return r.read()
+        data = r.read()
+    if data[:2] == b"\x1f\x8b":            # Risk.net, Central Banking: gzip sent without being asked
+        data = gzip.decompress(data)
+    return data
 
 
 def _clean(text: str | None, limit: int = 400) -> str:
@@ -281,23 +292,35 @@ def parse_date(text: str | None) -> datetime | None:
         return None
 
 
+ATOM = "{http://www.w3.org/2005/Atom}"
+RSS1 = "{http://purl.org/rss/1.0/}"
+DC = "{http://purl.org/dc/elements/1.1/}"
+
+
+def _xml_root(data: bytes) -> ET.Element:
+    if data[:2] == b"\x1f\x8b":
+        data = gzip.decompress(data)
+    text = data.decode("utf-8", errors="replace").lstrip("\ufeff").strip()
+    try:
+        return ET.fromstring(text)
+    except ET.ParseError:
+        # CCIL: bare '&' in titles. Escape any '&' that does not start an entity, then retry.
+        return ET.fromstring(re.sub(r"&(?!#?\w+;)", "&amp;", text))
+
+
 def parse_feed(data: bytes, source: str, weight: float = 1.0, primary: bool = False,
                google: bool = False) -> list[Item]:
-    """Items from an RSS 2.0 or Atom document."""
-    text = data.decode("utf-8", errors="replace").lstrip("﻿").strip()
-    root = ET.fromstring(text)
+    """Items from an RSS 2.0, RSS 1.0 (RDF, e.g. BIS) or Atom document."""
+    root = _xml_root(data)
     out: list[Item] = []
-    entries = root.iter("item")
-    atom = "{http://www.w3.org/2005/Atom}"
-    found = list(entries) or list(root.iter(f"{atom}entry"))
+    found = list(root.iter("item")) or list(root.iter(f"{RSS1}item")) or list(root.iter(f"{ATOM}entry"))
     for e in found:
         def get(tag: str) -> str:
-            el = e.find(tag)
-            if el is None:
-                el = e.find(f"{atom}{tag}")
-            if el is None:
-                return ""
-            return (el.text or el.get("href") or "").strip()
+            for ns in ("", ATOM, RSS1, DC):
+                el = e.find(f"{ns}{tag}")
+                if el is not None:
+                    return (el.text or el.get("href") or "").strip()
+            return ""
         title = _clean(get("title"), 300)
         if not title:
             continue
@@ -310,7 +333,7 @@ def parse_feed(data: bytes, source: str, weight: float = 1.0, primary: bool = Fa
         summary = "" if google else _strip_boilerplate(title, _clean(get("description") or get("summary"), 1500))
         out.append(Item(
             title=title, link=get("link"), source=source,
-            published=parse_date(get("pubDate") or get("published") or get("updated")),
+            published=parse_date(get("pubDate") or get("published") or get("updated") or get("date")),
             summary=summary, weight=weight, primary=primary, publisher=publisher,
         ))
     return out
@@ -354,6 +377,8 @@ def collect(sources: dict, days: int, fetcher: Callable[[str], bytes] = fetch,
 
 DEFAULT_PROFILE = {
     "bank": "a foreign bank operating in India",
+    "guidance": "",
+    "priority": {"weight": 3.0, "min_per_topic": 1, "topics": {}},
     "focus": {"weight": 1.6, "terms": []},
     "less_relevant": {"weight": 2.2, "terms": []},
     "foreign_banks": [],
@@ -365,6 +390,11 @@ DEFAULT_PROFILE = {
 class Profile:
     """What matters to the bank reading the report: from the 'profile' section of sources.json."""
     bank: str
+    guidance: str
+    priority: re.Pattern | None
+    priority_weight: float
+    topics: dict[str, re.Pattern]   # each priority topic gets at least min_per_topic slot(s) in the top
+    min_per_topic: int
     focus: re.Pattern | None
     focus_weight: float
     less: re.Pattern | None
@@ -379,9 +409,15 @@ class Profile:
         def pat(terms: list[str]) -> re.Pattern | None:
             return re.compile("|".join(f"(?:{t})" for t in terms), re.I) if terms else None
 
+        topic_terms = {k: v for k, v in (cfg["priority"].get("topics") or {}).items() if v}
+        all_terms = list(cfg["priority"].get("terms", [])) + [t for v in topic_terms.values() for t in v]
         peers = [re.escape(n) for n in cfg.get("foreign_banks", [])]
         return cls(
-            bank=cfg["bank"],
+            bank=cfg["bank"], guidance=str(cfg.get("guidance") or "").strip(),
+            priority=pat(all_terms),
+            priority_weight=float(cfg["priority"].get("weight", 3.0)),
+            topics={k: pat(v) for k, v in topic_terms.items()},
+            min_per_topic=int(cfg["priority"].get("min_per_topic", 1)),
             focus=pat(cfg["focus"].get("terms", [])), focus_weight=float(cfg["focus"].get("weight", 1.6)),
             less=pat(cfg["less_relevant"].get("terms", [])),
             less_weight=float(cfg["less_relevant"].get("weight", 2.2)),
@@ -420,6 +456,11 @@ def relevance(item: Item, profile: Profile) -> float:
     """Up for what matters to the profile's bank, down for what does not."""
     text = f"{item.title} {item.summary}"
     adj = 0.0
+    if profile.priority:                    # the CRO's current priorities: well above other focus topics
+        if profile.priority.search(item.title):
+            adj += profile.priority_weight
+        elif profile.priority.search(item.summary):
+            adj += profile.priority_weight / 2
     if profile.focus:
         adj += profile.focus_weight * min(len(profile.focus.findall(item.title)) * 2
                                           + len(profile.focus.findall(item.summary)), 3) / 2
@@ -517,6 +558,35 @@ def group(items: list[Item]) -> list[Story]:
     return out
 
 
+def reserve(chosen: list[Story], stories: list[Story], profile: "Profile | None", top: int) -> list[Story]:
+    """Make room for each priority topic (e.g. MSME lending) the top would otherwise miss.
+
+    The best story on a missing topic replaces the lowest-ranked story that is on no priority topic.
+    """
+    if not profile or not profile.topics or profile.min_per_topic < 1:
+        return chosen
+    chosen = list(chosen)
+
+    def on(s: Story, pat: re.Pattern) -> bool:
+        return bool(pat.search(s.lead.title))
+
+    for name, pat in profile.topics.items():
+        have = sum(on(s, pat) for s in chosen)
+        for cand in [s for s in stories if s not in chosen and s.category != "Other" and on(s, pat)]:
+            if have >= profile.min_per_topic:
+                break
+            drop = [s for s in chosen if not any(on(s, p) for p in profile.topics.values())]
+            if len(chosen) < top:
+                chosen.append(cand)
+            elif drop:
+                chosen.remove(drop[-1])
+                chosen.append(cand)
+            else:
+                break
+            have += 1
+    return sorted(chosen, key=lambda s: -s.score)
+
+
 def pick(stories: list[Story], top: int, per_category: int = 2) -> tuple[list[Story], list[Story]]:
     chosen: list[Story] = []
     counts: dict[str, int] = {}
@@ -546,8 +616,12 @@ AI_SYSTEM = (
     "cross-border and FX rules, sanctions, and developments at other foreign banks in India. Pass over "
     "routine items: a small fine on one bank, co-operative banks, microfinance, retail product news, "
     "local crime, single-bank quarterly results. Prefer variety across categories. Use only facts "
-    "stated in the candidate text: never add figures, names or dates that are not there."
+    "stated in the candidate text: never add figures, names or dates that are not there.{guidance}"
 )
+
+
+def _system(profile_bank: str, guidance: str) -> str:
+    return AI_SYSTEM.format(bank=profile_bank, guidance=f"\n\nThis week's priorities: {guidance}" if guidance else "")
 
 AI_SCHEMA = {
     "type": "object",
@@ -619,7 +693,8 @@ def _candidates(stories: list[Story]) -> str:
 
 
 def explain(stories: list[Story], provider, top: int, bank: str = DEFAULT_PROFILE["bank"],
-            log: list | None = None) -> tuple[list[Story], str, CroFocus | None]:
+            log: list | None = None, guidance: str = "",
+            topics: list[str] | None = None) -> tuple[list[Story], str, CroFocus | None]:
     """Let the LLM pick and phrase the top items and the CRO's focus. Returns (chosen, status, focus).
 
     Every reply is appended to `log` (when given), so a run can be checked afterwards.
@@ -629,11 +704,14 @@ def explain(stories: list[Story], provider, top: int, bank: str = DEFAULT_PROFIL
         f"of at most 12 words, a category from: {', '.join(CATEGORIES)}, and why_it_matters: one or two "
         f"sentences (at most 30 words) on what it means for us, {bank}: the risk, or what to check or "
         f"prepare. Every item must have a why_it_matters.\n"
+        + (f"Include at least one item on each of these priority topics when a candidate fits: "
+           f"{', '.join(topics)}.\n" if topics else "") +
         f"Then cro_focus: the id of the one item (from your picks) the Chief Risk Officer should act on "
         f"first, and message: at most 35 words on what the CRO should ask the risk team to check or do "
-        f"this week.\n\nCandidates:\n" + _candidates(stories)
+        f"this week. Frame it so risk enables the business: where we can grow safely, and what control "
+        f"or check makes that possible.\n\nCandidates:\n" + _candidates(stories)
     )
-    system = AI_SYSTEM.format(bank=bank)
+    system = _system(bank, guidance)
     try:
         reply = provider.json_call(system, user, response_schema=AI_SCHEMA, max_output_tokens=2000)
     except Exception as e:  # noqa: BLE001 — fall back to the keyword ranking
@@ -672,16 +750,16 @@ def explain(stories: list[Story], provider, top: int, bank: str = DEFAULT_PROFIL
 
     missing = [s for s in chosen if not s.why]
     if missing:
-        fill_why(missing, provider, bank, log)
+        fill_why(missing, provider, bank, log, guidance)
     return chosen, f"{getattr(provider, 'name', 'llm')} ({getattr(provider, 'model', '')})", focus
 
 
-def fill_why(stories: list[Story], provider, bank: str, log: list | None = None) -> None:
+def fill_why(stories: list[Story], provider, bank: str, log: list | None = None, guidance: str = "") -> None:
     """One more request for items that came back without a 'why it matters' line."""
     user = (f"For each item give id (the number in brackets) and why_it_matters: one or two sentences "
             f"(at most 30 words) on what it means for us, {bank}.\n\nItems:\n" + _candidates(stories))
     try:
-        reply = provider.json_call(AI_SYSTEM.format(bank=bank), user, response_schema=WHY_SCHEMA,
+        reply = provider.json_call(_system(bank, guidance), user, response_schema=WHY_SCHEMA,
                                    max_output_tokens=1200)
     except Exception as e:  # noqa: BLE001 — the feed's own summary stays
         if log is not None:
@@ -822,7 +900,8 @@ def _strict(schema):
 
 def run(days: int = 7, top: int = 5, provider=None, sources: dict | None = None,
         fetcher: Callable[[str], bytes] = fetch, now: datetime | None = None,
-        log: Callable[[str], None] = lambda s: None, cro_notes: list[str] | None = None) -> Result:
+        log: Callable[[str], None] = lambda s: None, cro_notes: list[str] | None = None,
+        pending: list["Pending"] | None = None) -> Result:
     end = now or datetime.now(IST)
     start = end - timedelta(days=days)
     sources = sources or load_sources()
@@ -835,23 +914,31 @@ def run(days: int = 7, top: int = 5, provider=None, sources: dict | None = None,
         score_item(i, start, end, profile)
     stories = group(ranked)
     routine = _dedupe_routine(routine)
-    chosen, radar = pick(stories, top)
+    chosen, _ = pick(stories, top)
+    chosen = reserve(chosen, stories, profile, top)
+    radar = [s for s in stories if s not in chosen and s.category != "Other"][:top]
     ai = "off"
     focus = None
     ai_log: list = []
     if provider is not None and stories:
         pool = [s for s in stories if s.category != "Other"][: max(20, top * 4)]
-        picked, ai, focus = explain(pool, provider, top, profile.bank, ai_log)
+        extra = [s for s in chosen if s not in pool]    # reserved priority items ranked below the pool
+        picked, ai, focus = explain(extra + pool, provider, top, profile.bank, ai_log,
+                                    profile.guidance, list(profile.topics))
         if picked:
             if len(picked) < top:
                 picked += [s for s in chosen if s not in picked][: top - len(picked)]
             chosen = picked
             radar = [s for s in stories if s not in chosen and s.category != "Other"][:top]
     if focus is None and chosen:
-        focus = CroFocus(chosen[0], "")         # no AI: the top-ranked item
+        # No AI: the top item on the first CRO priority topic that has one (MSME lending first),
+        # else the top-ranked item.
+        lead = [s for pat in profile.topics.values() for s in chosen if pat.search(s.lead.title)]
+        focus = CroFocus((lead or chosen)[0], "")
     return Result(start=start, end=end, top=chosen, radar=radar, collected=len(raw),
                   kept=len(kept), errors=errors, ai=ai, routine=routine,
-                  cro_notes=list(cro_notes or []), cro_focus=focus, ai_log=ai_log)
+                  cro_notes=list(cro_notes or []), cro_focus=focus, ai_log=ai_log,
+                  pending=list(pending or []))
 
 
 def load_cro_notes(path: Path) -> list[str]:
@@ -866,6 +953,67 @@ def load_cro_notes(path: Path) -> list[str]:
         if line and not line.startswith("#"):
             notes.append(re.sub(r"^[-*•]\s*", "", line))
     return notes
+
+
+@dataclass
+class Pending:
+    """One line of pending_items.txt: Item | Owner | Due | Status."""
+    item: str
+    owner: str = ""
+    due: str = ""
+    status: str = ""
+    due_date: date | None = None
+    overdue: bool = False
+
+
+_DUE_FORMATS = ("%d %b %Y", "%d %B %Y", "%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y", "%d-%b-%Y", "%d %b %y", "%d-%b-%y")
+_DONE = re.compile(r"^\s*(done|closed|complete[d]?)\b", re.I)
+
+
+def _parse_due(text: str) -> date | None:
+    text = re.sub(r"\s+", " ", text.strip().replace(",", ""))
+    for fmt in _DUE_FORMATS:
+        try:
+            return datetime.strptime(text, fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
+def load_pending(path: Path, today: date | None = None) -> list[Pending]:
+    """Pending items, one per line: 'Item | Owner | Due | Status' (only Item is required).
+
+    Blank lines and '#' comments are skipped. An item past its due date that is not Done is
+    marked Overdue. Order: overdue first, then open items by due date, then done items.
+    """
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    today = today or datetime.now(IST).date()
+    out: list[Pending] = []
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = [x.strip() for x in re.sub(r"^[-*•]\s*", "", line).split("|")] + ["", "", ""]
+        if not parts[0]:
+            continue
+        p = Pending(item=parts[0], owner=parts[1], due=parts[2], status=parts[3])
+        p.due_date = _parse_due(p.due) if p.due else None
+        p.overdue = bool(p.due_date and p.due_date < today and not _DONE.match(p.status))
+        out.append(p)
+
+    def key(p: Pending):
+        done = bool(_DONE.match(p.status))
+        return (0 if p.overdue else 2 if done else 1, p.due_date or date.max)
+    return sorted(out, key=key)
+
+
+def _status(p: Pending) -> str:
+    if p.overdue:
+        return "Overdue" + (f" ({p.status})" if p.status else "")
+    return p.status or "Open"
 
 
 def _dedupe_routine(items: list[Item]) -> list[Item]:
@@ -916,6 +1064,11 @@ def to_markdown(res: Result) -> str:
             if f["message"]:
                 out += [">", f"> {f['message']}"]
         out = [x for x in out if x != ""] + [""]
+    if res.pending:
+        out += ["## Pending items", "", "| Item | Owner | Due | Status |", "|---|---|---|---|"]
+        out += [f"| {p.item} | {p.owner} | {p.due} | {'**' + _status(p) + '**' if p.overdue else _status(p)} |"
+                for p in res.pending]
+        out.append("")
     for n, s in enumerate(res.top, 1):
         d = s.as_dict()
         out += [f"## {n}. [{d['headline']}]({d['link']})",
@@ -949,6 +1102,11 @@ def to_console(res: Result, files: dict) -> str:
             f = box["focus"]
             out += [f"  Focus this week: {f['headline']}"] + ([f"  {f['message']}"] if f["message"] else [])
             out.append(f"  {f['link']}")
+        out.append("")
+    if res.pending:
+        out.append("PENDING ITEMS")
+        out += [f"  • {p.item}" + "".join(f" · {x}" for x in (p.owner, p.due) if x) + f" · {_status(p)}"
+                for p in res.pending]
         out.append("")
     for n, s in enumerate(res.top, 1):
         d = s.as_dict()
@@ -992,6 +1150,12 @@ def to_html(res: Result) -> str:
                     f'rel="noopener"><strong>{e(f["headline"])}</strong></a></p>'
                     + (f"<p>{e(f['message'])}</p>" if f["message"] else ""))
         cro += "</aside>"
+    pending = ""
+    if res.pending:
+        rows = "".join(f'<tr{" class=\"late\"" if p.overdue else ""}><td>{e(p.item)}</td><td>{e(p.owner)}</td>'
+                       f'<td>{e(p.due)}</td><td>{e(_status(p))}</td></tr>' for p in res.pending)
+        pending = ('<section class="pending"><h3>Pending items</h3><table><thead><tr><th>Item</th><th>Owner</th>'
+                   f'<th>Due</th><th>Status</th></tr></thead><tbody>{rows}</tbody></table></section>')
     routine = "".join(f'<li><a href="{e(i.link)}" target="_blank" rel="noopener">{e(i.title)}</a> '
                       f'<span class="meta">{e(i.publisher or i.source)}, {e(_when(i))}</span></li>'
                       for i in res.routine)
@@ -1010,23 +1174,27 @@ details{{margin-top:28px}} summary{{cursor:pointer;font-weight:600}}
 .cro{{background:var(--tag);border-left:4px solid var(--accent);border-radius:6px;padding:14px 18px;margin:0 0 20px}}
 .cro h2{{margin:0 0 6px;font-size:1.15rem}} .cro ul{{margin:4px 0 8px;padding-left:20px}} .cro li{{display:list-item;border:0;padding:2px 0}}
 .cro .focus{{color:var(--accent);font-weight:700;font-size:.85rem;text-transform:uppercase;letter-spacing:.04em;margin-top:8px}} .tag{{background:var(--tag);border-radius:4px;padding:1px 6px;color:var(--fg)}}
-ul.radar li{{display:list-item;border:0;padding:3px 0}} h3{{margin-top:28px}} footer{{color:var(--muted);font-size:.8rem;margin-top:24px}}
+ul.radar li{{display:list-item;border:0;padding:3px 0}}
+.pending{{margin:0 0 24px}} .pending h3{{margin:0 0 8px}} table{{border-collapse:collapse;width:100%;font-size:.92rem}}
+th,td{{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);vertical-align:top}} th{{color:var(--muted);font-weight:600}}
+tr.late td{{color:#b3261e;font-weight:600}} @media (prefers-color-scheme:dark){{tr.late td{{color:#f2b8b5}}}} h3{{margin-top:28px}} footer{{color:var(--muted);font-size:.8rem;margin-top:24px}}
 </style></head><body><main>
 <h1>{e(_title(res))}</h1>
 <p class="sub">Indian banking risk management, {res.start.strftime('%d %b')} – {res.end.strftime('%d %b %Y')} ·
 {res.collected} items read, {res.kept} relevant · summaries: {e(res.ai)}</p>
 {cro}
+{pending}
 <ol>{''.join(cards)}</ol>
 {f'<h3>Also on the radar</h3><ul class="radar">{radar}</ul>' if radar else ''}
 {f'<details><summary>Routine enforcement, not ranked ({len(res.routine)})</summary>'
  f'<p class="meta">Fines and directions aimed at a single bank, below the threshold set in sources.json.</p>'
  f'<ul class="radar">{routine}</ul></details>' if routine else ''}
-<footer>Machine-selected from public feeds (RBI, SEBI, ET BFSI, Google News). Check each source before quoting figures or names.</footer>
+<footer>Machine-selected from public feeds (RBI, CCIL, SEBI, FSB, Risk.net, business press, Google News). Check each source before quoting figures or names.</footer>
 </main></body></html>"""
 
 
 def to_pptx(res: Result, path: Path) -> bool:
-    """One slide with the top items, one with 'also on the radar'. False if python-pptx is missing."""
+    """Slides: top items, pending items, 'also on the radar'. False if python-pptx is missing."""
     try:
         from pptx import Presentation
         from pptx.dml.color import RGBColor
@@ -1125,6 +1293,9 @@ def to_pptx(res: Result, path: Path) -> bool:
             if f["message"]:
                 para(f["message"], 11.5, False, navy, space=4)
 
+    if res.pending:
+        _pending_slide(prs, blank, header, res.pending, navy, grey, accent)
+
     if res.radar:
         s2 = prs.slides.add_slide(blank)
         header(s2, "Also on the radar", "Further items this week, ranked")
@@ -1149,6 +1320,49 @@ def to_pptx(res: Result, path: Path) -> bool:
             note.paragraphs[0].runs[0].font.color.rgb = grey
     prs.save(str(path))
     return True
+
+
+def _pending_slide(prs, layout, header, items: list[Pending], navy, grey, accent) -> None:
+    """A table of pending items: Item, Owner, Due, Status. Overdue rows in red."""
+    from pptx.dml.color import RGBColor
+    from pptx.util import Inches, Pt
+    red = RGBColor(0xB3, 0x26, 0x1E)
+    late = sum(p.overdue for p in items)
+    slide = prs.slides.add_slide(layout)
+    header(slide, "Pending items", f"{len(items)} item(s)" + (f" · {late} overdue" if late else "")
+           + " · from pending_items.txt")
+    shown = items[:12]
+    widths = (7.0, 2.2, 1.5, 1.6)
+    rows = len(shown) + 1
+    row_h = min(0.5, 5.6 / rows)
+    tbl = slide.shapes.add_table(rows, 4, Inches(0.5), Inches(1.5), Inches(sum(widths)),
+                                 Inches(row_h * rows)).table
+    for c, w in enumerate(widths):
+        tbl.columns[c].width = Inches(w)
+    size = 14 if len(shown) <= 8 else 12
+    for c, title in enumerate(("Item", "Owner", "Due", "Status")):
+        cell = tbl.cell(0, c)
+        cell.text = title
+        cell.fill.solid()
+        cell.fill.fore_color.rgb = navy
+        run = cell.text_frame.paragraphs[0].runs[0]
+        run.font.size, run.font.bold, run.font.color.rgb = Pt(size), True, RGBColor(0xFF, 0xFF, 0xFF)
+    for r, p in enumerate(shown, 1):
+        for c, text in enumerate((p.item, p.owner, p.due, _status(p))):
+            cell = tbl.cell(r, c)
+            cell.text = text
+            cell.fill.solid()
+            cell.fill.fore_color.rgb = RGBColor(0xFF, 0xFF, 0xFF) if r % 2 else RGBColor(0xF1, 0xF4, 0xF8)
+            for para in cell.text_frame.paragraphs:
+                for run in para.runs:
+                    run.font.size = Pt(size)
+                    run.font.color.rgb = red if p.overdue and c == 3 else navy
+                    run.font.bold = p.overdue and c == 3
+    if len(items) > len(shown):
+        note = slide.shapes.add_textbox(Inches(0.5), Inches(6.9), Inches(12.3), Inches(0.4)).text_frame
+        note.text = f"{len(items) - len(shown)} more item(s) in the HTML page."
+        note.paragraphs[0].runs[0].font.size = Pt(11)
+        note.paragraphs[0].runs[0].font.color.rgb = grey
 
 
 def write(res: Result, out_dir: Path | str | None = None) -> dict:
@@ -1187,6 +1401,9 @@ def main(argv: list[str] | None = None) -> int:
                    help="a note for the 'From the CRO's desk' box (repeatable)")
     p.add_argument("--cro-file", default=str(Path(__file__).resolve().parent / "cro_desk.txt"),
                    help="file with CRO notes, one per line (default cro_desk.txt next to this script)")
+    p.add_argument("--pending-file", default=str(Path(__file__).resolve().parent / "pending_items.txt"),
+                   help="pending items for the status meeting, 'Item | Owner | Due | Status' per line "
+                        "(default pending_items.txt next to this script)")
     a = p.parse_args(argv)
 
     load_dotenv(Path(__file__).resolve().parent / ".env", Path.cwd() / ".env")
@@ -1199,7 +1416,8 @@ def main(argv: list[str] | None = None) -> int:
     print("Reading sources:", file=sys.stderr)
     notes = load_cro_notes(Path(a.cro_file)) + a.cro
     res = run(days=a.days, top=a.top, provider=provider, sources=load_sources(a.sources),
-              log=lambda m: print(m, file=sys.stderr), cro_notes=notes)
+              log=lambda m: print(m, file=sys.stderr), cro_notes=notes,
+              pending=load_pending(Path(a.pending_file)))
     files = write(res, a.out_dir)
     print(to_console(res, files))
     if a.json:

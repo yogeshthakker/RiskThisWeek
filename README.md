@@ -13,7 +13,7 @@ This writes three files to `./output/` (`--open` also opens the web page):
 
 | File | Use |
 |---|---|
-| `risk-week-<date>.pptx` | Slide 1: the top 5, with the "From the CRO's desk" box on the right. Slide 2: "Also on the radar" (the next 5) |
+| `risk-week-<date>.pptx` | Slide 1: the top 5, with the "From the CRO's desk" box on the right. Slide 2: "Pending items" (from `pending_items.txt`). Slide 3: "Also on the radar" (the next 5) |
 | `risk-week-<date>.html` | The same as a web page, plus the routine enforcement left out of the ranking |
 | `risk-week-<date>.md` | The same as text notes |
 
@@ -31,17 +31,41 @@ A highlighted box on the slide, and at the top of the page, holds what the CRO s
    `python risk_week.py --cro "RBI inspection data requests due Friday"` (repeatable).
    `cro_desk.txt` is not committed to git, so internal notes stay on your machine.
 2. **Focus this week.** One news item to act on first. With `--ai`, Gemini picks it from the
-   top 5 and writes what the CRO should ask the risk team to check or do. Without AI, it is
-   the top-ranked item.
+   top 5 and writes what the CRO should ask the risk team to check or do, framed so risk
+   enables the business. Without AI, it is the top item on the first priority topic
+   (MSME lending), or else the top-ranked item.
+
+## Pending items
+
+A table of open actions for the status meeting: its own slide, and a section near the top of
+the page. Copy `pending_items.example.txt` to `pending_items.txt` and keep it up to date by
+hand, one item per line:
+
+```
+MSME credit policy: revised scorecard to Credit Committee | Credit Risk | 15 Nov 2026 | In progress
+```
+
+The columns are Item, Owner, Due date and Status; only the item is required. Dates can be
+written `15 Nov 2026` or `2026-11-15`. An item past its due date that is not `Done` shows
+as **Overdue**, in red, at the top; done items go to the bottom (delete them when they no
+longer need showing). `pending_items.txt` is not committed to git.
 
 ## Where the news comes from
 
-`sources.json` lists RBI press releases and notifications, SEBI, ET BFSI, and Google News
-searches aimed at what a foreign bank watches: RBI draft directions, foreign banks in India,
-liquidity and the rupee, FEMA and external commercial borrowing, ECL and Basel capital,
-priority sector lending, KYC/AML and sanctions, cyber and outsourcing, data protection,
-GIFT City, asset quality and monetary policy. Add, remove or edit any of them; `weight`
-makes a source rank higher.
+`sources.json` lists:
+
+- **Official:** RBI press releases, notifications, speeches and publications; CCIL
+  notifications and announcements (margins and settlement for FX, NDF and rates); SEBI; the
+  FSB; UK OFSI (sanctions).
+- **Specialist and business press:** Risk.net, Central Banking, Business Standard finance,
+  ET Banking, ET BFSI.
+- **Google News searches** aimed at the CRO's priorities and what a foreign bank watches:
+  MSME lending (credit guarantees, TReDS), India–Russia payments and sanctions, Reuters and
+  Bloomberg on RBI, FATF and OFAC, foreign banks in India, RBI draft directions, FEMA and
+  ECB, ECL, rupee hedging, liquidity, cyber (CERT-In), GIFT City and data protection.
+
+Add, remove or edit any of them; `weight` makes a source rank higher. A source that cannot be
+read is named at the end of the page; the rest still run.
 
 ## The bank profile
 
@@ -51,6 +75,8 @@ change what counts as relevant:
 | Setting | What it does |
 |---|---|
 | `bank` | One sentence about the bank. It goes into the AI's instructions and its "why it matters" lines |
+| `guidance` | The CRO's current priorities in plain words, passed to the AI (now: risk as an enabler for the business, MSME lending first, then India–Russia) |
+| `priority.topics` | The CRO's priority topics, each a list of terms: **MSME lending** and **India–Russia**. A matching item ranks well above other focus topics (`priority.weight`), and each topic gets at least `min_per_topic` place in the top 5 whenever a story exists |
 | `focus.terms` | Topics that rank an item higher: FX/FEMA, cross-border, liquidity and rates, capital and ECL, priority sector lending, sanctions/AML, data and outsourcing, corporate credit, trade finance, global markets, draft RBI rules |
 | `less_relevant.terms` | Topics that rank an item lower: co-operative banks, microfinance, gold loans, farm loans, local crime, quarterly results, share prices, retail product news |
 | `foreign_banks` | News naming one of these banks ranks higher, and their penalties are never treated as routine |
@@ -68,9 +94,11 @@ Terms are regular expressions and ignore case, so `co-?operative` matches both s
 3. **Group.** The same story from several outlets counts once, and wider coverage ranks it
    higher.
 4. **Score.** By risk category (FX and cross-border, regulation, liquidity and markets,
-   capital, credit, cyber and fraud, AML/KYC, supervisory action, governance, climate),
-   by the bank profile, by source (RBI first), and by severity words and recency. No more
-   than two items come from the same category.
+   capital, credit, cyber and fraud, AML/KYC, supervisory action, governance, climate,
+   MSME lending), by the bank profile, by source (RBI first), and by severity words and
+   recency. No more than two items come from the same category.
+5. **Make room for priorities.** If no MSME or India–Russia story made the top 5 but one
+   exists, the best one replaces the lowest-ranked other item.
 
 No AI is needed for any of this.
 
@@ -123,6 +151,7 @@ Change either model with `--model` or `RISK_WEEK_MODEL`.
 | `--open` | off | Open the web page in the browser when done |
 | `--cro TEXT` | none | A note for the CRO box (repeatable) |
 | `--cro-file FILE` | `cro_desk.txt` | File with CRO notes, one per line |
+| `--pending-file FILE` | `pending_items.txt` | Pending items: `Item \| Owner \| Due \| Status` per line |
 
 ## Tests
 

@@ -9,7 +9,7 @@ status meeting ("This week in risk"). The user runs it on their own Windows mach
 ```bash
 pip install -r requirements.txt
 python risk_week.py --ai --open        # Gemini free tier; --open opens the web page
-python -m unittest test_risk_week      # 30 tests, no network or key needed
+python -m unittest test_risk_week      # 37 tests, no network or key needed
 ```
 
 Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
@@ -22,13 +22,17 @@ Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
 | `risk_week.py` | The whole tool: collect, filter, group, score, AI, write. Standard library only, plus python-pptx for the slide |
 | `sources.json` | Feeds, Google News searches and the bank **profile** (what ranks up or down). The user edits this to tune results |
 | `cro_desk.txt` | The user's notes for the CRO box, one per line. Git-ignored (may be internal); `cro_desk.example.txt` shows the format |
+| `pending_items.txt` | Pending items for the status meeting, `Item \| Owner \| Due \| Status` per line, kept by hand. Git-ignored; `pending_items.example.txt` shows the format |
 | `test_risk_week.py` | unittest tests using sample feeds and fake AI replies |
 | `.env` | `GEMINI_API_KEY=...` on the user's machine. Git-ignored |
 
 ## How it works
 
-1. **Collect** RBI press releases and notifications, SEBI, ET BFSI and 14 Google News
-   searches (foreign-bank topics) for the last 7 days.
+1. **Collect** 14 feeds (RBI press releases, notifications, speeches, publications; CCIL;
+   SEBI; FSB; UK OFSI; Risk.net; Central Banking; Business Standard; ET Banking; ET BFSI)
+   and 23 Google News searches (MSME, India–Russia, Reuters/Bloomberg on RBI, FATF, OFAC,
+   foreign-bank topics) for the last 7 days. `fetch`/`parse_feed` handle gzip bodies
+   (Risk.net, Central Banking), bare `&` in XML (CCIL) and RSS 1.0/RDF (BIS).
 2. **Filter** routine market notices (T-bill auctions, money market operations), non-banking
    items and look-back stories.
 3. **Set aside routine enforcement.** A fine or direction aimed at one bank stays out of the
@@ -40,7 +44,9 @@ Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
    risk, Capital, Credit risk, Operational/cyber & fraud, AML/KYC, Enforcement & supervisory
    action, Governance & conduct, Climate & ESG), the profile's focus / less-relevant terms,
    news about peer foreign banks, source weight (RBI first), severity words and recency.
-   At most 2 items per category reach the top 5.
+   At most 2 items per category reach the top 5. `profile.priority.topics` (MSME lending,
+   India–Russia) add `priority.weight` (3.0), and `reserve()` gives each topic at least one
+   place in the top 5 when a story exists.
 6. **AI (optional, `--ai`).** Gemini `gemini-3.5-flash-lite` over its REST API (no SDK)
    by default; `--provider claude` uses the Anthropic SDK (`claude-opus-5-5`). The AI picks
    the final 5 from the top ~20 candidates, writes a headline and a "why it matters for us"
@@ -48,7 +54,8 @@ Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
    the team. Items missing a "why" get one follow-up request. Any failure falls back to the
    keyword ranking, and the output says why.
 7. **Write** the slide (top 5 on the left, "From the CRO's desk" box on the right; slide 2
-   "Also on the radar"), the HTML page (CRO box at the top, routine enforcement in a
+   "Pending items" table from `pending_items.txt`, overdue rows in red; slide 3 "Also on
+   the radar"), the HTML page (CRO box at the top, routine enforcement in a
    collapsible list) and Markdown. Every headline is a link; the slide also has "Read ↗"
    links (they work in Slide Show, or Ctrl+click while editing).
 
@@ -58,6 +65,11 @@ Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
   farm loans, local crime, quarterly results or retail product news.
 - A **"From the CRO's desk" box**: the user's own notes (`cro_desk.txt` or `--cro "..."`)
   plus one focus item.
+- **Risk as an enabler for the business.** The CRO's greatest focus is **MSME lending**,
+  then **India–Russia** (payments, rupee–rouble, vostro, sanctions). These are
+  `profile.priority.topics` and `profile.guidance` (passed to the AI) in `sources.json`.
+- **Pending items** are the CRO's second focus: a hand-kept file shown as its own slide.
+- No home-regulator feed: the user said not to add one.
 - **AI is optional**; the free **Gemini** tier is the default because it costs nothing.
   Only public news is sent, so the free tier's data use is acceptable here.
 - Links must be clickable in every format.
@@ -71,7 +83,10 @@ Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
 - Gemini free-tier limits are per project and shown only in Google AI Studio.
 - Google News links are Google redirect addresses; they open fine in a browser.
 - Possible next steps the user has not asked for yet: a weekly schedule, sending by email,
-  more tuning of `sources.json`.
+  a scraper for RBI's draft-directions page and CERT-In advisories (no feeds; see the source
+  research of 6 Nov 2026), BIS feeds (supported by the parser, but mostly research).
+- The no-AI ranking still favours general cyber and FEMA stories; with `--ai` the guidance
+  steers the pick. A real `--ai` run with the new priorities has not been checked yet.
 
 ## History
 
@@ -84,4 +99,4 @@ holds only a Gemini default-model fix. `yogeshthakker/RiskLens2` was emptied and
 - Run the tests before every commit. Keep the tool to one file and the standard library
   (python-pptx and anthropic optional).
 - Check the slide visually after layout changes (LibreOffice can render it to PDF).
-- Never commit `cro_desk.txt`, `.env` or `output/`.
+- Never commit `cro_desk.txt`, `pending_items.txt`, `.env` or `output/`.
