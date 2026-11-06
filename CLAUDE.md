@@ -58,9 +58,15 @@ Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
    keyword ranking, and the output says why.
 7. **Write** the slides (1: "From the CRO's desk" panel and "Pending items" table from
    `pending_items.txt`, overdue in red; 2: the six blocks, 3 × 2; 3: "Also on the radar"),
-   the HTML page (full width up to 1680px: CRO box and pending items side by side, the
-   blocks in a 3 / 2 / 1-column grid, radar and collapsible routine enforcement) and
-   Markdown. Every headline is a link (on slides: Slide Show, or Ctrl+click while editing).
+   the HTML page and Markdown. The page is a **one-screen dashboard** on screens at least
+   1200 × 700 (target 1920 × 1080, no page scroll): the six blocks 3 × 2 on the left, a
+   sidebar with the CRO box, pending items, radar and routine enforcement on the right
+   (the sidebar scrolls on its own if long). Headlines are clamped to 2 lines; summaries
+   to 2 lines (1 below 1000px of height, hidden below 800px); hovering shows the full
+   text. Smaller screens get a scrolling page (CRO box and pending items first, blocks in
+   2 or 1 columns). After changing the page, check with Playwright at 1920 × 1080 and
+   1920 × 940 (a browser with toolbars) that nothing is cut off. The page and the slides take
+   the same content. Every headline is a link (on slides: Slide Show, or Ctrl+click while editing).
 
 ## Decisions the user made
 
@@ -72,7 +78,8 @@ Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
   then **India–Russia** (payments, rupee–rouble, vostro, sanctions). These are
   `profile.priority.topics` and `profile.guidance` (passed to the AI) in `sources.json`.
 - **Pending items** are the CRO's second focus: a hand-kept file shown next to the CRO box.
-- **Six blocks of three items**, using the full page width (the user's request of 6 Nov 2026).
+- **Six blocks of three items**, using the full page width, and the whole page on one
+  1920 × 1080 screen without scrolling (the user's requests of 6 Nov 2026).
 - No home-regulator feed: the user said not to add one.
 - **AI is optional**; the free **Gemini** tier is the default because it costs nothing.
   Only public news is sent, so the free tier's data use is acceptable here.

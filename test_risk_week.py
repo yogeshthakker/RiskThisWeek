@@ -311,7 +311,7 @@ class TestSummariesAndCro(unittest.TestCase):
             self.assertIn("> - Board RAS review 20 Nov", md)
             self.assertIn("**Focus this week:**", md)
             page = pathlib.Path(files["html"]).read_text(encoding="utf-8")
-            self.assertIn('<aside class="panel cro">', page)
+            self.assertIn('<section class="panel cro">', page)
             self.assertIn("Board RAS review 20 Nov", page)
             self.assertIn('"request": "pick"', pathlib.Path(files["ai_reply"]).read_text(encoding="utf-8"))
             self.assertIn("FROM THE CRO'S DESK", rw.to_console(res, files))

@@ -1160,11 +1160,13 @@ def to_console(res: Result, files: dict) -> str:
 
 
 def to_html(res: Result) -> str:
+    """A one-screen dashboard on large screens (fits 1920 x 1080), a scrolling page on smaller ones."""
     e = html.escape
 
-    def link(url: str, text: str, cls: str = "") -> str:
+    def link(url: str, text: str, cls: str = "", title: str = "") -> str:
         c = f' class="{cls}"' if cls else ""
-        return f'<a{c} href="{e(url)}" target="_blank" rel="noopener">{e(text)}</a>'
+        t = f' title="{e(title)}"' if title else ""
+        return f'<a{c}{t} href="{e(url)}" target="_blank" rel="noopener">{e(text)}</a>'
 
     blocks = []
     for block, stories in _blocks(res):
@@ -1172,11 +1174,12 @@ def to_html(res: Result) -> str:
         for n, st in enumerate(stories, 1):
             d = st.as_dict()
             more = f" · +{d['also_reported_by']} more" if d["also_reported_by"] else ""
+            why = _clean(d["why_it_matters"], 240)
             items.append(
-                f'<li><span class="n">{n}</span><div><h3>{link(d["link"], d["headline"])}</h3>'
+                f'<li><span class="n">{n}</span><div><h3>{link(d["link"], d["headline"], "", d["headline"])}</h3>'
                 f'<p class="meta">{e(d["source"])} · {e(d["date"])}{e(more)}</p>'
-                + (f'<p class="why">{e(_clean(d["why_it_matters"], 240))}</p>' if d["why_it_matters"] else "")
-                + f'<p>{link(d["link"], "Read the article ↗", "read")}</p></div></li>')
+                + (f'<p class="why" title="{e(why)}">{e(why)}</p>' if why else "")
+                + f'<p class="readp">{link(d["link"], "Read the article ↗", "read")}</p></div></li>')
         body = f'<ol>{"".join(items)}</ol>' if items else f'<p class="empty">{EMPTY_BLOCK}</p>'
         blocks.append(f'<section class="block"><h2>{e(block)}</h2>{body}</section>')
 
@@ -1184,28 +1187,32 @@ def to_html(res: Result) -> str:
     cro = ""
     if box:
         notes = "".join(f"<li>{e(n)}</li>" for n in box["notes"])
-        cro = '<aside class="panel cro"><h2>From the CRO\'s desk</h2>' + (f"<ul>{notes}</ul>" if notes else "")
+        cro = '<section class="panel cro"><h2>From the CRO\'s desk</h2>' + (f"<ul>{notes}</ul>" if notes else "")
         if box["focus"]:
             f = box["focus"]
             cro += (f'<p class="focus">Focus this week</p><p class="fh">{link(f["link"], f["headline"])}</p>'
                     + (f"<p>{e(f['message'])}</p>" if f["message"] else ""))
-        cro += "</aside>"
+        cro += "</section>"
     pending = ""
     if res.pending:
         late = sum(p.overdue for p in res.pending)
         late_cls = ' class="late"'
-        rows = "".join(f'<tr{late_cls if p.overdue else ""}><td>{e(p.item)}</td><td>{e(p.owner)}</td>'
-                       f'<td class="nw">{e(p.due)}</td><td class="nw">{e(_status(p))}</td></tr>'
+        rows = "".join(f'<li{late_cls if p.overdue else ""}><span class="it">{e(p.item)}</span>'
+                       f'<span class="pm">' + " · ".join(e(x) for x in (p.owner, p.due) if x)
+                       + f'{" · " if p.owner or p.due else ""}<b>{e(_status(p))}</b></span></li>'
                        for p in res.pending)
         pending = (f'<section class="panel pending"><h2>Pending items <span class="meta">{len(res.pending)}'
-                   + (f" · {late} overdue" if late else "") + '</span></h2><table><thead><tr><th>Item</th>'
-                   f'<th>Owner</th><th>Due</th><th>Status</th></tr></thead><tbody>{rows}</tbody></table></section>')
-    top_row = f'<div class="toprow{" two" if cro and pending else ""}">{cro}{pending}</div>' if cro or pending else ""
-    radar = "".join(f'<li>{link(s.lead.link, s.as_dict()["headline"])} <span class="meta">{e(s.category)}</span></li>'
-                    for s in res.radar)
+                   + (f" · {late} overdue" if late else "") + f'</span></h2><ul>{rows}</ul></section>')
+    radar = "".join(f'<li>{link(s.lead.link, s.as_dict()["headline"], "", s.as_dict()["headline"])} '
+                    f'<span class="meta">{e(s.category)}</span></li>' for s in res.radar)
     routine = "".join(f'<li>{link(i.link, i.title)} <span class="meta">{e(i.publisher or i.source)}, {e(_when(i))}</span></li>'
                       for i in res.routine)
-    errors = ("<p>Sources that could not be read: " + e("; ".join(x.split(":")[0] for x in res.errors)) + ".</p>"
+    side = (cro + pending
+            + (f'<section class="panel radar"><h2>Also on the radar</h2><ul>{radar}</ul></section>' if radar else "")
+            + (f'<section class="panel"><details><summary>Routine enforcement, not ranked ({len(res.routine)})</summary>'
+               f'<p class="meta">Fines and directions aimed at a single bank, below the threshold set in '
+               f'sources.json.</p><ul>{routine}</ul></details></section>' if routine else ""))
+    errors = ("Sources that could not be read: " + e("; ".join(x.split(":")[0] for x in res.errors)) + ". "
               if res.errors else "")
     return f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1"><title>This Week in Risk</title>
@@ -1213,44 +1220,56 @@ def to_html(res: Result) -> str:
 :root{{--bg:#f4f6f9;--card:#fff;--fg:#1b1f24;--muted:#5b6470;--accent:#0b5cad;--tint:#e8f0fa;--line:#e3e6ea;--late:#b3261e}}
 @media (prefers-color-scheme:dark){{:root{{--bg:#0f1215;--card:#181c21;--fg:#e8eaed;--muted:#9aa3ad;--accent:#7fb3f0;--tint:#1f2b3a;--line:#2a2f36;--late:#f2b8b5}}}}
 *{{box-sizing:border-box}}
-body{{background:var(--bg);color:var(--fg);font:15px/1.5 system-ui,sans-serif;margin:0;padding:24px 16px}}
-main{{max-width:1680px;margin:auto}} h1{{font-size:1.7rem;margin:0 0 4px}} .sub{{color:var(--muted);margin:0 0 20px}}
-a{{color:var(--accent);text-decoration:none}} a:hover{{text-decoration:underline}} p{{margin:4px 0}}
-.meta{{color:var(--muted);font-size:.82rem;font-weight:400}}
-.panel,.block{{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px 18px}}
-.toprow{{display:grid;gap:16px;margin-bottom:16px}} .toprow.two{{grid-template-columns:minmax(0,2fr) minmax(0,3fr)}}
-.panel h2,.block h2{{font-size:1.1rem;margin:0 0 8px}}
-.cro{{background:var(--tint);border-left:4px solid var(--accent)}} .cro ul{{margin:4px 0 8px;padding-left:20px}}
-.cro .focus{{color:var(--accent);font-weight:700;font-size:.8rem;text-transform:uppercase;letter-spacing:.05em;margin-top:10px}}
+body{{background:var(--bg);color:var(--fg);font:15px/1.45 system-ui,sans-serif;margin:0;padding:20px 16px}}
+main{{max-width:1880px;margin:auto}} h1{{font-size:1.6rem;margin:0}} .sub{{color:var(--muted);margin:2px 0 14px}}
+a{{color:var(--accent);text-decoration:none}} a:hover{{text-decoration:underline}} p{{margin:3px 0}}
+.meta{{color:var(--muted);font-size:.8rem;font-weight:400}}
+.panel,.block{{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 16px}}
+h2{{font-size:1.05rem;margin:0 0 6px}}
+.grid{{display:flex;flex-direction:column;gap:14px}} .side{{display:flex;flex-direction:column;gap:14px;order:-1}}
+.cro{{background:var(--tint);border-left:4px solid var(--accent)}} .cro ul{{margin:2px 0 6px;padding-left:18px}}
+.cro .focus{{color:var(--accent);font-weight:700;font-size:.75rem;text-transform:uppercase;letter-spacing:.05em;margin-top:8px}}
 .cro .fh{{font-weight:700}}
-table{{border-collapse:collapse;width:100%;font-size:.9rem}}
-th,td{{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);vertical-align:top}} th{{color:var(--muted);font-weight:600}}
-td.nw{{white-space:nowrap}} tr.late td{{color:var(--late);font-weight:600}}
-.blocks{{display:grid;gap:16px;grid-template-columns:repeat(3,minmax(0,1fr))}}
-.block h2{{color:var(--accent);border-bottom:2px solid var(--tint);padding-bottom:6px}}
-.block ol{{list-style:none;padding:0;margin:0}} .block li{{display:flex;gap:10px;padding:10px 0;border-top:1px solid var(--line)}}
-.block li:first-child{{border-top:0;padding-top:4px}}
-.n{{font-weight:700;color:var(--accent);min-width:1.1em;font-size:1.1rem;line-height:1.35}}
-.block h3{{font-size:.98rem;margin:0;line-height:1.35}} .why{{font-size:.9rem}} .read{{font-size:.8rem}}
-.empty{{color:var(--muted);font-style:italic}}
-.below{{display:grid;gap:16px;grid-template-columns:repeat(2,minmax(0,1fr));margin-top:16px}}
-.below ul{{margin:0;padding-left:20px}} .below li{{padding:3px 0}} details summary{{cursor:pointer;font-weight:600}}
-footer{{color:var(--muted);font-size:.8rem;margin-top:20px}}
-@media (max-width:1100px){{.blocks{{grid-template-columns:repeat(2,minmax(0,1fr))}} .toprow.two,.below{{grid-template-columns:1fr}}}}
-@media (max-width:700px){{.blocks{{grid-template-columns:1fr}} td.nw{{white-space:normal}}}}
+.pending ul,.radar ul{{list-style:none;margin:0;padding:0}} .pending li{{padding:5px 0;border-top:1px solid var(--line)}}
+.pending li:first-child{{border-top:0}} .pending .it{{display:block}} .pending .pm{{color:var(--muted);font-size:.8rem}}
+.pending .pm b{{font-weight:600;color:var(--fg)}} .pending li.late .pm b{{color:var(--late)}}
+.radar li{{padding:2px 0}}
+.blocks{{display:grid;gap:14px;grid-template-columns:repeat(3,minmax(0,1fr))}}
+.block h2{{color:var(--accent);border-bottom:2px solid var(--tint);padding-bottom:5px}}
+.block ol{{list-style:none;padding:0;margin:0}} .block li{{display:flex;gap:9px;padding:8px 0;border-top:1px solid var(--line)}}
+.block li:first-child{{border-top:0;padding-top:2px}} .block li>div{{min-width:0;flex:1}}
+.n{{font-weight:700;color:var(--accent);min-width:1em;font-size:1.05rem;line-height:1.35}}
+.block h3{{font-size:.95rem;margin:0;line-height:1.35}} .why{{font-size:.87rem}} .read{{font-size:.78rem}}
+.empty{{color:var(--muted);font-style:italic}} details summary{{cursor:pointer;font-weight:600}} details ul{{padding-left:18px}}
+footer{{color:var(--muted);font-size:.75rem;margin-top:10px}}
+@media (max-width:1100px){{.blocks{{grid-template-columns:repeat(2,minmax(0,1fr))}}}}
+@media (max-width:700px){{.blocks{{grid-template-columns:1fr}}}}
+/* One screen (fits 1920 x 1080): blocks 3 x 2 on the left, CRO box, pending items and radar on the right. */
+@media (min-width:1200px) and (min-height:700px){{
+  body{{font-size:14px;padding:12px 16px;height:100vh}}
+  main{{height:100%;display:flex;flex-direction:column}} .sub{{margin-bottom:10px}}
+  .grid{{flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,1fr) clamp(340px,24vw,440px);gap:12px}}
+  .side{{order:0;min-height:0;overflow:auto;gap:12px}}
+  .blocks{{min-height:0;grid-template-rows:repeat(2,minmax(0,1fr));gap:12px}}
+  .block{{min-height:0;overflow:hidden;display:flex;flex-direction:column}}
+  .block ol{{flex:1;min-height:0;overflow:hidden}}
+  .block h3 a,.why,.radar li a{{display:-webkit-box;-webkit-box-orient:vertical;overflow:hidden}}
+  .block h3 a{{-webkit-line-clamp:2}} .why{{-webkit-line-clamp:2}} .radar li a{{-webkit-line-clamp:1}}
+  .block .meta{{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}}
+  .readp{{display:none}} footer{{margin-top:6px}}
+}}
+/* Shorter screens: less summary text so all three items in every block stay visible. */
+@media (min-width:1200px) and (min-height:700px) and (max-height:1000px){{.why{{-webkit-line-clamp:1}} .block li{{padding:5px 0}}}}
+@media (min-width:1200px) and (min-height:700px) and (max-height:800px){{.why{{display:none}}}}
 </style></head><body><main>
 <h1>{e(_title(res))}</h1>
 <p class="sub">Indian banking risk management, {res.start.strftime('%d %b')} – {res.end.strftime('%d %b %Y')} ·
 {res.collected} items read, {res.kept} relevant · summaries: {e(res.ai)}</p>
-{top_row}
+<div class="grid">
 <div class="blocks">{''.join(blocks)}</div>
-<div class="below">
-{f'<section class="panel"><h2>Also on the radar</h2><ul>{radar}</ul></section>' if radar else ''}
-{f'<section class="panel"><details><summary>Routine enforcement, not ranked ({len(res.routine)})</summary>'
- f'<p class="meta">Fines and directions aimed at a single bank, below the threshold set in sources.json.</p>'
- f'<ul>{routine}</ul></details></section>' if routine else ''}
+<aside class="side">{side}</aside>
 </div>
-<footer>{errors}Machine-selected from public feeds (RBI, CCIL, SEBI, FSB, Risk.net, business press, Google News). Check each source before quoting figures or names.</footer>
+<footer>{errors}Machine-selected from public feeds (RBI, CCIL, SEBI, FSB, Risk.net, business press, Google News). Check each source before quoting figures or names. Hover a headline or summary to see it in full.</footer>
 </main></body></html>"""
 
 

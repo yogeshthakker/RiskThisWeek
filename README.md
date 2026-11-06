@@ -15,7 +15,7 @@ This writes three files to `./output/` (`--open` also opens the web page):
 | File | Use |
 |---|---|
 | `risk-week-<date>.pptx` | Slide 1: "From the CRO's desk" and "Pending items" side by side. Slide 2: the six blocks, three across. Slide 3: "Also on the radar" (the next 6) |
-| `risk-week-<date>.html` | The same as a full-width web page: CRO box and pending items at the top, the six blocks in a 3 × 2 grid (2 or 1 columns on smaller screens), then the radar and the routine enforcement left out of the ranking |
+| `risk-week-<date>.html` | The same as a one-screen web page sized for 1920 × 1080: the six blocks in a 3 × 2 grid, with the CRO box, pending items, "also on the radar" and the routine enforcement in a sidebar on the right. Long headlines and summaries are shortened to fit; hover to read them in full, or click to open the article. On smaller screens it becomes a normal scrolling page |
 | `risk-week-<date>.md` | The same as text notes |
 
 **Links.** Every headline links to its article. On the slide, click a headline during Slide
