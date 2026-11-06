@@ -237,13 +237,83 @@ class TestAI(unittest.TestCase):
         self.assertIn(picked[0].category, rw.BLOCKS)              # unknown block name: keyword block kept
         self.assertEqual(res.blocks[picked[0].category], picked)  # the AI's pick only, in its block
         self.assertNotIn("invented", rw.to_markdown(res))         # unknown id ignored
-        self.assertTrue(res.ai.startswith("fake"))
+        self.assertIn("fake (fake-1)", res.ai)
 
     def test_unusable_reply_falls_back(self):
         res = rw.run(top=3, sources=SOURCES, fetcher=fetcher, now=NOW, provider=FakeAI({"answer": "x"}))
         self.assertIn("keyword ranking used", res.ai)
         plain = rw.run(top=3, sources=SOURCES, fetcher=fetcher, now=NOW)
         self.assertEqual([s.lead.link for s in res.top], [s.lead.link for s in plain.top])
+
+
+class TestAiFirst(unittest.TestCase):
+    """With a provider, the AI ranks; the keyword ranking is only the fallback."""
+
+    def stories_in_prompt(self, prompt):
+        return {int(line[1:line.index("]")]): line for line in prompt.splitlines() if line.startswith("[")}
+
+    def test_ai_orders_by_impact_and_picks_radar(self):
+        probe = FakeAI({"items": []})
+        rw.run(top=3, sources=SOURCES, fetcher=fetcher, now=NOW, provider=probe)
+        lines = self.stories_in_prompt(probe.prompt)
+        self.assertNotIn("Credit risk;", probe.prompt)            # no keyword block or score is shown
+        ids = {k: v for k, v in lines.items()}
+        npa = next(k for k, v in ids.items() if "NPA" in v)
+        ecl = next(k for k, v in ids.items() if "expected credit loss" in v)
+        cyber = next(k for k, v in ids.items() if "cyber" in v.lower())
+        dhfl = next(k for k, v in ids.items() if "DHFL" in v)
+        ai = FakeAI({"items": [
+            {"id": npa, "category": "Credit risk", "impact": 4, "headline": "NPA", "why_it_matters": "a"},
+            {"id": ecl, "category": "Credit risk", "impact": 9, "headline": "ECL", "why_it_matters": "b"},
+        ], "radar": [cyber, ecl, 999], "cro_focus": {"id": ecl, "message": "Act."}})
+        res = rw.run(top=3, sources=SOURCES, fetcher=fetcher, now=NOW, provider=ai)
+        self.assertEqual([s.headline for s in res.blocks["Credit risk"]], ["ECL", "NPA"])   # by impact
+        self.assertEqual(res.blocks["Credit risk"][0].impact, 9)
+        self.assertEqual(res.blocks["Compliance risk"], [])       # the AI's judgement: nothing there
+        self.assertEqual(res.blocks["Fraud risk"], [])            # the DHFL look-back is not shown
+        self.assertEqual([s.lead.title for s in res.radar], [lines[cyber].split(") ", 1)[1]])
+        self.assertEqual(res.cro_focus.story.headline, "ECL")
+        self.assertIn("Impact 9/10", rw.to_markdown(res))
+        self.assertIn('<span class="imp">Impact 9/10</span>', rw.to_html(res))
+        self.assertTrue(dhfl)
+
+    def test_rejected_reply_leaves_stories_untouched(self):
+        ai = FakeAI({"items": [{"id": 1, "category": "Not a block", "impact": 9, "headline": "X",
+                                "why_it_matters": "y"}]})
+        ai2 = FakeAI({"items": [{"id": 999, "category": "Credit risk", "impact": 9, "headline": "X"}]})
+        plain = rw.run(top=3, sources=SOURCES, fetcher=fetcher, now=NOW)
+        for fake in (ai2,):
+            res = rw.run(top=3, sources=SOURCES, fetcher=fetcher, now=NOW, provider=fake)
+            self.assertIn("keyword ranking used", res.ai)
+            self.assertEqual([(s.lead.link, s.headline, s.impact) for s in res.top],
+                             [(s.lead.link, s.headline, s.impact) for s in plain.top])
+        self.assertTrue(ai)
+
+    def test_no_ai_says_keywords(self):
+        res = rw.run(top=3, sources=SOURCES, fetcher=fetcher, now=NOW)
+        self.assertEqual(res.ai, "keywords (AI off)")
+        self.assertTrue(all(s.impact is None for s in res.top))
+
+
+class TestPrivacy(unittest.TestCase):
+    def test_notes_and_pending_never_sent_to_ai(self):
+        sent = []
+
+        class Spy:
+            name, model = "spy", "spy-1"
+
+            def json_call(self, system_prompt, user_content, response_schema=None, max_output_tokens=0):
+                sent.append(system_prompt + user_content)
+                return {"items": [{"id": 1, "category": "Credit risk", "impact": 5, "headline": "H",
+                                   "why_it_matters": ""}], "radar": [], "cro_focus": {"id": 1, "message": "m"}}
+
+        pend = [rw.Pending(item="SECRET-PENDING-ITEM", owner="SECRET-OWNER")]
+        rw.run(top=3, sources=SOURCES, fetcher=fetcher, now=NOW, provider=Spy(),
+               cro_notes=["SECRET-CRO-NOTE"], pending=pend)
+        self.assertEqual(len(sent), 2)                             # rank, then fill_why
+        for text in sent:
+            for secret in ("SECRET-PENDING-ITEM", "SECRET-OWNER", "SECRET-CRO-NOTE"):
+                self.assertNotIn(secret, text)
 
 
 class SeqAI:
@@ -277,7 +347,7 @@ class TestSummariesAndCro(unittest.TestCase):
         self.assertEqual(len(ai.prompts), 2)
         kept = next(s for s in res.top if s.why == "Has one.")
         self.assertNotIn(kept.lead.title, ai.prompts[1])          # only the missing ones are asked again
-        self.assertEqual([e["request"] for e in res.ai_log], ["pick", "fill_why"])
+        self.assertEqual([e["request"] for e in res.ai_log], ["rank", "fill_why"])
 
     def test_other_key_names_accepted(self):
         ai = SeqAI(self.pick([{"id": 1, "headline": "A", "category": "Capital", "why": "Via 'why'."}]))
@@ -318,7 +388,7 @@ class TestSummariesAndCro(unittest.TestCase):
             page = pathlib.Path(files["html"]).read_text(encoding="utf-8")
             self.assertIn('<section class="panel cro">', page)
             self.assertIn("Board RAS review 20 Nov", page)
-            self.assertIn('"request": "pick"', pathlib.Path(files["ai_reply"]).read_text(encoding="utf-8"))
+            self.assertIn('"request": "rank"', pathlib.Path(files["ai_reply"]).read_text(encoding="utf-8"))
             self.assertIn("FOR CRO'S DESK", rw.to_console(res, files))
             try:
                 from pptx import Presentation
@@ -474,7 +544,7 @@ class TestGemini(unittest.TestCase):
             {"id": 1, "headline": "Gemini headline", "category": "Credit risk", "why_it_matters": "W"}]})
         res = rw.run(top=3, sources=SOURCES, fetcher=fetcher, now=NOW, provider=rw.GeminiProvider(post=post))
         self.assertEqual(res.top[0].headline, "Gemini headline")
-        self.assertTrue(res.ai.startswith("gemini (gemini-3.5-flash-lite)"))
+        self.assertIn("gemini (gemini-3.5-flash-lite)", res.ai)
 
     def test_daily_limit_falls_back_to_keywords(self):
         def post(url, body, headers):

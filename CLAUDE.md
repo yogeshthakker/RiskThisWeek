@@ -10,7 +10,7 @@ web page for the weekly status meeting ("This week in risk"). The user runs it o
 ```bash
 pip install -r requirements.txt
 python risk_week.py --ai --open        # Gemini free tier; --open opens the web page
-python -m unittest test_risk_week      # 38 tests, no network or key needed
+python -m unittest test_risk_week      # 42 tests, no network or key needed
 ```
 
 Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
@@ -49,14 +49,19 @@ Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
    `profile.priority.topics` (MSME lending, India–Russia) add `priority.weight` (3.0), and
    `reserve()` puts the best story on a missing topic into its block. `Result.blocks` holds
    the blocks; `Result.top` is all shown items, block by block (`flatten`).
-6. **AI (optional, `--ai`).** Gemini `gemini-3.5-flash-lite` over its REST API (no SDK)
-   by default; `--provider claude` uses the Anthropic SDK (`claude-opus-5-5`). The AI picks
-   3 per block from the best ~7 candidates of each block (it may move a story to another
-   block; a block it leaves empty keeps the keyword picks), writes a headline and a "why it matters for us"
-   line (at most 30 words) for each, and picks the **story of the week** (`cro_focus`: the
+6. **AI ranks first (`--ai`); keywords are the fallback** (the user's decision, 6 Nov 2026).
+   Gemini `gemini-3.5-flash-lite` over its REST API (no SDK) by default; `--provider claude`
+   uses the Anthropic SDK (`claude-opus-5-5`). `run()` sends up to `AI_POOL` (150) stories,
+   newest first, with source, date, outlet count and summary but **no keyword block or score**
+   (~7k tokens). `explain()` returns an `AiPick`: the AI rates impact 1–10 (`Story.impact`,
+   shown "Impact n/10"), assigns blocks, picks `top` per block (ordered by impact; a block it
+   leaves empty stays empty), the radar (`radar` ids) and the **story of the week** (`cro_focus`: the
    single highest-impact item, giving the CRO visibility in the bank or an action point for
-   the branch) with an action point. Without AI it is the highest-scoring story shown. Shown items missing a "why" get one follow-up request. Any failure falls back to the
-   keyword ranking, and the output says why.
+   the branch) with an action point. Stories are changed only once the reply is accepted (at
+   least one valid pick). Shown items missing a "why" get one `fill_why` request. Any failure
+   or unusable reply falls back to the keyword ranking (steps 2–5), and `Result.ai` / the
+   "ranked by" line says why. Without AI the story of the week is the highest-scoring story.
+   Steps 2–5 always run: they filter noise and trim the pool sent to the AI.
 7. **Write** the slides (1: "For CRO's desk" panel (story of the week, why, action point,
    then the user's notes small) and "Pending items" table from
    `pending_items.txt`, overdue in red; 2: the six blocks, 3 × 2; 3: "Also on the radar"),
@@ -86,8 +91,11 @@ Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
 - **Six blocks of three items**, using the full page width, and the whole page on one
   1920 × 1080 screen without scrolling (the user's requests of 6 Nov 2026).
 - No home-regulator feed: the user said not to add one.
-- **AI is optional**; the free **Gemini** tier is the default because it costs nothing.
-  Only public news is sent, so the free tier's data use is acceptable here.
+- **AI first, local fallback**: the AI does the ranking and impact judgement; the keyword
+  ranking is the fallback. AI stays optional (no key = keyword ranking).
+- The free **Gemini** tier is the default because it costs nothing. Only public news plus
+  `profile.bank` and `profile.guidance` from `sources.json` are sent; `cro_desk.txt` and
+  `pending_items.txt` never are (`TestPrivacy` checks this).
 - Links must be clickable in every format.
 
 ## Open items
@@ -101,8 +109,10 @@ Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
 - Possible next steps the user has not asked for yet: a weekly schedule, sending by email,
   a scraper for RBI's draft-directions page and CERT-In advisories (no feeds; see the source
   research of 6 Nov 2026), BIS feeds (supported by the parser, but mostly research).
-- The no-AI ranking still favours general cyber and FEMA stories; with `--ai` the guidance
-  steers the pick. A real `--ai` run with the new priorities has not been checked yet.
+- A real `--ai` run with AI-first ranking has not been checked yet (no API key in the cloud
+  sandbox). Read `output/risk-week-<date>-ai-reply.json` after the first run.
+- Which free LLM API is best for this was researched on 6 Nov 2026 (see the session); the
+  default model may change.
 
 ## History
 

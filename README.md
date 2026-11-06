@@ -91,6 +91,17 @@ Terms are regular expressions and ignore case, so `co-?operative` matches both s
 
 ## How the items are chosen
 
+**With `--ai` the AI does the ranking; the keyword ranking below is the fallback.** The AI
+receives up to 150 of the week's stories (after the noise filters in steps 1–3 below), newest
+first and without any keyword scores, and judges them itself: an **impact rating from 1 to 10**
+for each pick (shown as "Impact 8/10"), the block it belongs in, the 3 highest-impact items per
+block, "also on the radar", and the story of the week with its action point. A block it leaves
+empty shows "Nothing significant this week". If the AI call fails or its reply is unusable,
+the keyword ranking is used and the page's "ranked by" line says why. Without `--ai`, the
+keyword ranking is used on its own.
+
+The filters and the keyword ranking:
+
 1. **Filter.** Drops routine notices (T-bill auctions, money market operations, VRRR
    results), items not about banking, and look-back stories about past years.
 2. **Set aside routine enforcement.** A fine or direction aimed at one bank is left out of
@@ -114,8 +125,7 @@ Terms are regular expressions and ignore case, so `co-?operative` matches both s
 5. **Make room for priorities.** If no MSME or India–Russia story is shown but one exists,
    the best one replaces the lowest-ranked other item in its block.
 
-With `--ai`, the AI makes the final pick of 3 per block and may move a story to a better
-block.
+The keyword ranking is used only without AI or when the AI fails.
 
 No AI is needed for any of this.
 
