@@ -71,10 +71,9 @@ class FakeAI:
 
     def __init__(self, reply):
         self.reply = reply
-        self.prompt = ""
 
     def json_call(self, system_prompt, user_content, response_schema=None, max_output_tokens=1200):
-        self.prompt = user_content
+        self.prompt = getattr(self, "prompt", "") or user_content   # the first (pick) request
         self.system = system_prompt
         return self.reply
 
@@ -93,7 +92,7 @@ class TestParse(unittest.TestCase):
 
 class TestRun(unittest.TestCase):
     def setUp(self):
-        self.res = rw.run(days=7, top=5, sources=SOURCES, fetcher=fetcher, now=NOW)
+        self.res = rw.run(days=7, top=3, sources=SOURCES, fetcher=fetcher, now=NOW)
         self.titles = [s.lead.title for s in self.res.top]
 
     def test_noise_and_out_of_period_dropped(self):
@@ -114,9 +113,19 @@ class TestRun(unittest.TestCase):
         self.assertIn("Pusad", listed)
         self.assertIn("Alpha Finance", listed)
 
-    def test_rbi_draft_ranks_first_and_lookback_ranked_low(self):
-        self.assertIn("expected credit loss", self.titles[0])
-        self.assertIn("DHFL", self.titles[-1])               # only there to fill the list
+    def test_rbi_draft_leads_compliance_and_lookback_ranked_low(self):
+        self.assertIn("expected credit loss", self.res.blocks["Compliance"][0].lead.title)   # a draft rule
+        dhfl = [s for s in self.res.top if "DHFL" in s.lead.title]
+        others = [s for s in self.res.top if "DHFL" not in s.lead.title]
+        self.assertTrue(all(d.score < min(o.score for o in others) for d in dhfl))
+
+    def test_six_blocks_in_order(self):
+        self.assertEqual(list(self.res.blocks), ["Credit", "Market", "Non-financial risks", "Cyber security",
+                                                 "Fraud", "Compliance"])
+        self.assertTrue(all(len(v) <= 3 for v in self.res.blocks.values()))
+        self.assertEqual(self.res.top, rw.flatten(self.res.blocks))
+        cyber = self.res.blocks["Cyber security"][0].lead.title
+        self.assertIn("Cyber attack", cyber + self.res.blocks["Cyber security"][0].items[-1].title)
 
     def test_one_bad_source_reported_not_fatal(self):
         src = dict(SOURCES, feeds=SOURCES["feeds"] + [{"name": "Broken", "url": "nope"}])
@@ -129,22 +138,26 @@ class TestRun(unittest.TestCase):
             files = rw.write(self.res, d)
             md = pathlib.Path(files["markdown"]).read_text(encoding="utf-8")
             self.assertIn("This Week in Risk", md)
-            self.assertIn("## 1. [RBI issues draft directions", md)        # headline is the link
+            self.assertIn("## Compliance\n\n### 1. [RBI issues draft directions", md)   # headline is the link
             self.assertIn("](https://rbi/2)", md)
             self.assertIn("Routine enforcement, not ranked (3)", md)
             page = pathlib.Path(files["html"]).read_text(encoding="utf-8")
             self.assertIn('href="https://rbi/2" target="_blank"', page)
+            self.assertEqual(page.count('<section class="block">'), 6)
+            self.assertIn("Nothing significant this week.", page)
             self.assertIn("<details>", page)
             try:
                 from pptx import Presentation
             except ImportError:
                 self.assertNotIn("pptx", files)
                 return
-            slide = Presentation(files["pptx"]).slides[0]
+            slide = Presentation(files["pptx"]).slides[1]          # slide 1: CRO's desk; slide 2: blocks
             links = [(r.text, r.hyperlink.address) for sh in slide.shapes if sh.has_text_frame
                      for para in sh.text_frame.paragraphs for r in para.runs if r.hyperlink.address]
-            self.assertIn(("Read ↗", "https://rbi/2"), links)
-            self.assertTrue(any(text.startswith("RBI issues draft") for text, _ in links))
+            self.assertTrue(any(t.startswith("1. RBI issues draft") and u == "https://rbi/2" for t, u in links))
+            panels = [sh.text_frame.text.split("\n")[0] for sh in slide.shapes if sh.has_text_frame]
+            for block in rw.BLOCKS:
+                self.assertIn(block, panels)
 
     def test_console_has_plain_links(self):
         out = rw.to_console(self.res, {"html": "/tmp/x.html"})
@@ -218,15 +231,18 @@ class TestAI(unittest.TestCase):
         ]})
         res = rw.run(top=3, sources=SOURCES, fetcher=fetcher, now=NOW, provider=ai)
         self.assertIn("[1]", ai.prompt)
-        self.assertEqual(res.top[0].headline, "Cyber attack hits UPI")
-        self.assertEqual(len(res.top), 3)              # unknown id ignored, rest filled from ranking
-        self.assertNotIn("invented", rw.to_markdown(res))
+        picked = [s for s in res.top if s.headline == "Cyber attack hits UPI"]
+        self.assertEqual(len(picked), 1)
+        self.assertIn(picked[0].category, rw.BLOCKS)              # unknown block name: keyword block kept
+        self.assertEqual(res.blocks[picked[0].category], picked)  # the AI's pick only, in its block
+        self.assertNotIn("invented", rw.to_markdown(res))         # unknown id ignored
         self.assertTrue(res.ai.startswith("fake"))
 
     def test_unusable_reply_falls_back(self):
         res = rw.run(top=3, sources=SOURCES, fetcher=fetcher, now=NOW, provider=FakeAI({"answer": "x"}))
         self.assertIn("keyword ranking used", res.ai)
-        self.assertEqual(len(res.top), 3)
+        plain = rw.run(top=3, sources=SOURCES, fetcher=fetcher, now=NOW)
+        self.assertEqual([s.lead.link for s in res.top], [s.lead.link for s in plain.top])
 
 
 class SeqAI:
@@ -239,7 +255,7 @@ class SeqAI:
 
     def json_call(self, system_prompt, user_content, response_schema=None, max_output_tokens=1200):
         self.prompts.append(user_content)
-        return self.replies.pop(0)
+        return self.replies.pop(0) if self.replies else {}
 
 
 class TestSummariesAndCro(unittest.TestCase):
@@ -251,19 +267,21 @@ class TestSummariesAndCro(unittest.TestCase):
             self.pick([{"id": 1, "headline": "A", "category": "Capital", "why_it_matters": ""},
                        {"id": 2, "headline": "B", "category": "Capital", "why_it_matters": " "},
                        {"id": 3, "headline": "C", "category": "Capital", "why_it_matters": "Has one."}]),
-            {"items": [{"id": 1, "why_it_matters": "Filled A."}, {"id": 2, "why_it_matters": "Filled B."}]},
+            {"items": [{"id": n, "why_it_matters": f"Filled {n}."} for n in range(1, 30)]},
         )
         res = rw.run(top=3, sources=SOURCES, fetcher=fetcher, now=NOW, provider=ai)
-        self.assertEqual([s.why for s in res.top], ["Filled A.", "Filled B.", "Has one."])
+        whys = [s.why for s in res.top]
+        self.assertTrue(all(whys))
+        self.assertIn("Has one.", whys)                           # an AI line is kept, not asked again
         self.assertEqual(len(ai.prompts), 2)
-        self.assertNotIn("Has one", ai.prompts[1])                # only the missing ones are asked again
+        kept = next(s for s in res.top if s.why == "Has one.")
+        self.assertNotIn(kept.lead.title, ai.prompts[1])          # only the missing ones are asked again
         self.assertEqual([e["request"] for e in res.ai_log], ["pick", "fill_why"])
 
     def test_other_key_names_accepted(self):
         ai = SeqAI(self.pick([{"id": 1, "headline": "A", "category": "Capital", "why": "Via 'why'."}]))
         res = rw.run(top=1, sources=SOURCES, fetcher=fetcher, now=NOW, provider=ai)
-        self.assertEqual(res.top[0].why, "Via 'why'.")
-        self.assertEqual(len(ai.prompts), 1)
+        self.assertIn("Via 'why'.", [s.why for s in res.top])
 
     def test_cro_focus_from_ai(self):
         ai = SeqAI(self.pick([{"id": 1, "headline": "A", "category": "Capital", "why_it_matters": "x"},
@@ -279,7 +297,7 @@ class TestSummariesAndCro(unittest.TestCase):
 
     def test_cro_focus_without_ai_is_top_item(self):
         res = rw.run(top=3, sources=SOURCES, fetcher=fetcher, now=NOW)
-        self.assertIs(res.cro_focus.story, res.top[0])
+        self.assertIs(res.cro_focus.story, max(res.top, key=lambda s: s.score))
         self.assertIsNotNone(rw.cro_box(res))
 
     def test_cro_box_in_every_format(self):
@@ -293,7 +311,7 @@ class TestSummariesAndCro(unittest.TestCase):
             self.assertIn("> - Board RAS review 20 Nov", md)
             self.assertIn("**Focus this week:**", md)
             page = pathlib.Path(files["html"]).read_text(encoding="utf-8")
-            self.assertIn('<aside class="cro">', page)
+            self.assertIn('<aside class="panel cro">', page)
             self.assertIn("Board RAS review 20 Nov", page)
             self.assertIn('"request": "pick"', pathlib.Path(files["ai_reply"]).read_text(encoding="utf-8"))
             self.assertIn("FROM THE CRO'S DESK", rw.to_console(res, files))
@@ -344,20 +362,22 @@ class TestPriorities(unittest.TestCase):
         other = rw.relevance(item("RBI amends FEMA rules for liquidity facility"), prof)
         self.assertGreater(msme, other)
         self.assertGreater(russia, other)
-        self.assertEqual(rw.categorise(item("Banks step up MSME lending via TReDS"))[0], "MSME lending")
+        self.assertEqual(rw.categorise(item("Banks step up MSME lending via TReDS"))[0], "Credit")
 
     def test_priority_topic_gets_a_slot_and_the_focus(self):
         news = rss(*[(f"RBI tightens cyber security norms for banks, round {n}", f"https://g/c{n}",
                       "", "Wed, 04 Nov 2026 08:00:00 GMT", f"P{n}") for n in range(3)],
-                   ("Bank of Baroda sees MSME loan demand rise", "https://g/m", "", "Tue, 03 Nov 2026 08:00:00 GMT", "M"))
+                   ("Bank of Baroda sees MSME loan demand rise", "https://g/m", "", "Tue, 03 Nov 2026 08:00:00 GMT", "M"),
+                   ("NPA slippages and asset quality stress rise in bank loans", "https://g/npa", "",
+                    "Wed, 04 Nov 2026 08:00:00 GMT", "N"))
         src = {"feeds": [{"name": "RBI", "url": "rbi", "weight": 3, "primary": True}],
                "google_news": {"queries": ["x"]},
                "profile": {"priority": {"weight": 0, "topics": {"MSME lending": ["\\bmsmes?\\b"]}}}}
         f = lambda u: RBI if u == "rbi" else news
-        res = rw.run(top=2, sources=src, fetcher=f, now=NOW)
+        res = rw.run(top=1, sources=src, fetcher=f, now=NOW)       # one place in Credit: NPA story or MSME
         self.assertIn("https://g/m", [s.lead.link for s in res.top])
         self.assertEqual(res.cro_focus.story.lead.link, "https://g/m")
-        no = rw.run(top=2, sources=dict(src, profile={}), fetcher=f, now=NOW)
+        no = rw.run(top=1, sources=dict(src, profile={}), fetcher=f, now=NOW)
         self.assertNotIn("https://g/m", [s.lead.link for s in no.top])
 
     def test_guidance_reaches_ai(self):
@@ -405,7 +425,7 @@ class TestPending(unittest.TestCase):
                 from pptx import Presentation
             except ImportError:
                 return
-            slide = Presentation(files["pptx"]).slides[1]
+            slide = Presentation(files["pptx"]).slides[0]           # next to the CRO's desk
             tables = [sh.table for sh in slide.shapes if sh.has_table]
             self.assertEqual(len(tables), 1)
             self.assertEqual(tables[0].cell(1, 0).text, "Board RAS paper")
@@ -457,7 +477,7 @@ class TestGemini(unittest.TestCase):
 
         res = rw.run(top=3, sources=SOURCES, fetcher=fetcher, now=NOW, provider=rw.GeminiProvider(post=post))
         self.assertIn("keyword ranking used", res.ai)
-        self.assertEqual(len(res.top), 3)
+        self.assertTrue(res.top)
 
     def test_fenced_json_and_thoughts_tolerated(self):
         post = lambda url, body, headers: {"candidates": [{"content": {"parts": [  # noqa: E731

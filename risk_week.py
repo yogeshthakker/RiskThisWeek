@@ -1,7 +1,7 @@
 """This Week in Risk: the top items in Indian banking risk management, for a status meeting.
 
-    python risk_week.py                     # last 7 days, top 5: slide + HTML + Markdown in ./output
-    python risk_week.py --days 14 --top 7
+    python risk_week.py                     # last 7 days, 3 items in each of 6 blocks: slides + HTML + Markdown
+    python risk_week.py --days 14 --top 4   # 4 items per block
     python risk_week.py --ai                # Gemini (free tier) picks the list and writes "why it matters"
     python risk_week.py --ai --provider claude
 
@@ -16,20 +16,21 @@ What it does, in order:
    naming a foreign bank or restricting business) are set aside, listed at the end.
 3. Group.    Puts the same story from several outlets together; a story that
    many outlets carry ranks higher.
-4. Score.    By risk category (FX and cross-border, regulation, liquidity, capital,
-   credit, cyber and fraud, AML/KYC, supervisory action, governance, climate), by the
-   bank profile in sources.json (focus topics up, less relevant topics down, news on
-   foreign banks up), source (RBI first), severity words and recency. At most two
-   items per category reach the top.
+4. Score.    Puts each story in one of six blocks (Credit, Market, Non-financial
+   risks, Cyber security, Fraud, Compliance) and scores it by block terms, the bank
+   profile in sources.json (CRO priorities such as MSME lending and India–Russia
+   well up, focus topics up, less relevant topics down, news on foreign banks up),
+   source (RBI first), severity words and recency. The best 3 in each block are
+   shown; each priority topic gets a place when a story exists.
 5. Explain.  Optional (--ai). Gemini on Google's free tier (GEMINI_API_KEY,
    model gemini-3.5-flash-lite) or Claude (--provider claude, ANTHROPIC_API_KEY)
-   picks the final list from the top candidates and writes a headline and a
+   picks the 3 items for each block from the top candidates, writes a headline and a
    "why it matters" line for each, using only the candidate text. If the call
    fails (no key, daily limit reached, network), the keyword ranking stands.
    Keys can also live in a .env file next to this script.
 6. Write.    risk-week-<date>.md, .html and, when python-pptx is installed,
-   .pptx (one slide with the top items and a "From the CRO's desk" box, one with
-   the pending items from pending_items.txt, one with "also on the radar"). The CRO
+   .pptx (slide 1: "From the CRO's desk" and the pending items from
+   pending_items.txt; slide 2: the six blocks; slide 3: "also on the radar"). The CRO
    box holds notes from cro_desk.txt or --cro, and the one item to act on first
    (picked by the AI, or without it the top item on a priority topic such as MSME).
 
@@ -85,45 +86,46 @@ BANKING = re.compile(
     re.I,
 )
 
-# Category -> (weight, pattern). An item takes the category with the most hits.
+# The six blocks of the report, in display order: block -> (weight, pattern).
+# An item goes to the block with the most hits (headline hits count double).
 CATEGORIES: dict[str, tuple[float, re.Pattern]] = {
-    "MSME lending": (2.0, re.compile(
-        r"\bmsmes?\b|\bsmes?\b|micro,? small and medium|small (and medium )?(business|enterprise)|"
-        r"\budyam\b|cgtmse|credit guarantee|\btreds\b|trade receivables|invoice (discount|financ)|"
-        r"supply[- ]chain financ|working capital|\bmudra\b|\beclgs\b|\bsidbi\b", re.I)),
-    "Enforcement & supervisory action": (1.8, re.compile(
-        r"penalt|imposes|fine[ds]?\b|section 35a|cancel(s|led)? (the )?licen[cs]e|licen[cs]e cancel|"
-        r"show[- ]cause|debar|restriction|curbs|moratorium|superseded? the board|barred", re.I)),
-    "Regulation & supervision": (1.8, re.compile(
-        r"circular|master direction|directions?,? 20\d\d|draft|guidelines|framework|norms|"
-        r"amendment|consultation|discussion paper|regulat|supervis|inspection", re.I)),
-    "Credit risk": (1.8, re.compile(
+    "Credit": (1.8, re.compile(
         r"\bnpa|asset quality|provision|expected credit loss|\becl\b|default|stress|slippage|"
-        r"write[- ]?off|unsecured|delinquen|restructur|insolvency|\bibc\b|bad loan|"
-        r"credit card|microfinance|gold loan|sma[- ]?\d", re.I)),
-    "Liquidity & market risk": (1.8, re.compile(
+        r"write[- ]?off|unsecured|delinquen|restructur|insolvency|\bibc\b|bad loan|credit card|"
+        r"microfinance|gold loan|sma[- ]?\d|\bmsmes?\b|\bsmes?\b|micro,? small and medium|"
+        r"small (and medium )?(business|enterprise)|\budyam\b|cgtmse|credit guarantee|\btreds\b|"
+        r"trade receivables|invoice (discount|financ)|supply[- ]chain financ|working capital|\bmudra\b|"
+        r"\beclgs\b|\bsidbi\b|capital adequacy|basel|\bcrar\b|tier[- ]?(1|i|2|ii)\b|risk weight|"
+        r"leverage ratio|capital (buffer|raising|infusion)|\bat1\b|large exposure|concentration|"
+        r"(credit|loan) growth|lending|corporate (loan|credit|default|bond)|priority sector|\bpsl\b|"
+        r"trade finance|letter of credit", re.I)),
+    "Market": (1.8, re.compile(
         r"liquidity|\blcr\b|\bnsfr\b|repo rate|\bmpc\b|monetary policy|\bcrr\b|\bslr\b|"
-        r"rate (hike|cut|increase)|deposit rates|"
-        r"deposit (growth|rate|flight)|credit[- ]deposit|yield|bond|interest rate risk|"
-        r"funding cost|call money|\bvrr\b|durable liquidity", re.I)),
-    "FX & cross-border": (1.9, re.compile(
-        r"\bfema\b|forex|foreign exchange|rupee|\becb\b|external commercial borrow|cross[- ]border|"
-        r"remittance|\blrs\b|\bswift\b|correspondent bank|\bndf\b|\bfpi\b|foreign portfolio|"
-        r"gift city|\bifsc\b|trade finance|letter of credit|export|import|tariff|\bfdi\b", re.I)),
-    "Capital": (1.6, re.compile(
-        r"capital adequacy|basel|\bcrar\b|tier[- ]?(1|i|2|ii)\b|risk weight|"
-        r"operational risk capital|leverage ratio|capital (buffer|raising|infusion)|\bat1\b", re.I)),
-    "Operational, cyber & fraud": (1.9, re.compile(
-        r"fraud|cyber|hack|breach|outage|phishing|ransomware|scam|mule account|"
-        r"digital arrest|data leak|it (risk|resilience)|outsourc|business continuity|downtime", re.I)),
-    "AML / KYC": (1.8, re.compile(
-        r"\bkyc\b|\baml\b|money laundering|\bpmla\b|\bfiu\b|\bcft\b|sanction|terror financ|"
-        r"beneficial owner", re.I)),
-    "Governance & conduct": (1.3, re.compile(
-        r"governance|\bboard\b|\bceo\b|\bmd\b|auditor|whistle|mis-?sell|customer (service|protection)|"
-        r"grievance|ombudsman|conduct|compensation", re.I)),
-    "Climate & ESG": (1.3, re.compile(r"climate|\besg\b|green deposit|sustainab|transition risk", re.I)),
+        r"rate (hike|cut|increase)|deposit rates|deposit (growth|flight)|credit[- ]deposit|yield|bond|"
+        r"interest rate risk|\birrbb\b|funding cost|call money|\bvrr\b|durable liquidity|forex|"
+        r"foreign exchange|rupee|roubles?|rubles?|dollar|\bndf\b|derivative|hedg|forwards?\b|swaps?\b|"
+        r"\bfpi\b|foreign portfolio|capital (flows|outflow|inflow)|\bccil\b|margin|clearing|g-sec|"
+        r"government securities|crude|oil price|federal reserve|\bfed\b|global markets", re.I)),
+    "Non-financial risks": (1.6, re.compile(
+        r"governance|\bboard\b|\bceo\b|auditor|whistle|mis-?sell|customer (service|protection)|"
+        r"grievance|ombudsman|conduct|compensation|climate|\besg\b|green deposit|sustainab|"
+        r"transition risk|outsourc|third[- ]party|vendor|business continuity|operational (resilience|risk)|"
+        r"outage|downtime|disruption|it (risk|governance|resilience)|cloud|data protection|\bdpdp\b|"
+        r"data locali|privacy|model risk|artificial intelligence|\bai\b|reputation|litigation", re.I)),
+    "Cyber security": (1.9, re.compile(
+        r"cyber|hack|breach|ransomware|phishing|malware|data leak|dark web|cert-in|ddos|"
+        r"vulnerabilit|zero[- ]day|security incident", re.I)),
+    "Fraud": (1.9, re.compile(
+        r"fraud|scam|mule account|money mule|digital arrest|forg(ed|ery)|ponzi|embezzl|cheat|siphon|"
+        r"impersonat|counterfeit|fake (note|currency|loan|app)|wilful default", re.I)),
+    "Compliance": (1.8, re.compile(
+        r"circular|master direction|directions?\b|draft|guidelines|framework|norms|amendment|"
+        r"consultation|discussion paper|regulat|supervis|inspection|\bkyc\b|\baml\b|money laundering|"
+        r"\bpmla\b|\bfiu\b|\bcft\b|sanction|\bofac\b|\bfatf\b|terror financ|beneficial owner|"
+        r"\bfema\b|penalt|imposes|fine[ds]?\b|section 35a|licen[cs]e|show[- ]cause|debar|"
+        r"restriction|curbs|moratorium|barred|compliance|\becb\b|external commercial borrow", re.I)),
 }
+BLOCKS = list(CATEGORIES)
 
 # Words that make an item more serious, whatever its category.
 SEVERITY = re.compile(
@@ -220,7 +222,7 @@ class Story:
 class Result:
     start: datetime
     end: datetime
-    top: list[Story]
+    top: list[Story]                    # every item shown, block by block
     radar: list[Story]
     collected: int
     kept: int
@@ -230,6 +232,7 @@ class Result:
     cro_notes: list[str] = field(default_factory=list)  # from the CRO's desk (cro_desk.txt / --cro)
     cro_focus: "CroFocus | None" = None                 # the one item to act on first
     pending: list["Pending"] = field(default_factory=list)  # from pending_items.txt, for the status meeting
+    blocks: dict[str, list[Story]] = field(default_factory=dict)  # block name -> its items, in BLOCKS order
     ai_log: list = field(default_factory=list)          # raw AI replies, saved next to the output
 
 
@@ -558,49 +561,56 @@ def group(items: list[Item]) -> list[Story]:
     return out
 
 
-def reserve(chosen: list[Story], stories: list[Story], profile: "Profile | None", top: int) -> list[Story]:
-    """Make room for each priority topic (e.g. MSME lending) the top would otherwise miss.
+def _on_topic(s: Story, pat: re.Pattern) -> bool:
+    return bool(pat.search(s.lead.title))
 
-    The best story on a missing topic replaces the lowest-ranked story that is on no priority topic.
+
+def reserve(blocks: dict[str, list[Story]], stories: list[Story], profile: "Profile | None",
+            per_block: int) -> dict[str, list[Story]]:
+    """Make room for each priority topic (e.g. MSME lending) the report would otherwise miss.
+
+    The best story on a missing topic goes into its own block, in place of that block's
+    lowest-ranked story on no priority topic.
     """
     if not profile or not profile.topics or profile.min_per_topic < 1:
-        return chosen
-    chosen = list(chosen)
-
-    def on(s: Story, pat: re.Pattern) -> bool:
-        return bool(pat.search(s.lead.title))
-
-    for name, pat in profile.topics.items():
-        have = sum(on(s, pat) for s in chosen)
-        for cand in [s for s in stories if s not in chosen and s.category != "Other" and on(s, pat)]:
+        return blocks
+    blocks = {k: list(v) for k, v in blocks.items()}
+    shown = lambda: [s for v in blocks.values() for s in v]  # noqa: E731
+    for pat in profile.topics.values():
+        have = sum(_on_topic(s, pat) for s in shown())
+        for cand in [s for s in stories if s.category in blocks and s not in shown() and _on_topic(s, pat)]:
             if have >= profile.min_per_topic:
                 break
-            drop = [s for s in chosen if not any(on(s, p) for p in profile.topics.values())]
-            if len(chosen) < top:
-                chosen.append(cand)
+            block = blocks[cand.category]
+            drop = [s for s in block if not any(_on_topic(s, p) for p in profile.topics.values())]
+            if len(block) < per_block:
+                block.append(cand)
             elif drop:
-                chosen.remove(drop[-1])
-                chosen.append(cand)
+                block.remove(drop[-1])
+                block.append(cand)
             else:
-                break
+                continue
+            block.sort(key=lambda s: -s.score)
             have += 1
-    return sorted(chosen, key=lambda s: -s.score)
+    return blocks
 
 
-def pick(stories: list[Story], top: int, per_category: int = 2) -> tuple[list[Story], list[Story]]:
-    chosen: list[Story] = []
-    counts: dict[str, int] = {}
+def pick(stories: list[Story], per_block: int = 3) -> tuple[dict[str, list[Story]], list[Story]]:
+    """The best `per_block` stories in each block, and the next best for 'also on the radar'."""
+    blocks: dict[str, list[Story]] = {b: [] for b in BLOCKS}
     for s in stories:
-        if s.category == "Other" or counts.get(s.category, 0) >= per_category:
-            continue
-        chosen.append(s)
-        counts[s.category] = counts.get(s.category, 0) + 1
-        if len(chosen) == top:
-            break
-    if len(chosen) < top:                       # not enough variety: fill by score
-        chosen += [s for s in stories if s not in chosen][: top - len(chosen)]
-    radar = [s for s in stories if s not in chosen and s.category != "Other"][:top]
-    return chosen, radar
+        if s.category in blocks and len(blocks[s.category]) < per_block:
+            blocks[s.category].append(s)
+    return blocks, radar_of(blocks, stories)
+
+
+def radar_of(blocks: dict[str, list[Story]], stories: list[Story], n: int = 6) -> list[Story]:
+    shown = {id(s) for v in blocks.values() for s in v}
+    return [s for s in stories if id(s) not in shown and s.category in CATEGORIES][:n]
+
+
+def flatten(blocks: dict[str, list[Story]]) -> list[Story]:
+    return [s for b in BLOCKS for s in blocks.get(b, [])]
 
 
 # ---------------------------------------------------------------------------
@@ -692,18 +702,21 @@ def _candidates(stories: list[Story]) -> str:
     return "\n".join(lines)
 
 
-def explain(stories: list[Story], provider, top: int, bank: str = DEFAULT_PROFILE["bank"],
+def explain(stories: list[Story], provider, per_block: int, bank: str = DEFAULT_PROFILE["bank"],
             log: list | None = None, guidance: str = "",
             topics: list[str] | None = None) -> tuple[list[Story], str, CroFocus | None]:
-    """Let the LLM pick and phrase the top items and the CRO's focus. Returns (chosen, status, focus).
+    """Let the LLM pick and phrase the items for each block, and the CRO's focus.
 
+    Returns (picked, status, focus); each picked story's category is the block it goes in.
     Every reply is appended to `log` (when given), so a run can be checked afterwards.
     """
     user = (
-        f"Pick the {top} most noteworthy items. For each give: id (the number in brackets), a headline "
-        f"of at most 12 words, a category from: {', '.join(CATEGORIES)}, and why_it_matters: one or two "
-        f"sentences (at most 30 words) on what it means for us, {bank}: the risk, or what to check or "
-        f"prepare. Every item must have a why_it_matters.\n"
+        f"The report has these blocks: {', '.join(BLOCKS)}. Each candidate shows a suggested block. "
+        f"For each block pick the {per_block} most noteworthy items (fewer only if fewer are worth "
+        f"showing). For each pick give: id (the number in brackets), a headline of at most 12 words, "
+        f"category: the block it belongs in (one of: {', '.join(BLOCKS)}), and why_it_matters: one or "
+        f"two sentences (at most 30 words) on what it means for us, {bank}: the risk, the opportunity, "
+        f"or what to check or prepare. Every item must have a why_it_matters.\n"
         + (f"Include at least one item on each of these priority topics when a candidate fits: "
            f"{', '.join(topics)}.\n" if topics else "") +
         f"Then cro_focus: the id of the one item (from your picks) the Chief Risk Officer should act on "
@@ -713,7 +726,7 @@ def explain(stories: list[Story], provider, top: int, bank: str = DEFAULT_PROFIL
     )
     system = _system(bank, guidance)
     try:
-        reply = provider.json_call(system, user, response_schema=AI_SCHEMA, max_output_tokens=2000)
+        reply = provider.json_call(system, user, response_schema=AI_SCHEMA, max_output_tokens=4000)
     except Exception as e:  # noqa: BLE001 — fall back to the keyword ranking
         if log is not None:
             log.append({"request": "pick", "error": f"{type(e).__name__}: {e}"[:500]})
@@ -721,6 +734,7 @@ def explain(stories: list[Story], provider, top: int, bank: str = DEFAULT_PROFIL
     if log is not None:
         log.append({"request": "pick", "reply": reply})
     chosen: list[Story] = []
+    counts: dict[str, int] = {}
     for r in (reply or {}).get("items") or []:
         try:
             idx = int(r.get("id")) - 1
@@ -729,13 +743,14 @@ def explain(stories: list[Story], provider, top: int, bank: str = DEFAULT_PROFIL
         if not 0 <= idx < len(stories) or stories[idx] in chosen:
             continue
         s = stories[idx]
+        block = r.get("category") if r.get("category") in CATEGORIES else s.category
+        if block not in CATEGORIES or counts.get(block, 0) >= per_block:
+            continue
+        s.category = block
         s.headline = _clean(str(r.get("headline", "")), 120)
         s.why = _why(r)
-        if r.get("category") in CATEGORIES:
-            s.category = r["category"]
         chosen.append(s)
-        if len(chosen) == top:
-            break
+        counts[block] = counts.get(block, 0) + 1
     if not chosen:
         return [], "reply had no usable items; keyword ranking used", None
 
@@ -747,10 +762,6 @@ def explain(stories: list[Story], provider, top: int, bank: str = DEFAULT_PROFIL
             focus = CroFocus(stories[idx], _clean(str(cf["message"]), 260))
     except (TypeError, ValueError):
         pass
-
-    missing = [s for s in chosen if not s.why]
-    if missing:
-        fill_why(missing, provider, bank, log, guidance)
     return chosen, f"{getattr(provider, 'name', 'llm')} ({getattr(provider, 'model', '')})", focus
 
 
@@ -898,10 +909,11 @@ def _strict(schema):
 # Run
 # ---------------------------------------------------------------------------
 
-def run(days: int = 7, top: int = 5, provider=None, sources: dict | None = None,
+def run(days: int = 7, top: int = 3, provider=None, sources: dict | None = None,
         fetcher: Callable[[str], bytes] = fetch, now: datetime | None = None,
         log: Callable[[str], None] = lambda s: None, cro_notes: list[str] | None = None,
         pending: list["Pending"] | None = None) -> Result:
+    """Collect, rank and pick. `top` is the number of items per block."""
     end = now or datetime.now(IST)
     start = end - timedelta(days=days)
     sources = sources or load_sources()
@@ -914,31 +926,39 @@ def run(days: int = 7, top: int = 5, provider=None, sources: dict | None = None,
         score_item(i, start, end, profile)
     stories = group(ranked)
     routine = _dedupe_routine(routine)
-    chosen, _ = pick(stories, top)
-    chosen = reserve(chosen, stories, profile, top)
-    radar = [s for s in stories if s not in chosen and s.category != "Other"][:top]
+    blocks, _ = pick(stories, top)
+    blocks = reserve(blocks, stories, profile, top)
     ai = "off"
     focus = None
     ai_log: list = []
     if provider is not None and stories:
-        pool = [s for s in stories if s.category != "Other"][: max(20, top * 4)]
-        extra = [s for s in chosen if s not in pool]    # reserved priority items ranked below the pool
-        picked, ai, focus = explain(extra + pool, provider, top, profile.bank, ai_log,
+        pool: list[Story] = []                  # the best few per block, plus any reserved items
+        for b in BLOCKS:
+            pool += [s for s in stories if s.category == b][: top * 2 + 1]
+        pool += [s for s in flatten(blocks) if s not in pool]
+        pool.sort(key=lambda s: (BLOCKS.index(s.category), -s.score))
+        picked, ai, focus = explain(pool, provider, top, profile.bank, ai_log,
                                     profile.guidance, list(profile.topics))
         if picked:
-            if len(picked) < top:
-                picked += [s for s in chosen if s not in picked][: top - len(picked)]
-            chosen = picked
-            radar = [s for s in stories if s not in chosen and s.category != "Other"][:top]
-    if focus is None and chosen:
+            fallback = blocks
+            blocks = {b: [s for s in picked if s.category == b] for b in BLOCKS}
+            for b in BLOCKS:                    # a block the AI left empty keeps the keyword picks
+                if not blocks[b]:
+                    blocks[b] = [s for s in fallback[b] if s not in picked]
+            missing = [s for s in flatten(blocks) if not s.why]
+            if missing:
+                fill_why(missing, provider, profile.bank, ai_log, profile.guidance)
+    shown = flatten(blocks)
+    if focus is None and shown:
         # No AI: the top item on the first CRO priority topic that has one (MSME lending first),
-        # else the top-ranked item.
-        lead = [s for pat in profile.topics.values() for s in chosen if pat.search(s.lead.title)]
-        focus = CroFocus((lead or chosen)[0], "")
-    return Result(start=start, end=end, top=chosen, radar=radar, collected=len(raw),
+        # else the best-scoring item shown.
+        lead = [s for pat in profile.topics.values()
+                for s in sorted(shown, key=lambda s: -s.score) if pat.search(s.lead.title)]
+        focus = CroFocus((lead or sorted(shown, key=lambda s: -s.score))[0], "")
+    return Result(start=start, end=end, top=shown, radar=radar_of(blocks, stories), collected=len(raw),
                   kept=len(kept), errors=errors, ai=ai, routine=routine,
                   cro_notes=list(cro_notes or []), cro_focus=focus, ai_log=ai_log,
-                  pending=list(pending or []))
+                  pending=list(pending or []), blocks=blocks)
 
 
 def load_cro_notes(path: Path) -> list[str]:
@@ -1046,6 +1066,16 @@ def cro_box(res: Result) -> dict | None:
     return {"notes": res.cro_notes, "focus": focus}
 
 
+def _blocks(res: Result) -> list[tuple[str, list[Story]]]:
+    """The report's blocks in display order (every block, even an empty one)."""
+    if not res.blocks:
+        return [("Top items", res.top)] if res.top else []
+    return [(b, res.blocks.get(b, [])) for b in BLOCKS]
+
+
+EMPTY_BLOCK = "Nothing significant this week."
+
+
 def _when(item: Item) -> str:
     return item.published.astimezone(IST).strftime("%d %b") if item.published else ""
 
@@ -1069,13 +1099,17 @@ def to_markdown(res: Result) -> str:
         out += [f"| {p.item} | {p.owner} | {p.due} | {'**' + _status(p) + '**' if p.overdue else _status(p)} |"
                 for p in res.pending]
         out.append("")
-    for n, s in enumerate(res.top, 1):
-        d = s.as_dict()
-        out += [f"## {n}. [{d['headline']}]({d['link']})",
-                f"**{d['category']}** · {d['source']} · {d['date']}"
-                + (f" · also reported by {d['also_reported_by']} more" if d["also_reported_by"] else ""), ""]
-        if d["why_it_matters"]:
-            out += [d["why_it_matters"], ""]
+    for block, stories in _blocks(res):
+        out += [f"## {block}", ""]
+        if not stories:
+            out += [f"_{EMPTY_BLOCK}_", ""]
+        for n, s in enumerate(stories, 1):
+            d = s.as_dict()
+            out += [f"### {n}. [{d['headline']}]({d['link']})",
+                    f"{d['source']} · {d['date']}"
+                    + (f" · also reported by {d['also_reported_by']} more" if d["also_reported_by"] else ""), ""]
+            if d["why_it_matters"]:
+                out += [d["why_it_matters"], ""]
     if res.radar:
         out += ["## Also on the radar", ""]
         out += [f"- [{s.as_dict()['headline']}]({s.lead.link}) — {s.category}" for s in res.radar]
@@ -1108,12 +1142,14 @@ def to_console(res: Result, files: dict) -> str:
         out += [f"  • {p.item}" + "".join(f" · {x}" for x in (p.owner, p.due) if x) + f" · {_status(p)}"
                 for p in res.pending]
         out.append("")
-    for n, s in enumerate(res.top, 1):
-        d = s.as_dict()
-        out += [f"{n}. {d['headline']}", f"   {d['category']} · {d['source']} · {d['date']}"]
-        if d["why_it_matters"]:
-            out.append(f"   {d['why_it_matters']}")
-        out += [f"   {d['link']}", ""]
+    for block, stories in _blocks(res):
+        out += [block.upper()] + ([f"   {EMPTY_BLOCK}", ""] if not stories else [])
+        for n, s in enumerate(stories, 1):
+            d = s.as_dict()
+            out += [f"{n}. {d['headline']}", f"   {d['source']} · {d['date']}"]
+            if d["why_it_matters"]:
+                out.append(f"   {d['why_it_matters']}")
+            out += [f"   {d['link']}", ""]
     if res.routine:
         out += [f"Routine enforcement left out of the ranking: {len(res.routine)} item(s), listed in the page.", ""]
     out.append("Written:")
@@ -1125,194 +1161,218 @@ def to_console(res: Result, files: dict) -> str:
 
 def to_html(res: Result) -> str:
     e = html.escape
-    cards = []
-    for n, s in enumerate(res.top, 1):
-        d = s.as_dict()
-        more = f" · also reported by {d['also_reported_by']} more" if d["also_reported_by"] else ""
-        cards.append(
-            f'<li><div class="n">{n}</div><div><h2><a href="{e(d["link"])}" target="_blank" rel="noopener">'
-            f'{e(d["headline"])}</a></h2>'
-            f'<p class="meta"><span class="tag">{e(d["category"])}</span> {e(d["source"])} · {e(d["date"])}{e(more)}</p>'
-            f'<p>{e(d["why_it_matters"])}</p>'
-            f'<p><a class="read" href="{e(d["link"])}" target="_blank" rel="noopener">Read the article ↗</a></p>'
-            f'</div></li>'
-        )
-    radar = "".join(f'<li><a href="{e(s.lead.link)}" target="_blank" rel="noopener">{e(s.as_dict()["headline"])}</a> '
-                    f'<span class="meta">{e(s.category)}</span></li>' for s in res.radar)
+
+    def link(url: str, text: str, cls: str = "") -> str:
+        c = f' class="{cls}"' if cls else ""
+        return f'<a{c} href="{e(url)}" target="_blank" rel="noopener">{e(text)}</a>'
+
+    blocks = []
+    for block, stories in _blocks(res):
+        items = []
+        for n, st in enumerate(stories, 1):
+            d = st.as_dict()
+            more = f" · +{d['also_reported_by']} more" if d["also_reported_by"] else ""
+            items.append(
+                f'<li><span class="n">{n}</span><div><h3>{link(d["link"], d["headline"])}</h3>'
+                f'<p class="meta">{e(d["source"])} · {e(d["date"])}{e(more)}</p>'
+                + (f'<p class="why">{e(_clean(d["why_it_matters"], 240))}</p>' if d["why_it_matters"] else "")
+                + f'<p>{link(d["link"], "Read the article ↗", "read")}</p></div></li>')
+        body = f'<ol>{"".join(items)}</ol>' if items else f'<p class="empty">{EMPTY_BLOCK}</p>'
+        blocks.append(f'<section class="block"><h2>{e(block)}</h2>{body}</section>')
+
     box = cro_box(res)
     cro = ""
     if box:
         notes = "".join(f"<li>{e(n)}</li>" for n in box["notes"])
-        cro = '<aside class="cro"><h2>From the CRO\'s desk</h2>' + (f"<ul>{notes}</ul>" if notes else "")
+        cro = '<aside class="panel cro"><h2>From the CRO\'s desk</h2>' + (f"<ul>{notes}</ul>" if notes else "")
         if box["focus"]:
             f = box["focus"]
-            cro += (f'<p class="focus">Focus this week</p><p><a href="{e(f["link"])}" target="_blank" '
-                    f'rel="noopener"><strong>{e(f["headline"])}</strong></a></p>'
+            cro += (f'<p class="focus">Focus this week</p><p class="fh">{link(f["link"], f["headline"])}</p>'
                     + (f"<p>{e(f['message'])}</p>" if f["message"] else ""))
         cro += "</aside>"
     pending = ""
     if res.pending:
-        rows = "".join(f'<tr{" class=\"late\"" if p.overdue else ""}><td>{e(p.item)}</td><td>{e(p.owner)}</td>'
-                       f'<td>{e(p.due)}</td><td>{e(_status(p))}</td></tr>' for p in res.pending)
-        pending = ('<section class="pending"><h3>Pending items</h3><table><thead><tr><th>Item</th><th>Owner</th>'
-                   f'<th>Due</th><th>Status</th></tr></thead><tbody>{rows}</tbody></table></section>')
-    routine = "".join(f'<li><a href="{e(i.link)}" target="_blank" rel="noopener">{e(i.title)}</a> '
-                      f'<span class="meta">{e(i.publisher or i.source)}, {e(_when(i))}</span></li>'
+        late = sum(p.overdue for p in res.pending)
+        late_cls = ' class="late"'
+        rows = "".join(f'<tr{late_cls if p.overdue else ""}><td>{e(p.item)}</td><td>{e(p.owner)}</td>'
+                       f'<td class="nw">{e(p.due)}</td><td class="nw">{e(_status(p))}</td></tr>'
+                       for p in res.pending)
+        pending = (f'<section class="panel pending"><h2>Pending items <span class="meta">{len(res.pending)}'
+                   + (f" · {late} overdue" if late else "") + '</span></h2><table><thead><tr><th>Item</th>'
+                   f'<th>Owner</th><th>Due</th><th>Status</th></tr></thead><tbody>{rows}</tbody></table></section>')
+    top_row = f'<div class="toprow{" two" if cro and pending else ""}">{cro}{pending}</div>' if cro or pending else ""
+    radar = "".join(f'<li>{link(s.lead.link, s.as_dict()["headline"])} <span class="meta">{e(s.category)}</span></li>'
+                    for s in res.radar)
+    routine = "".join(f'<li>{link(i.link, i.title)} <span class="meta">{e(i.publisher or i.source)}, {e(_when(i))}</span></li>'
                       for i in res.routine)
+    errors = ("<p>Sources that could not be read: " + e("; ".join(x.split(":")[0] for x in res.errors)) + ".</p>"
+              if res.errors else "")
     return f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1"><title>This Week in Risk</title>
 <style>
-:root{{--bg:#fff;--fg:#1b1f24;--muted:#5b6470;--accent:#0b5cad;--tag:#e8f0fa;--line:#e3e6ea}}
-@media (prefers-color-scheme:dark){{:root{{--bg:#14171b;--fg:#e8eaed;--muted:#9aa3ad;--accent:#7fb3f0;--tag:#1f2b3a;--line:#2a2f36}}}}
-body{{background:var(--bg);color:var(--fg);font:16px/1.5 system-ui,sans-serif;margin:0;padding:24px 16px}}
-main{{max-width:860px;margin:auto}} h1{{font-size:1.6rem;margin:0 0 4px}} .sub{{color:var(--muted);margin:0 0 24px}}
-ol{{list-style:none;padding:0;margin:0}} li{{display:flex;gap:14px;padding:14px 0;border-top:1px solid var(--line)}}
-.n{{font-weight:700;font-size:1.4rem;color:var(--accent);min-width:1.4em}} h2{{font-size:1.1rem;margin:0}}
+:root{{--bg:#f4f6f9;--card:#fff;--fg:#1b1f24;--muted:#5b6470;--accent:#0b5cad;--tint:#e8f0fa;--line:#e3e6ea;--late:#b3261e}}
+@media (prefers-color-scheme:dark){{:root{{--bg:#0f1215;--card:#181c21;--fg:#e8eaed;--muted:#9aa3ad;--accent:#7fb3f0;--tint:#1f2b3a;--line:#2a2f36;--late:#f2b8b5}}}}
+*{{box-sizing:border-box}}
+body{{background:var(--bg);color:var(--fg);font:15px/1.5 system-ui,sans-serif;margin:0;padding:24px 16px}}
+main{{max-width:1680px;margin:auto}} h1{{font-size:1.7rem;margin:0 0 4px}} .sub{{color:var(--muted);margin:0 0 20px}}
 a{{color:var(--accent);text-decoration:none}} a:hover{{text-decoration:underline}} p{{margin:4px 0}}
-.meta{{color:var(--muted);font-size:.85rem}} .read{{font-size:.85rem}}
-details{{margin-top:28px}} summary{{cursor:pointer;font-weight:600}}
-.cro{{background:var(--tag);border-left:4px solid var(--accent);border-radius:6px;padding:14px 18px;margin:0 0 20px}}
-.cro h2{{margin:0 0 6px;font-size:1.15rem}} .cro ul{{margin:4px 0 8px;padding-left:20px}} .cro li{{display:list-item;border:0;padding:2px 0}}
-.cro .focus{{color:var(--accent);font-weight:700;font-size:.85rem;text-transform:uppercase;letter-spacing:.04em;margin-top:8px}} .tag{{background:var(--tag);border-radius:4px;padding:1px 6px;color:var(--fg)}}
-ul.radar li{{display:list-item;border:0;padding:3px 0}}
-.pending{{margin:0 0 24px}} .pending h3{{margin:0 0 8px}} table{{border-collapse:collapse;width:100%;font-size:.92rem}}
+.meta{{color:var(--muted);font-size:.82rem;font-weight:400}}
+.panel,.block{{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px 18px}}
+.toprow{{display:grid;gap:16px;margin-bottom:16px}} .toprow.two{{grid-template-columns:minmax(0,2fr) minmax(0,3fr)}}
+.panel h2,.block h2{{font-size:1.1rem;margin:0 0 8px}}
+.cro{{background:var(--tint);border-left:4px solid var(--accent)}} .cro ul{{margin:4px 0 8px;padding-left:20px}}
+.cro .focus{{color:var(--accent);font-weight:700;font-size:.8rem;text-transform:uppercase;letter-spacing:.05em;margin-top:10px}}
+.cro .fh{{font-weight:700}}
+table{{border-collapse:collapse;width:100%;font-size:.9rem}}
 th,td{{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);vertical-align:top}} th{{color:var(--muted);font-weight:600}}
-tr.late td{{color:#b3261e;font-weight:600}} @media (prefers-color-scheme:dark){{tr.late td{{color:#f2b8b5}}}} h3{{margin-top:28px}} footer{{color:var(--muted);font-size:.8rem;margin-top:24px}}
+td.nw{{white-space:nowrap}} tr.late td{{color:var(--late);font-weight:600}}
+.blocks{{display:grid;gap:16px;grid-template-columns:repeat(3,minmax(0,1fr))}}
+.block h2{{color:var(--accent);border-bottom:2px solid var(--tint);padding-bottom:6px}}
+.block ol{{list-style:none;padding:0;margin:0}} .block li{{display:flex;gap:10px;padding:10px 0;border-top:1px solid var(--line)}}
+.block li:first-child{{border-top:0;padding-top:4px}}
+.n{{font-weight:700;color:var(--accent);min-width:1.1em;font-size:1.1rem;line-height:1.35}}
+.block h3{{font-size:.98rem;margin:0;line-height:1.35}} .why{{font-size:.9rem}} .read{{font-size:.8rem}}
+.empty{{color:var(--muted);font-style:italic}}
+.below{{display:grid;gap:16px;grid-template-columns:repeat(2,minmax(0,1fr));margin-top:16px}}
+.below ul{{margin:0;padding-left:20px}} .below li{{padding:3px 0}} details summary{{cursor:pointer;font-weight:600}}
+footer{{color:var(--muted);font-size:.8rem;margin-top:20px}}
+@media (max-width:1100px){{.blocks{{grid-template-columns:repeat(2,minmax(0,1fr))}} .toprow.two,.below{{grid-template-columns:1fr}}}}
+@media (max-width:700px){{.blocks{{grid-template-columns:1fr}} td.nw{{white-space:normal}}}}
 </style></head><body><main>
 <h1>{e(_title(res))}</h1>
 <p class="sub">Indian banking risk management, {res.start.strftime('%d %b')} – {res.end.strftime('%d %b %Y')} ·
 {res.collected} items read, {res.kept} relevant · summaries: {e(res.ai)}</p>
-{cro}
-{pending}
-<ol>{''.join(cards)}</ol>
-{f'<h3>Also on the radar</h3><ul class="radar">{radar}</ul>' if radar else ''}
-{f'<details><summary>Routine enforcement, not ranked ({len(res.routine)})</summary>'
+{top_row}
+<div class="blocks">{''.join(blocks)}</div>
+<div class="below">
+{f'<section class="panel"><h2>Also on the radar</h2><ul>{radar}</ul></section>' if radar else ''}
+{f'<section class="panel"><details><summary>Routine enforcement, not ranked ({len(res.routine)})</summary>'
  f'<p class="meta">Fines and directions aimed at a single bank, below the threshold set in sources.json.</p>'
- f'<ul class="radar">{routine}</ul></details>' if routine else ''}
-<footer>Machine-selected from public feeds (RBI, CCIL, SEBI, FSB, Risk.net, business press, Google News). Check each source before quoting figures or names.</footer>
+ f'<ul>{routine}</ul></details></section>' if routine else ''}
+</div>
+<footer>{errors}Machine-selected from public feeds (RBI, CCIL, SEBI, FSB, Risk.net, business press, Google News). Check each source before quoting figures or names.</footer>
 </main></body></html>"""
 
 
 def to_pptx(res: Result, path: Path) -> bool:
-    """Slides: top items, pending items, 'also on the radar'. False if python-pptx is missing."""
+    """Slides: CRO's desk and pending items; the six risk blocks; 'also on the radar'.
+
+    Returns False if python-pptx is missing.
+    """
     try:
         from pptx import Presentation
         from pptx.dml.color import RGBColor
+        from pptx.enum.shapes import MSO_SHAPE
         from pptx.util import Inches, Pt
     except ImportError:
         return False
     navy, grey, accent = RGBColor(0x1B, 0x2A, 0x41), RGBColor(0x5B, 0x64, 0x70), RGBColor(0x0B, 0x5C, 0xAD)
+    tint, white, red = RGBColor(0xE8, 0xF0, 0xFA), RGBColor(0xFF, 0xFF, 0xFF), RGBColor(0xB3, 0x26, 0x1E)
     prs = Presentation()
     prs.slide_width, prs.slide_height = Inches(13.333), Inches(7.5)
     blank = prs.slide_layouts[6]
+    period = f"{res.start.strftime('%d %b')} – {res.end.strftime('%d %b %Y')}"
 
     def header(slide, title: str, sub: str) -> None:
-        tb = slide.shapes.add_textbox(Inches(0.5), Inches(0.3), Inches(12.3), Inches(0.9)).text_frame
+        tb = slide.shapes.add_textbox(Inches(0.5), Inches(0.25), Inches(12.3), Inches(0.9)).text_frame
         tb.word_wrap = True
         tb.text = title
-        tb.paragraphs[0].runs[0].font.size = Pt(30)
+        tb.paragraphs[0].runs[0].font.size = Pt(28)
         tb.paragraphs[0].runs[0].font.bold = True
         tb.paragraphs[0].runs[0].font.color.rgb = navy
         p = tb.add_paragraph()
         p.text = sub
-        p.runs[0].font.size = Pt(13)
+        p.runs[0].font.size = Pt(12)
         p.runs[0].font.color.rgb = grey
 
-    s1 = prs.slides.add_slide(blank)
-    header(s1, _title(res), f"Top {len(res.top)} for Indian banking risk management · "
-                            f"{res.start.strftime('%d %b')} – {res.end.strftime('%d %b %Y')} · "
-                            f"headlines and 'Read' open the article (Ctrl+click while editing)")
-    box = cro_box(res)
-    text_w = 8.25 if box else 11.7          # leave the right-hand side for the CRO panel
-    head_pt, why_pt, why_len = (15, 11.5, 215) if box else (17, 13, 240)
-    row_h = min(1.15, 5.9 / max(len(res.top), 1))
-    for n, s in enumerate(res.top):
-        d = s.as_dict()
-        y = Inches(1.45 + n * row_h)
-        num = s1.shapes.add_textbox(Inches(0.4), y, Inches(0.6), Inches(row_h)).text_frame
-        num.text = str(n + 1)
-        num.paragraphs[0].runs[0].font.size = Pt(26)
-        num.paragraphs[0].runs[0].font.bold = True
-        num.paragraphs[0].runs[0].font.color.rgb = accent
-        tf = s1.shapes.add_textbox(Inches(0.95), y, Inches(text_w), Inches(row_h)).text_frame
-        tf.word_wrap = True
-        p = tf.paragraphs[0]
-        r = p.add_run()
-        r.text = d["headline"]
-        r.font.size, r.font.bold, r.font.color.rgb = Pt(head_pt), True, navy
-        r.hyperlink.address = d["link"] or None
-        r2 = p.add_run()
-        r2.text = f"   {d['category']} · {d['source']} · {d['date']}   "
-        r2.font.size, r2.font.color.rgb = Pt(10), grey
-        if d["link"]:
-            r3 = p.add_run()
-            r3.text = "Read ↗"
-            r3.font.size, r3.font.bold, r3.font.color.rgb = Pt(10), True, accent
-            r3.hyperlink.address = d["link"]
-        if d["why_it_matters"]:
-            q = tf.add_paragraph()
-            q.text = _clean(d["why_it_matters"], why_len)
-            q.runs[0].font.size = Pt(why_pt)
-
-    if box:
-        from pptx.enum.shapes import MSO_SHAPE
-        panel = s1.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, Inches(9.45), Inches(1.45),
-                                    Inches(3.5), Inches(5.75))
-        panel.adjustments[0] = 0.04
-        panel.fill.solid()
-        panel.fill.fore_color.rgb = RGBColor(0xE8, 0xF0, 0xFA)
-        panel.line.color.rgb = accent
-        panel.line.width = Pt(1.5)
-        panel.shadow.inherit = False
-        tf = panel.text_frame
+    def panel(slide, x, y, w, h, fill=tint, line=accent):
+        shape = slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, Inches(x), Inches(y), Inches(w), Inches(h))
+        shape.adjustments[0] = 0.03
+        shape.fill.solid()
+        shape.fill.fore_color.rgb = fill
+        shape.line.color.rgb = line
+        shape.line.width = Pt(1.25)
+        shape.shadow.inherit = False
+        tf = shape.text_frame
         tf.word_wrap = True
         tf.vertical_anchor = 1          # top
         for side in ("left", "right", "top", "bottom"):
-            setattr(tf, f"margin_{side}", Inches(0.18))
+            setattr(tf, f"margin_{side}", Inches(0.16))
+        return tf
 
-        def para(text: str, size: float, bold: bool = False, color=navy, link: str | None = None,
-                 space: float = 6):
-            p = tf.paragraphs[0] if not tf.paragraphs[0].runs else tf.add_paragraph()
-            p.alignment = 1             # left
-            r = p.add_run()
-            r.text = text
-            r.font.size, r.font.bold, r.font.color.rgb = Pt(size), bold, color
-            if link:
-                r.hyperlink.address = link
-            p.space_after = Pt(space)
-            return p
+    def para(tf, text: str, size: float, bold: bool = False, color=navy, link: str | None = None,
+             space: float = 4):
+        p = tf.paragraphs[0] if not tf.paragraphs[0].runs else tf.add_paragraph()
+        p.alignment = 1                 # left
+        r = p.add_run()
+        r.text = text
+        r.font.size, r.font.bold, r.font.color.rgb = Pt(size), bold, color
+        if link:
+            r.hyperlink.address = link
+        p.space_after = Pt(space)
+        return p
 
-        para("From the CRO's desk", 17, True, navy, space=10)
-        for note in box["notes"]:
-            para(f"• {note}", 12, False, navy, space=6)
-        if box["focus"]:
-            f = box["focus"]
-            para("Focus this week", 12, True, accent,
-                 space=3)
-            para(f["headline"], 12.5, True, navy, link=f["link"] or None, space=4)
-            if f["message"]:
-                para(f["message"], 11.5, False, navy, space=4)
+    # Slide 1: from the CRO's desk, and the pending items
+    box = cro_box(res)
+    if box or res.pending:
+        s1 = prs.slides.add_slide(blank)
+        header(s1, _title(res), f"From the CRO's desk and pending items · {period}")
+        cro_w = 4.6 if res.pending else 12.3
+        if box:
+            tf = panel(s1, 0.5, 1.4, cro_w, 5.75)
+            para(tf, "From the CRO's desk", 18, True, space=10)
+            for note in box["notes"]:
+                para(tf, f"• {note}", 13, space=6)
+            if box["focus"]:
+                f = box["focus"]
+                para(tf, "Focus this week", 13, True, accent, space=3)
+                para(tf, f["headline"], 14, True, navy, link=f["link"] or None, space=4)
+                if f["message"]:
+                    para(tf, f["message"], 12.5, space=4)
+        if res.pending:
+            x = 0.5 + cro_w + 0.3 if box else 0.5
+            _pending_table(s1, res.pending, x, 1.4, 13.333 - 0.5 - x, navy, grey, red, white)
 
-    if res.pending:
-        _pending_slide(prs, blank, header, res.pending, navy, grey, accent)
+    # Slide 2: the six blocks, three across
+    s2 = prs.slides.add_slide(blank)
+    header(s2, f"This week in risk · {period}",
+           f"{res.collected} items read, {res.kept} relevant · click a headline to open the article "
+           f"(Ctrl+click while editing)")
+    cols, gap, x0, y0 = 3, 0.2, 0.5, 1.35
+    blocks = _blocks(res)
+    rows = max(1, math.ceil(len(blocks) / cols))
+    w = (12.333 - gap * (cols - 1)) / cols
+    h = (7.25 - y0 - gap * (rows - 1)) / rows
+    for i, (block, stories) in enumerate(blocks):
+        x, y = x0 + (i % cols) * (w + gap), y0 + (i // cols) * (h + gap)
+        tf = panel(s2, x, y, w, h, fill=white, line=RGBColor(0xC9, 0xD6, 0xE8))
+        para(tf, block, 15, True, accent, space=5)
+        if not stories:
+            para(tf, EMPTY_BLOCK, 10.5, False, grey)
+        for n, st in enumerate(stories, 1):
+            d = st.as_dict()
+            para(tf, f"{n}. {_clean(d['headline'], 95)}", 11, True, navy, link=d["link"] or None, space=1)
+            if d["why_it_matters"]:
+                para(tf, _clean(d["why_it_matters"], 125), 9, False, grey, space=6)
 
+    # Slide 3: also on the radar
     if res.radar:
-        s2 = prs.slides.add_slide(blank)
-        header(s2, "Also on the radar", "Further items this week, ranked")
-        tf = s2.shapes.add_textbox(Inches(0.5), Inches(1.5), Inches(12.3), Inches(5.6)).text_frame
+        s3 = prs.slides.add_slide(blank)
+        header(s3, "Also on the radar", "Further items this week, ranked")
+        tf = s3.shapes.add_textbox(Inches(0.5), Inches(1.5), Inches(12.3), Inches(5.3)).text_frame
         tf.word_wrap = True
-        for n, s in enumerate(res.radar):
+        for n, st in enumerate(res.radar):
             p = tf.paragraphs[0] if n == 0 else tf.add_paragraph()
             r = p.add_run()
-            r.text = f"• {s.as_dict()['headline']}"
+            r.text = f"• {st.as_dict()['headline']}"
             r.font.size = Pt(16)
-            r.hyperlink.address = s.lead.link or None
+            r.hyperlink.address = st.lead.link or None
             r2 = p.add_run()
-            r2.text = f"   {s.category}"
+            r2.text = f"   {st.category}"
             r2.font.size, r2.font.color.rgb = Pt(11), grey
             p.space_after = Pt(8)
         if res.routine:
-            note = s2.shapes.add_textbox(Inches(0.5), Inches(6.9), Inches(12.3), Inches(0.4)).text_frame
+            note = s3.shapes.add_textbox(Inches(0.5), Inches(6.9), Inches(12.3), Inches(0.4)).text_frame
             note.word_wrap = True
             note.text = (f"{len(res.routine)} routine enforcement item(s) (single-bank fines and directions) "
                          f"left out of the ranking; listed in the HTML page.")
@@ -1322,46 +1382,47 @@ def to_pptx(res: Result, path: Path) -> bool:
     return True
 
 
-def _pending_slide(prs, layout, header, items: list[Pending], navy, grey, accent) -> None:
-    """A table of pending items: Item, Owner, Due, Status. Overdue rows in red."""
+def _pending_table(slide, items: list[Pending], x: float, y: float, w: float, navy, grey, red, white) -> None:
+    """Pending items as a table: Item, Owner, Due, Status. Overdue status in red."""
     from pptx.dml.color import RGBColor
     from pptx.util import Inches, Pt
-    red = RGBColor(0xB3, 0x26, 0x1E)
-    late = sum(p.overdue for p in items)
-    slide = prs.slides.add_slide(layout)
-    header(slide, "Pending items", f"{len(items)} item(s)" + (f" · {late} overdue" if late else "")
-           + " · from pending_items.txt")
     shown = items[:12]
-    widths = (7.0, 2.2, 1.5, 1.6)
+    late = sum(p.overdue for p in items)
+    title = slide.shapes.add_textbox(Inches(x), Inches(y - 0.05), Inches(w), Inches(0.4)).text_frame
+    title.text = f"Pending items · {len(items)}" + (f" · {late} overdue" if late else "")
+    title.paragraphs[0].alignment = 1   # left
+    title.paragraphs[0].runs[0].font.size = Pt(18)
+    title.paragraphs[0].runs[0].font.bold = True
+    title.paragraphs[0].runs[0].font.color.rgb = navy
+    widths = [w - 4.1, 1.6, 1.2, 1.3]
     rows = len(shown) + 1
-    row_h = min(0.5, 5.6 / rows)
-    tbl = slide.shapes.add_table(rows, 4, Inches(0.5), Inches(1.5), Inches(sum(widths)),
-                                 Inches(row_h * rows)).table
-    for c, w in enumerate(widths):
-        tbl.columns[c].width = Inches(w)
-    size = 14 if len(shown) <= 8 else 12
-    for c, title in enumerate(("Item", "Owner", "Due", "Status")):
+    row_h = min(0.45, 5.2 / rows)
+    tbl = slide.shapes.add_table(rows, 4, Inches(x), Inches(y + 0.45), Inches(w), Inches(row_h * rows)).table
+    for c, cw in enumerate(widths):
+        tbl.columns[c].width = Inches(cw)
+    size = 12 if len(shown) <= 8 else 10.5
+    for c, head in enumerate(("Item", "Owner", "Due", "Status")):
         cell = tbl.cell(0, c)
-        cell.text = title
+        cell.text = head
         cell.fill.solid()
         cell.fill.fore_color.rgb = navy
         run = cell.text_frame.paragraphs[0].runs[0]
-        run.font.size, run.font.bold, run.font.color.rgb = Pt(size), True, RGBColor(0xFF, 0xFF, 0xFF)
+        run.font.size, run.font.bold, run.font.color.rgb = Pt(size), True, white
     for r, p in enumerate(shown, 1):
         for c, text in enumerate((p.item, p.owner, p.due, _status(p))):
             cell = tbl.cell(r, c)
             cell.text = text
             cell.fill.solid()
-            cell.fill.fore_color.rgb = RGBColor(0xFF, 0xFF, 0xFF) if r % 2 else RGBColor(0xF1, 0xF4, 0xF8)
+            cell.fill.fore_color.rgb = white if r % 2 else RGBColor(0xF1, 0xF4, 0xF8)
             for para in cell.text_frame.paragraphs:
                 for run in para.runs:
                     run.font.size = Pt(size)
                     run.font.color.rgb = red if p.overdue and c == 3 else navy
                     run.font.bold = p.overdue and c == 3
     if len(items) > len(shown):
-        note = slide.shapes.add_textbox(Inches(0.5), Inches(6.9), Inches(12.3), Inches(0.4)).text_frame
+        note = slide.shapes.add_textbox(Inches(x), Inches(7.0), Inches(w), Inches(0.3)).text_frame
         note.text = f"{len(items) - len(shown)} more item(s) in the HTML page."
-        note.paragraphs[0].runs[0].font.size = Pt(11)
+        note.paragraphs[0].runs[0].font.size = Pt(10)
         note.paragraphs[0].runs[0].font.color.rgb = grey
 
 
@@ -1387,7 +1448,7 @@ def main(argv: list[str] | None = None) -> int:
     import argparse
     p = argparse.ArgumentParser(description="This Week in Risk: top items in Indian banking risk management")
     p.add_argument("--days", type=int, default=7, help="period in days (default 7)")
-    p.add_argument("--top", type=int, default=5, help="how many items (default 5)")
+    p.add_argument("--top", type=int, default=3, help="items per block (default 3)")
     p.add_argument("--out-dir", default=str(DEFAULT_OUT), help="folder for the files (default ./output)")
     p.add_argument("--sources", help="sources JSON (default sources.json next to this script)")
     p.add_argument("--ai", action="store_true", help="let an AI pick and explain the items")

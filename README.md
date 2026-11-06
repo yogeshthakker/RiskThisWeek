@@ -1,8 +1,9 @@
 # This Week in Risk
 
 Collects the week's most impactful developments in **Indian banking risk management**, as they
-matter to **a foreign bank operating in India**, and turns the top 5 into a ready-to-present
-slide for a status meeting.
+matter to **a foreign bank operating in India**, and arranges them in six blocks of three items:
+**Credit, Market, Non-financial risks, Cyber security, Fraud and Compliance**, ready to present
+at a status meeting.
 
 ```bash
 pip install -r requirements.txt
@@ -13,12 +14,12 @@ This writes three files to `./output/` (`--open` also opens the web page):
 
 | File | Use |
 |---|---|
-| `risk-week-<date>.pptx` | Slide 1: the top 5, with the "From the CRO's desk" box on the right. Slide 2: "Pending items" (from `pending_items.txt`). Slide 3: "Also on the radar" (the next 5) |
-| `risk-week-<date>.html` | The same as a web page, plus the routine enforcement left out of the ranking |
+| `risk-week-<date>.pptx` | Slide 1: "From the CRO's desk" and "Pending items" side by side. Slide 2: the six blocks, three across. Slide 3: "Also on the radar" (the next 6) |
+| `risk-week-<date>.html` | The same as a full-width web page: CRO box and pending items at the top, the six blocks in a 3 × 2 grid (2 or 1 columns on smaller screens), then the radar and the routine enforcement left out of the ranking |
 | `risk-week-<date>.md` | The same as text notes |
 
-**Links.** Every headline links to its article. On the slide, click a headline or "Read ↗"
-during Slide Show, or Ctrl+click while editing. On the web page, links open in a new tab.
+**Links.** Every headline links to its article. On the slide, click a headline during Slide
+Show, or Ctrl+click while editing. On the web page, links open in a new tab.
 The terminal summary prints plain web addresses and the page's address.
 
 ## From the CRO's desk
@@ -31,7 +32,7 @@ A highlighted box on the slide, and at the top of the page, holds what the CRO s
    `python risk_week.py --cro "RBI inspection data requests due Friday"` (repeatable).
    `cro_desk.txt` is not committed to git, so internal notes stay on your machine.
 2. **Focus this week.** One news item to act on first. With `--ai`, Gemini picks it from the
-   top 5 and writes what the CRO should ask the risk team to check or do, framed so risk
+   items shown and writes what the CRO should ask the risk team to check or do, framed so risk
    enables the business. Without AI, it is the top item on the first priority topic
    (MSME lending), or else the top-ranked item.
 
@@ -76,7 +77,7 @@ change what counts as relevant:
 |---|---|
 | `bank` | One sentence about the bank. It goes into the AI's instructions and its "why it matters" lines |
 | `guidance` | The CRO's current priorities in plain words, passed to the AI (now: risk as an enabler for the business, MSME lending first, then India–Russia) |
-| `priority.topics` | The CRO's priority topics, each a list of terms: **MSME lending** and **India–Russia**. A matching item ranks well above other focus topics (`priority.weight`), and each topic gets at least `min_per_topic` place in the top 5 whenever a story exists |
+| `priority.topics` | The CRO's priority topics, each a list of terms: **MSME lending** and **India–Russia**. A matching item ranks well above other focus topics (`priority.weight`), and each topic gets at least `min_per_topic` place in the report whenever a story exists |
 | `focus.terms` | Topics that rank an item higher: FX/FEMA, cross-border, liquidity and rates, capital and ECL, priority sector lending, sanctions/AML, data and outsourcing, corporate credit, trade finance, global markets, draft RBI rules |
 | `less_relevant.terms` | Topics that rank an item lower: co-operative banks, microfinance, gold loans, farm loans, local crime, quarterly results, share prices, retail product news |
 | `foreign_banks` | News naming one of these banks ranks higher, and their penalties are never treated as routine |
@@ -84,7 +85,7 @@ change what counts as relevant:
 
 Terms are regular expressions and ignore case, so `co-?operative` matches both spellings.
 
-## How the top 5 are chosen
+## How the items are chosen
 
 1. **Filter.** Drops routine notices (T-bill auctions, money market operations, VRRR
    results), items not about banking, and look-back stories about past years.
@@ -93,12 +94,24 @@ Terms are regular expressions and ignore case, so `co-?operative` matches both s
    business. These are listed at the end of the web page, so nothing is lost.
 3. **Group.** The same story from several outlets counts once, and wider coverage ranks it
    higher.
-4. **Score.** By risk category (FX and cross-border, regulation, liquidity and markets,
-   capital, credit, cyber and fraud, AML/KYC, supervisory action, governance, climate,
-   MSME lending), by the bank profile, by source (RBI first), and by severity words and
-   recency. No more than two items come from the same category.
-5. **Make room for priorities.** If no MSME or India–Russia story made the top 5 but one
-   exists, the best one replaces the lowest-ranked other item.
+4. **Block and score.** Each story goes to one block, by the words it uses:
+
+   | Block | For example |
+   |---|---|
+   | Credit | asset quality, ECL and provisioning, capital, MSME lending, TReDS, credit guarantees, priority sector |
+   | Market | liquidity, rates, the rupee and FX, hedging and NDF, bonds, CCIL clearing |
+   | Non-financial risks | governance and conduct, outsourcing and third parties, outages, data protection, climate and ESG |
+   | Cyber security | cyber attacks, breaches, ransomware, CERT-In advisories |
+   | Fraud | frauds, scams, mule accounts, digital arrests |
+   | Compliance | RBI directions and drafts, KYC/AML, sanctions, FEMA, penalties |
+
+   It is then scored by the bank profile, by source (RBI first), and by severity words and
+   recency. The best 3 in each block are shown; a block with nothing relevant says so.
+5. **Make room for priorities.** If no MSME or India–Russia story is shown but one exists,
+   the best one replaces the lowest-ranked other item in its block.
+
+With `--ai`, the AI makes the final pick of 3 per block and may move a story to a better
+block.
 
 No AI is needed for any of this.
 
@@ -142,7 +155,7 @@ Change either model with `--model` or `RISK_WEEK_MODEL`.
 | Option | Default | |
 |---|---|---|
 | `--days N` | 7 | Period to cover |
-| `--top N` | 5 | Number of items |
+| `--top N` | 3 | Items per block |
 | `--out-dir DIR` | `output` | Where the files go |
 | `--sources FILE` | `sources.json` | A different source list |
 | `--ai` | off | An AI picks and explains the items |

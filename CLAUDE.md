@@ -1,15 +1,16 @@
 # This Week in Risk: project notes
 
 A Python tool that finds the week's most impactful developments in Indian banking risk
-management for **a foreign bank operating in India**, and produces a slide for the weekly
-status meeting ("This week in risk"). The user runs it on their own Windows machine.
+management for **a foreign bank operating in India**, in six blocks of three items (Credit,
+Market, Non-financial risks, Cyber security, Fraud, Compliance), and produces slides and a
+web page for the weekly status meeting ("This week in risk"). The user runs it on their own Windows machine.
 
 ## Run it
 
 ```bash
 pip install -r requirements.txt
 python risk_week.py --ai --open        # Gemini free tier; --open opens the web page
-python -m unittest test_risk_week      # 37 tests, no network or key needed
+python -m unittest test_risk_week      # 38 tests, no network or key needed
 ```
 
 Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
@@ -40,24 +41,26 @@ Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
    restricts no business. These are listed at the end of the page, not dropped.
 4. **Group** the same story across outlets (word-stem overlap against every headline in a
    group). Wider coverage ranks higher.
-5. **Score** by category (FX & cross-border, Regulation & supervision, Liquidity & market
-   risk, Capital, Credit risk, Operational/cyber & fraud, AML/KYC, Enforcement & supervisory
-   action, Governance & conduct, Climate & ESG), the profile's focus / less-relevant terms,
-   news about peer foreign banks, source weight (RBI first), severity words and recency.
-   At most 2 items per category reach the top 5. `profile.priority.topics` (MSME lending,
-   India–Russia) add `priority.weight` (3.0), and `reserve()` gives each topic at least one
-   place in the top 5 when a story exists.
+5. **Block and score.** `CATEGORIES` are the six blocks (`BLOCKS`, in display order); a story
+   takes the block with the most regex hits (headline hits double; ties go to the earlier
+   block, so a draft ECL rule can land in Compliance rather than Credit). Score adds the
+   profile's focus / less-relevant terms, peer foreign banks, source weight (RBI first),
+   severity words and recency. `pick()` takes the best `top` (default 3) per block;
+   `profile.priority.topics` (MSME lending, India–Russia) add `priority.weight` (3.0), and
+   `reserve()` puts the best story on a missing topic into its block. `Result.blocks` holds
+   the blocks; `Result.top` is all shown items, block by block (`flatten`).
 6. **AI (optional, `--ai`).** Gemini `gemini-3.5-flash-lite` over its REST API (no SDK)
    by default; `--provider claude` uses the Anthropic SDK (`claude-opus-5-5`). The AI picks
-   the final 5 from the top ~20 candidates, writes a headline and a "why it matters for us"
+   3 per block from the best ~7 candidates of each block (it may move a story to another
+   block; a block it leaves empty keeps the keyword picks), writes a headline and a "why it matters for us"
    line (at most 30 words) for each, and picks a CRO focus item with what the CRO should ask
-   the team. Items missing a "why" get one follow-up request. Any failure falls back to the
+   the team. Shown items missing a "why" get one follow-up request. Any failure falls back to the
    keyword ranking, and the output says why.
-7. **Write** the slide (top 5 on the left, "From the CRO's desk" box on the right; slide 2
-   "Pending items" table from `pending_items.txt`, overdue rows in red; slide 3 "Also on
-   the radar"), the HTML page (CRO box at the top, routine enforcement in a
-   collapsible list) and Markdown. Every headline is a link; the slide also has "Read ↗"
-   links (they work in Slide Show, or Ctrl+click while editing).
+7. **Write** the slides (1: "From the CRO's desk" panel and "Pending items" table from
+   `pending_items.txt`, overdue in red; 2: the six blocks, 3 × 2; 3: "Also on the radar"),
+   the HTML page (full width up to 1680px: CRO box and pending items side by side, the
+   blocks in a 3 / 2 / 1-column grid, radar and collapsible routine enforcement) and
+   Markdown. Every headline is a link (on slides: Slide Show, or Ctrl+click while editing).
 
 ## Decisions the user made
 
@@ -68,7 +71,8 @@ Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
 - **Risk as an enabler for the business.** The CRO's greatest focus is **MSME lending**,
   then **India–Russia** (payments, rupee–rouble, vostro, sanctions). These are
   `profile.priority.topics` and `profile.guidance` (passed to the AI) in `sources.json`.
-- **Pending items** are the CRO's second focus: a hand-kept file shown as its own slide.
+- **Pending items** are the CRO's second focus: a hand-kept file shown next to the CRO box.
+- **Six blocks of three items**, using the full page width (the user's request of 6 Nov 2026).
 - No home-regulator feed: the user said not to add one.
 - **AI is optional**; the free **Gemini** tier is the default because it costs nothing.
   Only public news is sent, so the free tier's data use is acceptable here.
@@ -96,7 +100,8 @@ holds only a Gemini default-model fix. `yogeshthakker/RiskLens2` was emptied and
 
 ## Conventions
 
-- Run the tests before every commit. Keep the tool to one file and the standard library
+- Run the tests before every commit, on Python 3.11 as well (no backslashes inside
+  f-string expressions: the user's Python version is unknown). Keep the tool to one file and the standard library
   (python-pptx and anthropic optional).
 - Check the slide visually after layout changes (LibreOffice can render it to PDF).
 - Never commit `cro_desk.txt`, `pending_items.txt`, `.env` or `output/`.
