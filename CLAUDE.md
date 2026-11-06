@@ -101,11 +101,6 @@ Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
 - **Risk as an enabler for the business.** The CRO's greatest focus is **MSME lending**,
   then **India–Russia** (payments, rupee–rouble, vostro, sanctions). These are
   `profile.priority.topics` and `profile.guidance` (passed to the AI) in `sources.json`.
-- `profile.guidance` also tells the AI to rate highly developments affecting foreign banks
-  in India as a group (CCIL / clearing recognition by ESMA etc., Basel and home-country
-  treatment of foreign branches, foreign-bank capital and exposure rules, peer foreign banks),
-  added 6 Nov 2026 after the AI missed Risk.net's "EU banks in India cut contingency costs
-  after clearing deal".
 - **Pending items** are the CRO's second focus: a hand-kept file shown next to the CRO box.
   Each run displays them and asks for updates (the user's request of 6 Nov 2026).
 - **Six blocks of three items**, using the full page width, and the whole page on one
