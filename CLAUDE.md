@@ -10,7 +10,7 @@ web page for the weekly status meeting ("This week in risk"). The user runs it o
 ```bash
 pip install -r requirements.txt
 python risk_week.py --ai --open        # Gemini free tier; --open opens the web page
-python -m unittest test_risk_week      # 53 tests, no network or key needed
+python -m unittest test_risk_week      # 61 tests, no network or key needed
 ```
 
 Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
@@ -27,6 +27,7 @@ Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
 | `test_risk_week.py` | unittest tests using sample feeds and fake AI replies |
 | `test_headlines.json` | One week's real headlines (6 Nov 2026), used to test the same-story grouping |
 | `.env` | `GEMINI_API_KEY=...` on the user's machine. Git-ignored |
+| `Confluence PAT.txt` | On the user's machine only, **never committed** (git-ignored): `CONFLUENCE_BASE_URL`, `PAGE_ID`, `PAT`, `VERIFY_SSL`, `CONFLUENCE_TIMEOUT` as `KEY = value` lines. `confluence.example.txt` is the template |
 
 ## How it works
 
@@ -89,6 +90,17 @@ Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
    1920 × 940 (a browser with toolbars) that nothing is cut off. The page and the slides take
    the same content. Every headline is a link (on slides: Slide Show, or Ctrl+click while editing).
 
+8. **Confluence** (user's request, 6 Nov 2026). After the files are written, if `Confluence
+   PAT.txt` has a PAT, `publish_confluence()` GETs the page (`/rest/api/content/{id}?expand=
+   body.storage,version`, `Authorization: Bearer <PAT>`) and PUTs a new version. The body is
+   storage-format XHTML from `to_confluence()` (info panel, status macros, a 2 × 3 table of
+   blocks, expand for routine enforcement). Each week sits between anchor macros
+   `rtw-week-<ISO week>` / `rtw-end-<ISO week>`; `build_confluence_body()` keeps the latest week
+   on top and earlier weeks in expand macros, replaces a repeated week, keeps `KEEP_WEEKS` (26).
+   409 is retried once. Errors never stop the run. `--confluence-check` (read-only),
+   `--no-confluence`, `--confluence-dry-run`. Tested only against a fake server: the user's
+   Confluence (internal host) is not reachable from the cloud sandbox.
+
 ## Decisions the user made
 
 - Focus on **impact for a foreign bank**, not routine penalties, co-op banks, microfinance,
@@ -112,6 +124,10 @@ Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
   `profile.bank` and `profile.guidance` from `sources.json` are sent; `cro_desk.txt` and
   `pending_items.txt` never are (`TestPrivacy` checks this).
 - Links must be clickable in every format.
+- The report (with CRO notes and pending items) is published to the user's Confluence page
+  with weekly history; the PAT stays in `Confluence PAT.txt` on their machine.
+- The "foreign banks in India as a group" guidance line was added and then rolled back at
+  the user's request (6 Nov 2026); `profile.guidance` is as before.
 
 ## Open items
 
@@ -145,4 +161,4 @@ holds only a Gemini default-model fix. `yogeshthakker/RiskLens2` was emptied and
   f-string expressions: the user's Python version is unknown). Keep the tool to one file and the standard library
   (python-pptx and anthropic optional).
 - Check the slide visually after layout changes (LibreOffice can render it to PDF).
-- Never commit `cro_desk.txt`, `pending_items.txt`, `.env` or `output/`.
+- Never commit `cro_desk.txt`, `pending_items.txt`, `.env`, `Confluence PAT.txt` or `output/`.

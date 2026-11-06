@@ -339,6 +339,126 @@ class TestSameStory(unittest.TestCase):
         self.assertEqual(len(rw.merge_same_story(few)), 2)
 
 
+class FakeConfluence:
+    """Answers the two REST calls the client makes, and remembers the page."""
+
+    def __init__(self, body="", version=7, conflicts=0):
+        self.body, self.version, self.conflicts = body, version, conflicts
+        self.calls = []
+
+    def __call__(self, method, url, body, headers):
+        self.calls.append((method, url, headers, json.loads(body) if body else None))
+        if method == "GET":
+            return json.dumps({"id": "123", "title": "This Week in Risk", "version": {"number": self.version},
+                               "body": {"storage": {"value": self.body}}}).encode()
+        if self.conflicts:
+            self.conflicts -= 1
+            raise urllib.error.HTTPError(url, 409, "Conflict", {}, io.BytesIO(b"stale"))
+        data = json.loads(body)
+        self.body, self.version = data["body"]["storage"]["value"], data["version"]["number"]
+        return b"{}"
+
+
+class TestConfluence(unittest.TestCase):
+    CFG = {"CONFLUENCE_BASE_URL": "https://confluence.example.com/", "PAGE_ID": "123", "PAT": "sekret-pat",
+           "VERIFY_SSL": False, "CONFLUENCE_TIMEOUT": 60}
+
+    def setUp(self):
+        self.res = rw.run(top=3, sources=SOURCES, fetcher=fetcher, now=NOW, cro_notes=["Board RAS 20 Nov"],
+                          pending=[rw.Pending(item="Old & late", owner="Risk", due="01 Nov 2026", status="Open",
+                                              overdue=True)])
+
+    def client(self, fake):
+        return rw.ConfluenceClient(self.CFG, opener=fake)
+
+    def test_reads_the_settings_file_format(self):
+        with tempfile.TemporaryDirectory() as d:
+            f = pathlib.Path(d) / "Confluence PAT.txt"
+            f.write_text('# ----\n# A.4 Confluence Configuration\n# ----\n'
+                         'CONFLUENCE_BASE_URL = "https://confluence.example.com"\nPAGE_ID = "20268286076"\n'
+                         'PAT = "abc#123"\nVERIFY_SSL = False           # development only\n'
+                         'CONFLUENCE_TIMEOUT = 60\n', encoding="utf-8")
+            cfg = rw.load_confluence_config(f)
+        self.assertEqual(cfg["CONFLUENCE_BASE_URL"], "https://confluence.example.com")
+        self.assertEqual(cfg["PAGE_ID"], "20268286076")
+        self.assertEqual(cfg["PAT"], "abc#123")                    # '#' inside quotes is kept
+        self.assertIs(cfg["VERIFY_SSL"], False)
+        self.assertEqual(cfg["CONFLUENCE_TIMEOUT"], 60)
+        self.assertIsNone(rw.load_confluence_config(pathlib.Path("/no/such/file.txt")))
+
+    def test_week_is_valid_confluence_storage(self):
+        week = rw.to_confluence(self.res)
+        import xml.etree.ElementTree as ET
+        ET.fromstring('<r xmlns:ac="http://atlassian.com/content" xmlns:ri="http://atlassian.com/resource">'
+                      + rw.build_confluence_body("", week, "2026-W45") + "</r>")     # well-formed XML
+        self.assertIn('ac:name="info"', week)
+        self.assertIn("For CRO&#x27;s desk", week)
+        self.assertIn("Old &amp; late", week)
+        self.assertIn('<ac:parameter ac:name="colour">Red</ac:parameter>', week)   # overdue
+        self.assertIn("<th>Credit risk</th>", week)
+        self.assertIn('href="https://rbi/2"', week)
+
+    def test_publish_updates_the_page_with_history(self):
+        fake = FakeConfluence()
+        msg = rw.publish_confluence(self.res, self.CFG, client=self.client(fake))
+        method, url, headers, data = fake.calls[-1]
+        self.assertEqual(method, "PUT")
+        self.assertEqual(url, "https://confluence.example.com/rest/api/content/123")
+        self.assertEqual(headers["Authorization"], "Bearer sekret-pat")
+        self.assertEqual(data["version"]["number"], 8)
+        self.assertEqual(data["title"], "This Week in Risk")
+        self.assertNotIn("sekret-pat", msg)
+        self.assertIn("2026-W45", msg)
+        # next week: last week moves under "Previous weeks"; the same week again is replaced
+        later = rw.run(top=3, sources=SOURCES, fetcher=fetcher, now=NOW + rw.timedelta(days=7))
+        rw.publish_confluence(later, self.CFG, client=self.client(fake))
+        rw.publish_confluence(later, self.CFG, client=self.client(fake))
+        weeks = rw._weeks_on_page(fake.body)
+        self.assertEqual(sorted(weeks), ["2026-W45", "2026-W46"])
+        self.assertLess(fake.body.index("rtw-week-2026-W46"), fake.body.index("<h2>Previous weeks</h2>"))
+        self.assertIn('<ac:parameter ac:name="title">This Week in Risk — week ending 05 Nov 2026</ac:parameter>',
+                      fake.body)
+        self.assertEqual(fake.version, 10)
+
+    def test_keep_limits_weeks_on_page(self):
+        body = ""
+        for n in range(5):
+            res = rw.run(top=3, sources=SOURCES, fetcher=fetcher, now=NOW + rw.timedelta(days=7 * n))
+            body = rw.build_confluence_body(body, rw.to_confluence(res), rw._week_key(res), keep=3)
+        self.assertEqual(sorted(rw._weeks_on_page(body)), ["2026-W47", "2026-W48", "2026-W49"])
+
+    def test_conflict_is_retried_once(self):
+        fake = FakeConfluence(conflicts=1)
+        rw.publish_confluence(self.res, self.CFG, client=self.client(fake))
+        self.assertEqual([c[0] for c in fake.calls], ["GET", "PUT", "GET", "PUT"])
+
+    def test_missing_pat_and_dry_run(self):
+        self.assertIn("PAT missing", rw.publish_confluence(self.res, dict(self.CFG, PAT="")))
+        with tempfile.TemporaryDirectory() as d:
+            f = pathlib.Path(d) / "page.xml"
+            msg = rw.publish_confluence(self.res, {}, dry_run_file=f)
+            self.assertIn("nothing uploaded", msg)
+            self.assertIn("rtw-week-2026-W45", f.read_text(encoding="utf-8"))
+
+    def test_check_reads_only(self):
+        with tempfile.TemporaryDirectory() as d:
+            f = pathlib.Path(d) / "c.txt"
+            f.write_text('CONFLUENCE_BASE_URL = "https://c.example.com"\nPAGE_ID = "123"\nPAT = "x"\n', encoding="utf-8")
+            fake = FakeConfluence(version=3)
+            with mock.patch.object(rw.ConfluenceClient, "_open", lambda self, *args: fake(*args)):
+                out = rw.confluence_check(type("A", (), {"confluence_config": str(f)})())
+        self.assertIn("OK. Page 'This Week in Risk' (id 123), version 3", out)
+        self.assertEqual([c[0] for c in fake.calls], ["GET"])
+
+    def test_http_errors_explained(self):
+        def denied(method, url, body, headers):
+            raise urllib.error.HTTPError(url, 401, "Unauthorized", {}, io.BytesIO(b""))
+        with self.assertRaises(RuntimeError) as c:
+            rw.publish_confluence(self.res, self.CFG, client=self.client(denied))
+        self.assertIn("PAT was not accepted", str(c.exception))
+        self.assertNotIn("sekret-pat", str(c.exception))
+
+
 class TestPrivacy(unittest.TestCase):
     def test_notes_and_pending_never_sent_to_ai(self):
         sent = []

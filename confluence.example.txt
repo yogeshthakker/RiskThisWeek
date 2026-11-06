@@ -1,0 +1,10 @@
+# Settings for publishing the report to Confluence.
+# Copy this file to "Confluence PAT.txt" (same folder as risk_week.py) and fill in PAT.
+# "Confluence PAT.txt" is git-ignored: never commit your token.
+CONFLUENCE_BASE_URL = "https://confluence.example.com"
+PAGE_ID = "123456789"
+PAT = ""                      # your Confluence personal access token
+VERIFY_SSL = True             # False only for development (skips the TLS certificate check)
+# CA_BUNDLE = "C:/certs/bank-root-ca.pem"   # better than VERIFY_SSL = False for an internal CA
+CONFLUENCE_TIMEOUT = 60
+KEEP_WEEKS = 26               # weeks kept on the page; older ones stay in Confluence's page history

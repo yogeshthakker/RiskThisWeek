@@ -1801,6 +1801,286 @@ def write(res: Result, out_dir: Path | str | None = None) -> dict:
     return {k: str(v) for k, v in files.items()}
 
 
+# ---------------------------------------------------------------------------
+# Confluence: publish the report to one page, latest week first, with weekly history
+# ---------------------------------------------------------------------------
+
+CONFLUENCE_FILE = "Confluence PAT.txt"     # KEY = value lines; never committed (see .gitignore)
+CONFLUENCE_KEEP_WEEKS = 26
+_ANCHOR = (r'<ac:structured-macro[^>]*ac:name="anchor"[^>]*>\s*<ac:parameter ac:name="">'
+           r'rtw-{kind}-{key}</ac:parameter>\s*</ac:structured-macro>')
+
+
+def load_confluence_config(path: Path) -> dict | None:
+    """Settings from a file of KEY = value lines (Python-style values, '#' comments).
+
+    Keys: CONFLUENCE_BASE_URL, PAGE_ID, PAT, VERIFY_SSL (default True), CA_BUNDLE (optional),
+    CONFLUENCE_TIMEOUT (default 60), KEEP_WEEKS (default 26). CONFLUENCE_PAT in the environment
+    overrides PAT. Returns None when the file does not exist.
+    """
+    import ast
+    try:
+        lines = path.read_text(encoding="utf-8-sig").splitlines()
+    except OSError:
+        return None
+    cfg: dict = {}
+    for line in lines:
+        m = re.match(r"\s*([A-Za-z_][A-Za-z0-9_]*)\s*[=:]\s*(.*)$", line)
+        if not m or line.lstrip().startswith("#"):
+            continue
+        key, raw = m.group(1).upper(), m.group(2).strip()
+        q = re.match(r"""(['"])(.*?)\1""", raw)
+        raw = q.group(0) if q else raw.split("#", 1)[0].strip()
+        try:
+            cfg[key] = ast.literal_eval(raw)
+        except (ValueError, SyntaxError):
+            cfg[key] = raw
+    if os.environ.get("CONFLUENCE_PAT"):
+        cfg["PAT"] = os.environ["CONFLUENCE_PAT"]
+    return cfg
+
+
+def _week_key(res: Result) -> str:
+    y, w, _ = res.end.isocalendar()
+    return f"{y}-W{w:02d}"
+
+
+def _status_macro(text: str, colour: str) -> str:
+    return (f'<ac:structured-macro ac:name="status"><ac:parameter ac:name="colour">{colour}</ac:parameter>'
+            f'<ac:parameter ac:name="title">{html.escape(text)}</ac:parameter></ac:structured-macro>')
+
+
+def _macro(name: str, body: str, **params: str) -> str:
+    ps = "".join(f'<ac:parameter ac:name="{k}">{html.escape(v)}</ac:parameter>' for k, v in params.items())
+    return f'<ac:structured-macro ac:name="{name}">{ps}<ac:rich-text-body>{body}</ac:rich-text-body></ac:structured-macro>'
+
+
+def _anchor(kind: str, key: str) -> str:
+    return (f'<ac:structured-macro ac:name="anchor"><ac:parameter ac:name="">rtw-{kind}-{key}</ac:parameter>'
+            f'</ac:structured-macro>')
+
+
+def to_confluence(res: Result) -> str:
+    """One week of the report in Confluence storage format (XHTML with Confluence macros)."""
+    e = html.escape
+
+    def a(url: str, text: str) -> str:
+        return f'<a href="{e(url)}">{e(text)}</a>' if url else e(text)
+
+    key = _week_key(res)
+    out = [_anchor("week", key), f"<h2>{e(_title(res))}</h2>",
+           f"<p><em>Indian banking risk management, {res.start.strftime('%d %b')} – "
+           f"{res.end.strftime('%d %b %Y')} · {res.collected} items read, {res.kept} relevant · "
+           f"ranked by: {e(res.ai)}</em></p>"]
+    box = cro_box(res)
+    if box:
+        body = ""
+        if box["focus"]:
+            f = box["focus"]
+            body += (f"<p><strong>★ {e(STORY_LABEL)}</strong> · {e(f['block'])}</p>"
+                     f"<p><strong>{a(f['link'], f['headline'])}</strong><br/><em>{e(f['meta'])}</em></p>"
+                     + (f"<p>{e(f['why'])}</p>" if f["why"] else "")
+                     + (f"<p><strong>Action point:</strong> {e(f['action'])}</p>" if f["action"] else ""))
+        if box["notes"]:
+            body += "<p><strong>Notes</strong></p><ul>" + "".join(f"<li>{e(n)}</li>" for n in box["notes"]) + "</ul>"
+        out.append(_macro("info", body, title=CRO_TITLE))
+    if res.pending:
+        rows = []
+        for p in res.pending:
+            colour = "Red" if p.overdue else "Green" if _DONE.match(p.status) else (
+                "Yellow" if re.search(r"progress|wip|ongoing", p.status, re.I) else "Grey")
+            rows.append(f"<tr><td>{e(p.item)}</td><td>{e(p.owner)}</td><td>{e(p.due)}</td>"
+                        f"<td>{_status_macro(_status(p), colour)}</td></tr>")
+        out.append("<h3>Pending items</h3><table><tbody><tr><th>Item</th><th>Owner</th><th>Due</th>"
+                   "<th>Status</th></tr>" + "".join(rows) + "</tbody></table>")
+
+    def cell(block: str, stories: list[Story]) -> str:
+        if not stories:
+            return f"<td><p><em>{EMPTY_BLOCK}</em></p></td>"
+        items = []
+        for st in stories:
+            d = st.as_dict()
+            star = "★ " if _is_story(res, st) else ""
+            meta = (f"Impact {d['impact']}/10 · " if d["impact"] else "") + f"{d['source']} · {d['date']}"
+            items.append(f"<li><p><strong>{star}{a(d['link'], d['headline'])}</strong><br/>"
+                         f"<em>{e(meta)}</em></p>"
+                         + (f"<p>{e(_clean(d['why_it_matters'], 300))}</p>" if d["why_it_matters"] else "")
+                         + "</li>")
+        return f"<td><ol>{''.join(items)}</ol></td>"
+
+    blocks = _blocks(res)
+    rows = []
+    for i in range(0, len(blocks), 3):
+        row = blocks[i:i + 3]
+        rows.append("<tr>" + "".join(f"<th>{e(b)}</th>" for b, _ in row) + "</tr>")
+        rows.append("<tr>" + "".join(cell(b, st) for b, st in row) + "</tr>")
+    out.append("<h3>This week by risk area</h3><table><tbody>" + "".join(rows) + "</tbody></table>")
+    if res.radar:
+        out.append("<h3>Also on the radar</h3><ul>" + "".join(
+            f"<li>{a(s.lead.link, s.as_dict()['headline'])} · <em>{e(s.category)}</em></li>" for s in res.radar)
+                   + "</ul>")
+    if res.routine:
+        out.append(_macro("expand", "<ul>" + "".join(
+            f"<li>{a(i.link, i.title)} · <em>{e(i.publisher or i.source)}, {e(_when(i))}</em></li>"
+            for i in res.routine) + "</ul>", title=f"Routine enforcement, not ranked ({len(res.routine)})"))
+    out.append("<p><em>Machine-selected from public feeds. Check each source before quoting figures or "
+               "names.</em></p>")
+    out.append(_anchor("end", key))
+    return "".join(out)
+
+
+def _weeks_on_page(body: str) -> dict[str, str]:
+    """Each week this tool wrote on the page: key -> its content, from start to end anchor."""
+    weeks = {}
+    for m in re.finditer(_ANCHOR.format(kind="week", key=r"(\d{4}-W\d{2})"), body or ""):
+        key = m.group(1)
+        end = re.search(_ANCHOR.format(kind="end", key=re.escape(key)), body[m.start():])
+        if end:
+            weeks[key] = body[m.start(): m.start() + end.end()]
+    return weeks
+
+
+def build_confluence_body(existing: str, week_html: str, key: str, keep: int = CONFLUENCE_KEEP_WEEKS) -> str:
+    """The new page: this week in full, then earlier weeks (newest first) in expand sections.
+
+    A week already on the page is replaced, not repeated. At most `keep` weeks stay on the page;
+    older ones remain in Confluence's page history.
+    """
+    weeks = _weeks_on_page(existing)
+    weeks[key] = week_html
+    order = sorted(weeks, reverse=True)[:max(1, keep)]
+    latest, older = order[0], order[1:]
+    out = ["<p><em>Updated each week by risk_week.py. The latest week is first; earlier weeks are "
+           "below, newest first.</em></p>", weeks[latest]]
+    if older:
+        out.append("<h2>Previous weeks</h2>")
+        for k in older:
+            t = re.search(r"<h2>(.*?)</h2>", weeks[k], re.S)
+            title = html.unescape(re.sub(r"<[^>]+>", "", t.group(1))) if t else k
+            out.append(_macro("expand", weeks[k], title=title))
+    return "".join(out)
+
+
+class ConfluenceClient:
+    """Confluence Server / Data Center REST API with a personal access token (Bearer)."""
+
+    def __init__(self, cfg: dict, opener: Callable[..., bytes] | None = None):
+        import ssl
+        self.base = str(cfg.get("CONFLUENCE_BASE_URL") or "").rstrip("/")
+        self.page_id = str(cfg.get("PAGE_ID") or "").strip()
+        self.pat = str(cfg.get("PAT") or "").strip()
+        self.timeout = float(cfg.get("CONFLUENCE_TIMEOUT") or 60)
+        if cfg.get("CA_BUNDLE"):
+            self.ctx = ssl.create_default_context(cafile=str(cfg["CA_BUNDLE"]))
+        elif cfg.get("VERIFY_SSL", True) is False:
+            self.ctx = ssl._create_unverified_context()       # noqa: S323 — user's setting, internal host
+        else:
+            self.ctx = ssl.create_default_context()
+        self.opener = opener or self._open
+
+    def _open(self, method: str, url: str, body: bytes | None, headers: dict) -> bytes:
+        req = urllib.request.Request(url, data=body, method=method, headers=headers)
+        with urllib.request.urlopen(req, timeout=self.timeout, context=self.ctx) as r:  # noqa: S310
+            return r.read()
+
+    def _call(self, method: str, path: str, payload: dict | None = None) -> dict:
+        headers = {"Authorization": f"Bearer {self.pat}", "Accept": "application/json"}
+        body = None
+        if payload is not None:
+            headers["Content-Type"] = "application/json"
+            body = json.dumps(payload).encode("utf-8")
+        try:
+            return json.loads(self.opener(method, f"{self.base}{path}", body, headers) or b"{}")
+        except urllib.error.HTTPError as e:
+            detail = e.read().decode("utf-8", "replace")[:300]
+            hint = {401: "the PAT was not accepted (expired or mistyped?)",
+                    403: "the PAT's user may not edit this page",
+                    404: "page not found: check PAGE_ID", 409: "the page changed meanwhile"}.get(e.code, "")
+            raise RuntimeError(f"Confluence HTTP {e.code}{': ' + hint if hint else ''} {detail}") from e
+
+    def get_page(self) -> dict:
+        return self._call("GET", f"/rest/api/content/{self.page_id}?expand=body.storage,version")
+
+    def update_page(self, title: str, body: str, version: int, message: str) -> dict:
+        return self._call("PUT", f"/rest/api/content/{self.page_id}", {
+            "id": self.page_id, "type": "page", "title": title,
+            "version": {"number": version + 1, "message": message},
+            "body": {"storage": {"value": body, "representation": "storage"}},
+        })
+
+
+def publish_confluence(res: Result, cfg: dict, client: ConfluenceClient | None = None,
+                       dry_run_file: Path | None = None) -> str:
+    """Put this week on the Confluence page (one new page version). Returns what happened."""
+    missing = [k for k in ("CONFLUENCE_BASE_URL", "PAGE_ID", "PAT") if not str(cfg.get(k) or "").strip()]
+    week = to_confluence(res)
+    key = _week_key(res)
+    keep = int(cfg.get("KEEP_WEEKS") or CONFLUENCE_KEEP_WEEKS)
+    if dry_run_file is not None:
+        dry_run_file.write_text(build_confluence_body("", week, key, keep), encoding="utf-8")
+        return f"dry run: page content written to {dry_run_file} (nothing uploaded)"
+    if missing:
+        return f"not published: {', '.join(missing)} missing in {CONFLUENCE_FILE}"
+    client = client or ConfluenceClient(cfg)
+    message = f"This Week in Risk: {_title(res)}"
+    for attempt in (1, 2):                  # a 409 means someone saved meanwhile: read again, retry once
+        page = client.get_page()
+        body = build_confluence_body(((page.get("body") or {}).get("storage") or {}).get("value", ""),
+                                     week, key, keep)
+        try:
+            client.update_page(page.get("title") or "This Week in Risk", body,
+                               int((page.get("version") or {}).get("number") or 1), message)
+        except RuntimeError as e:
+            if "HTTP 409" in str(e) and attempt == 1:
+                continue
+            raise
+        url = f"{client.base}/pages/viewpage.action?pageId={client.page_id}"
+        return f"published to Confluence ({key}, {len(_weeks_on_page(body))} week(s) on the page): {url}"
+    return "not published"
+
+
+def _find_confluence_config(a) -> tuple[dict | None, Path | None]:
+    here = Path(__file__).resolve().parent
+    paths = [Path(a.confluence_config)] if a.confluence_config else [here / CONFLUENCE_FILE, Path.cwd() / CONFLUENCE_FILE]
+    for path in paths:
+        cfg = load_confluence_config(path)
+        if cfg is not None:
+            return cfg, path
+    return None, None
+
+
+def confluence_check(a) -> str:
+    """Read the page (title and version) to confirm the settings work. Writes nothing."""
+    cfg, path = _find_confluence_config(a)
+    if cfg is None:
+        return f"Confluence: no '{CONFLUENCE_FILE}' found (copy confluence.example.txt and fill it in)"
+    missing = [k for k in ("CONFLUENCE_BASE_URL", "PAGE_ID", "PAT") if not str(cfg.get(k) or "").strip()]
+    if missing:
+        return f"Confluence: {', '.join(missing)} missing in {path}"
+    try:
+        page = ConfluenceClient(cfg).get_page()
+    except Exception as e:  # noqa: BLE001
+        return f"Confluence: check failed ({type(e).__name__}: {e})"[:600]
+    weeks = len(_weeks_on_page(((page.get("body") or {}).get("storage") or {}).get("value", "")))
+    ssl_note = " (TLS certificate check is off: VERIFY_SSL = False)" if cfg.get("VERIFY_SSL") is False else ""
+    return (f"Confluence: OK. Page '{page.get('title')}' (id {cfg['PAGE_ID']}), version "
+            f"{(page.get('version') or {}).get('number')}, {weeks} week(s) from this tool on it{ssl_note}")
+
+
+def confluence_step(res: Result, a, files: dict) -> str:
+    """Publish when a settings file is found; never stop the run on a Confluence problem."""
+    cfg, _ = _find_confluence_config(a)
+    if cfg is None and not a.confluence_dry_run:
+        return f"Confluence: no '{CONFLUENCE_FILE}' found, so nothing was published"
+    dry = None
+    if a.confluence_dry_run:
+        dry = Path(files["html"]).with_name(Path(files["html"]).stem + "-confluence.xml")
+    try:
+        return "Confluence: " + publish_confluence(res, cfg or {}, dry_run_file=dry)
+    except Exception as e:  # noqa: BLE001 — the report files are already written
+        return f"Confluence: not published ({type(e).__name__}: {e})"[:600]
+
+
 def main(argv: list[str] | None = None) -> int:
     import argparse
     p = argparse.ArgumentParser(description="This Week in Risk: top items in Indian banking risk management")
@@ -1823,10 +2103,21 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--pending-file", default=str(Path(__file__).resolve().parent / "pending_items.txt"),
                    help="pending items for the status meeting, 'Item | Owner | Due | Status' per line "
                         "(default pending_items.txt next to this script)")
+    p.add_argument("--confluence-config", default=None,
+                   help=f"Confluence settings file (default '{CONFLUENCE_FILE}' next to this script or in "
+                        f"the current folder); the report is published when it has a PAT")
+    p.add_argument("--no-confluence", action="store_true", help="do not publish to Confluence")
+    p.add_argument("--confluence-check", action="store_true",
+                   help="only check the Confluence settings (reads the page title; changes nothing) and stop")
+    p.add_argument("--confluence-dry-run", action="store_true",
+                   help="write the Confluence page content to the output folder instead of uploading it")
     p.add_argument("--no-prompt", action="store_true",
                    help="do not ask for pending-item updates at the start (also skipped when not run "
                         "from a terminal)")
     a = p.parse_args(argv)
+    if a.confluence_check:
+        print(confluence_check(a))
+        return 0
 
     load_dotenv(Path(__file__).resolve().parent / ".env", Path.cwd() / ".env")
     pending_path = Path(a.pending_file)
@@ -1847,6 +2138,8 @@ def main(argv: list[str] | None = None) -> int:
               pending=pending)
     files = write(res, a.out_dir)
     print(to_console(res, files))
+    if not a.no_confluence:
+        print(confluence_step(res, a, files))
     if a.json:
         print(json.dumps([s.as_dict() for s in res.top], indent=2, ensure_ascii=False))
     if a.open:

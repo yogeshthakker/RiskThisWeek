@@ -191,6 +191,34 @@ To use Claude instead: set `ANTHROPIC_API_KEY`, `pip install anthropic`, and run
 `python risk_week.py --ai --provider claude` (default model `claude-opus-5-5`).
 Change either model with `--model` or `RISK_WEEK_MODEL`.
 
+## Publishing to Confluence
+
+Each run can put the report on a Confluence page (Server / Data Center, with a personal
+access token). The page shows **this week in full at the top**: the "For CRO's desk" panel,
+pending items with coloured status labels, the six risk blocks as a table, the radar, and the
+routine enforcement. Below it, under **Previous weeks**, each earlier week sits in a
+collapsible section, newest first. Running again in the same week replaces that week. The
+page keeps the last 26 weeks (`KEEP_WEEKS`); older weeks stay in Confluence's page history,
+as every run saves a new page version.
+
+Set it up once:
+
+1. Put the settings in **`Confluence PAT.txt`** next to `risk_week.py` (`confluence.example.txt`
+   shows the format: `CONFLUENCE_BASE_URL`, `PAGE_ID`, `PAT`, `VERIFY_SSL`, `CONFLUENCE_TIMEOUT`,
+   optional `CA_BUNDLE` and `KEEP_WEEKS`). The file is git-ignored; never commit the token.
+2. Check the settings without changing the page: `python risk_week.py --confluence-check`.
+3. Run as usual. When the file has a PAT, the report is published at the end of the run and
+   the console prints the page link. A Confluence problem never stops the run: the local
+   files are written first.
+
+`--no-confluence` skips publishing for one run. `--confluence-dry-run` writes the page content
+to `output/risk-week-<date>-confluence.xml` instead of uploading it.
+
+**What goes on the page:** everything in the report, including your CRO notes and pending
+items. Those are never sent to the AI, but they do go to Confluence, so the page's
+permissions decide who sees them. `VERIFY_SSL = False` turns off the certificate check:
+prefer `CA_BUNDLE` pointing at the bank's root certificate.
+
 ## Options
 
 | Option | Default | |
@@ -207,6 +235,10 @@ Change either model with `--model` or `RISK_WEEK_MODEL`.
 | `--cro-file FILE` | `cro_desk.txt` | File with CRO notes, one per line |
 | `--pending-file FILE` | `pending_items.txt` | Pending items: `Item \| Owner \| Due \| Status` per line |
 | `--no-prompt` | off | Don't ask for pending-item updates at the start |
+| `--confluence-check` | off | Only check the Confluence settings (reads the page; changes nothing) |
+| `--no-confluence` | off | Don't publish to Confluence on this run |
+| `--confluence-dry-run` | off | Write the Confluence page content to a file instead of uploading |
+| `--confluence-config FILE` | `Confluence PAT.txt` | A different Confluence settings file |
 
 ## Tests
 
