@@ -567,11 +567,48 @@ class TestGemini(unittest.TestCase):
                                             "impact": 7, "why_it_matters": "W"}], "radar": [],
                                  "cro_focus": {"id": 1, "message": "m"}})
 
-        res = rw.run(top=3, sources=SOURCES, fetcher=fetcher, now=NOW, provider=rw.GeminiProvider(post=post))
+        waits = []
+        res = rw.run(top=3, sources=SOURCES, fetcher=fetcher, now=NOW,
+                     provider=rw.GeminiProvider(post=post, sleep=waits.append))
+        self.assertEqual(waits, [])                                # a daily limit is not retried
         self.assertIn("/models/gemini-3.8-flash:", urls[0])
         self.assertIn("/models/gemini-3.5-flash-lite:", urls[1])
         self.assertIn("gemini-3.5-flash-lite, after gemini-3.8-flash: free-tier limit", res.ai)
         self.assertIn("Lite", [s.headline for s in res.top])
+
+    def test_busy_model_retried_before_fallback(self):
+        calls, waits = [], []
+
+        def post(url, body, headers):
+            calls.append(url)
+            if len(calls) < 3:                                    # busy twice, then answers
+                raise urllib.error.HTTPError(url, 503, "Unavailable", {}, io.BytesIO(b"high demand"))
+            return gemini_reply({"items": [{"id": 1, "headline": "Flash", "category": "Credit risk",
+                                            "impact": 8, "why_it_matters": "W"}], "radar": [],
+                                 "cro_focus": {"id": 1, "message": "m"}})
+
+        g = rw.GeminiProvider(post=post, sleep=waits.append)
+        res = rw.run(top=3, sources=SOURCES, fetcher=fetcher, now=NOW, provider=g)
+        self.assertTrue(all("gemini-3.8-flash:" in u for u in calls))   # no fallback needed
+        self.assertEqual(waits, [10, 30])
+        self.assertIn("gemini-3.8-flash on try 3", res.ai)
+
+    def test_busy_three_times_then_flash_lite(self):
+        calls, waits = [], []
+
+        def post(url, body, headers):
+            calls.append(url)
+            if "gemini-3.8-flash:" in url:
+                raise urllib.error.HTTPError(url, 503, "Unavailable", {}, io.BytesIO(b"high demand"))
+            return gemini_reply({"items": [{"id": 1, "headline": "Lite", "category": "Credit risk",
+                                            "impact": 8, "why_it_matters": "W"}], "radar": [],
+                                 "cro_focus": {"id": 1, "message": "m"}})
+
+        res = rw.run(top=3, sources=SOURCES, fetcher=fetcher, now=NOW,
+                     provider=rw.GeminiProvider(post=post, sleep=waits.append))
+        self.assertEqual(sum("gemini-3.8-flash:" in u for u in calls), 3)
+        self.assertIn("gemini-3.5-flash-lite, after gemini-3.8-flash: HTTP 503", res.ai)
+        self.assertIn("tried 3 times", res.ai)
 
     def test_cut_off_reply_tries_fallback_then_keywords(self):
         cut = {"candidates": [{"content": {"parts": [{"text": '{"items": [{"id": 1'}]},

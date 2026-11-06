@@ -800,7 +800,7 @@ def explain(stories: list[Story], provider, per_block: int, bank: str = DEFAULT_
     cf = reply.get("cro_focus") if isinstance(reply.get("cro_focus"), dict) else {}
     s = story(cf.get("id"))
     if s is not None:
-        focus = CroFocus(s, _clean(str(cf.get("message") or ""), 260))
+        focus = CroFocus(s, _clean(str(cf.get("message") or ""), 450))
     if focus is None:                    # no usable choice: the highest-impact pick
         focus = CroFocus(max(shown, key=lambda s: s.impact or 0), "")
     return AiPick(blocks=blocks, radar=radar[:6], focus=focus,
@@ -866,6 +866,10 @@ def _post_json(url: str, body: dict, headers: dict, timeout: float = 90) -> dict
         return json.loads(r.read())
 
 
+class Busy(RuntimeError):
+    """A temporary failure (server busy, 5xx, network): worth retrying the same model."""
+
+
 class GeminiProvider:
     """JSON-mode calls to Gemini over Google's REST API: no extra package needed.
 
@@ -882,26 +886,39 @@ class GeminiProvider:
     DEFAULT_MODEL = "gemini-3.8-flash"
     FALLBACK_MODEL = "gemini-3.5-flash-lite"
     MIN_OUTPUT_TOKENS = 16384   # on Gemini 3 this budget covers thinking as well as the answer
+    RETRY_WAITS = (10, 30)      # seconds to wait before retrying a busy model (503 "high demand")
 
-    def __init__(self, model: str | None = None, post: Callable[..., dict] = _post_json):
+    def __init__(self, model: str | None = None, post: Callable[..., dict] = _post_json,
+                 sleep: Callable[[float], None] | None = None):
         self.key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
         if not self.key:
             raise RuntimeError("set GEMINI_API_KEY (free key: https://aistudio.google.com/apikey)")
         self.model = model or os.environ.get("RISK_WEEK_MODEL") or self.DEFAULT_MODEL
         self.post = post
+        self.sleep = sleep or __import__("time").sleep
         self.label = self.model          # which model answered, and why a fallback was used
 
     def json_call(self, system_prompt, user_content, response_schema=None, max_output_tokens=1500) -> dict:
         models = [self.model] + ([self.FALLBACK_MODEL] if self.model != self.FALLBACK_MODEL else [])
         errors: list[str] = []
         for model in models:
-            try:
-                out = self._call(model, system_prompt, user_content, response_schema, max_output_tokens)
-            except RuntimeError as e:
-                errors.append(f"{model}: {e}")
-                continue
-            self.label = model if not errors else f"{model}, after {errors[0][:120]}"
-            return out
+            for attempt, wait in enumerate((0, *self.RETRY_WAITS)):
+                if wait:
+                    print(f"[risk-week] {model} is busy; retrying in {wait}s", file=sys.stderr)
+                    self.sleep(wait)
+                try:
+                    out = self._call(model, system_prompt, user_content, response_schema, max_output_tokens)
+                except Busy as e:
+                    if attempt < len(self.RETRY_WAITS):
+                        continue                 # same model again, after a wait
+                    errors.append(f"{model}: {e} (tried {attempt + 1} times)")
+                    break
+                except RuntimeError as e:
+                    errors.append(f"{model}: {e}")
+                    break
+                tries = f" on try {attempt + 1}" if attempt else ""
+                self.label = (f"{model}{tries}" if not errors else f"{model}, after {errors[0][:120]}")
+                return out
         raise RuntimeError(" | ".join(errors))
 
     def _call(self, model, system_prompt, user_content, response_schema, max_output_tokens) -> dict:
@@ -924,9 +941,11 @@ class GeminiProvider:
                 raise RuntimeError("free-tier limit reached (daily limits reset at midnight Pacific time)") from e
             if e.code == 404:
                 raise RuntimeError("model not found; set --model or RISK_WEEK_MODEL") from e
+            if e.code >= 500:
+                raise Busy(f"HTTP {e.code} (server busy or failing)") from e
             raise RuntimeError(f"HTTP {e.code}: {detail}") from e
         except (urllib.error.URLError, TimeoutError, OSError) as e:
-            raise RuntimeError(f"network: {type(e).__name__}: {e}") from e
+            raise Busy(f"network: {type(e).__name__}: {e}") from e
         candidates = reply.get("candidates") or []
         if not candidates:
             raise RuntimeError(f"no answer: {str(reply.get('promptFeedback', ''))[:200]}")

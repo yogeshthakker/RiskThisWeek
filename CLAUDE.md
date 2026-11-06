@@ -10,7 +10,7 @@ web page for the weekly status meeting ("This week in risk"). The user runs it o
 ```bash
 pip install -r requirements.txt
 python risk_week.py --ai --open        # Gemini free tier; --open opens the web page
-python -m unittest test_risk_week      # 44 tests, no network or key needed
+python -m unittest test_risk_week      # 46 tests, no network or key needed
 ```
 
 Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
@@ -50,8 +50,10 @@ Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
    `reserve()` puts the best story on a missing topic into its block. `Result.blocks` holds
    the blocks; `Result.top` is all shown items, block by block (`flatten`).
 6. **AI ranks first (`--ai`); keywords are the fallback** (the user's decision, 6 Nov 2026).
-   Gemini **`gemini-3.8-flash`** over its REST API (no SDK) by default, retried once with
-   `gemini-3.5-flash-lite` on a 429, server/network error, 404, or cut-off/unreadable JSON
+   Gemini **`gemini-3.8-flash`** over its REST API (no SDK) by default. A busy model (5xx
+   such as 503 "high demand", or a network error: `Busy`) is retried after 10 s and 30 s;
+   then, or at once on a 429 daily limit, 404, or cut-off/unreadable JSON, the request goes to
+   `gemini-3.5-flash-lite`
    (`GeminiProvider.label` records which model answered; it shows in "ranked by"). No
    `temperature` (ignored by Gemini 3.6+, may be rejected later); `maxOutputTokens` at least
    16384 because on Gemini 3 it covers thinking too. `--provider claude`
@@ -104,17 +106,16 @@ Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
 
 ## Open items
 
-- **AI summaries not yet confirmed on a real run after the latest fix.** The user saw two
-  items without a "why it matters" line. The fix (other key names accepted, a follow-up
-  request for missing ones) was tested only with fake replies. If it recurs, read
-  `output/risk-week-<date>-ai-reply.json` first.
+- **First real AI-first run (6 Nov 2026):** `gemini-3.8-flash` answered 503 "high demand";
+  `gemini-3.5-flash-lite` then ranked all 18 items well (every item had a "why it matters",
+  so the old missing-"why" issue did not recur). The action point came back at ~50 words
+  (asked for 35), so it is now kept up to 450 characters. Busy retries were added after this
+  run; 3.8 Flash itself has still not answered a real request.
 - Gemini free-tier limits are per project and shown only in Google AI Studio.
 - Google News links are Google redirect addresses; they open fine in a browser.
 - Possible next steps the user has not asked for yet: a weekly schedule, sending by email,
   a scraper for RBI's draft-directions page and CERT-In advisories (no feeds; see the source
   research of 6 Nov 2026), BIS feeds (supported by the parser, but mostly research).
-- A real `--ai` run with AI-first ranking has not been checked yet (no API key in the cloud
-  sandbox). Read `output/risk-week-<date>-ai-reply.json` after the first run.
 - Free LLM research (6 Nov 2026): Gemini's free tier with `gemini-3.8-flash` is the best fit
   (free limits not published by Google; ~20 requests/day reported). Free-tier data may be used
   by Google and read by reviewers. Possible second provider if needed: SambaNova or Groq

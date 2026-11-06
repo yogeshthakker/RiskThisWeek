@@ -151,8 +151,10 @@ The default model is **`gemini-3.8-flash`**, Google's strongest Flash model, whi
 free tier (reportedly about 20 requests a day; your project's limit is shown in AI Studio).
 A run makes one or two requests. Nothing extra needs installing for Gemini.
 
-If `gemini-3.8-flash` fails (daily limit, server error, or a cut-off or unreadable reply),
-the request is retried once with **`gemini-3.5-flash-lite`**. If that fails too (or there is
+If `gemini-3.8-flash` is busy (Google answers "high demand", or the network drops), the
+tool waits and tries it again, after 10 and then 30 seconds. If it is still busy, or it hits
+its daily limit or sends a cut-off or unreadable reply, the request goes to
+**`gemini-3.5-flash-lite`**. If that fails too (or there is
 no key or no network), the keyword ranking is used. The page's "ranked by" line shows which
 model answered, and why a fallback was used. If an item comes back without a "why it matters"
 line, one short follow-up request fills it in. Every AI reply is saved as
