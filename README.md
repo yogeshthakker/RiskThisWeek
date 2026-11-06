@@ -2,7 +2,8 @@
 
 Collects the week's most impactful developments in **Indian banking risk management**, as they
 matter to **a foreign bank operating in India**, and arranges them in six blocks of three items:
-**Credit, Market, Non-financial risks, Cyber security, Fraud and Compliance**, ready to present
+**Credit risk, Market risk, Non-financial risk, Cyber security risk, Fraud risk and Compliance
+risk**, ready to present
 at a status meeting.
 
 ```bash
@@ -14,7 +15,7 @@ This writes three files to `./output/` (`--open` also opens the web page):
 
 | File | Use |
 |---|---|
-| `risk-week-<date>.pptx` | Slide 1: "From the CRO's desk" and "Pending items" side by side. Slide 2: the six blocks, three across. Slide 3: "Also on the radar" (the next 6) |
+| `risk-week-<date>.pptx` | Slide 1: "For CRO's desk" (the story of the week) and "Pending items" side by side. Slide 2: the six blocks, three across. Slide 3: "Also on the radar" (the next 6) |
 | `risk-week-<date>.html` | The same as a one-screen web page sized for 1920 × 1080: the six blocks in a 3 × 2 grid, with the CRO box, pending items, "also on the radar" and the routine enforcement in a sidebar on the right. Long headlines and summaries are shortened to fit; hover to read them in full, or click to open the article. On smaller screens it becomes a normal scrolling page |
 | `risk-week-<date>.md` | The same as text notes |
 
@@ -22,19 +23,22 @@ This writes three files to `./output/` (`--open` also opens the web page):
 Show, or Ctrl+click while editing. On the web page, links open in a new tab.
 The terminal summary prints plain web addresses and the page's address.
 
-## From the CRO's desk
+## For CRO's desk
 
-A highlighted box on the slide, and at the top of the page, holds what the CRO should see first:
+A highlighted box on the slide and the page. Its emphasis is one item, the **story of the
+week**: the single story with the most impact for the bank, the one that gives the CRO the
+most visibility inside the bank or creates an action point for the branch. It shows the
+headline, why it matters and, with `--ai`, an **action point**: what the CRO should raise
+in the bank or ask the branch, business or risk team to do. The story is also marked ★ in
+its block. Without AI, it is the highest-scoring story shown.
+
+Below it, in smaller type:
 
 1. **Your notes.** Copy `cro_desk.example.txt` to `cro_desk.txt` and write one note per line,
    for example "Risk Appetite Statement review goes to the Board on 20 Nov". They can be
    news or any update from the CRO's desk. You can also add a note for one run:
    `python risk_week.py --cro "RBI inspection data requests due Friday"` (repeatable).
    `cro_desk.txt` is not committed to git, so internal notes stay on your machine.
-2. **Focus this week.** One news item to act on first. With `--ai`, Gemini picks it from the
-   items shown and writes what the CRO should ask the risk team to check or do, framed so risk
-   enables the business. Without AI, it is the top item on the first priority topic
-   (MSME lending), or else the top-ranked item.
 
 ## Pending items
 
@@ -98,12 +102,12 @@ Terms are regular expressions and ignore case, so `co-?operative` matches both s
 
    | Block | For example |
    |---|---|
-   | Credit | asset quality, ECL and provisioning, capital, MSME lending, TReDS, credit guarantees, priority sector |
-   | Market | liquidity, rates, the rupee and FX, hedging and NDF, bonds, CCIL clearing |
-   | Non-financial risks | governance and conduct, outsourcing and third parties, outages, data protection, climate and ESG |
-   | Cyber security | cyber attacks, breaches, ransomware, CERT-In advisories |
-   | Fraud | frauds, scams, mule accounts, digital arrests |
-   | Compliance | RBI directions and drafts, KYC/AML, sanctions, FEMA, penalties |
+   | Credit risk | asset quality, ECL and provisioning, capital, MSME lending, TReDS, credit guarantees, priority sector |
+   | Market risk | liquidity, rates, the rupee and FX, hedging and NDF, bonds, CCIL clearing |
+   | Non-financial risk | governance and conduct, outsourcing and third parties, outages, data protection, climate and ESG |
+   | Cyber security risk | cyber attacks, breaches, ransomware, CERT-In advisories |
+   | Fraud risk | frauds, scams, mule accounts, digital arrests |
+   | Compliance risk | RBI directions and drafts, KYC/AML, sanctions, FEMA, penalties |
 
    It is then scored by the bank profile, by source (RBI first), and by severity words and
    recency. The best 3 in each block are shown; a block with nothing relevant says so.
@@ -162,7 +166,7 @@ Change either model with `--model` or `RISK_WEEK_MODEL`.
 | `--provider` | `gemini` | `gemini` (free tier) or `claude` |
 | `--json` | off | Also print the items as JSON |
 | `--open` | off | Open the web page in the browser when done |
-| `--cro TEXT` | none | A note for the CRO box (repeatable) |
+| `--cro TEXT` | none | A note for the "For CRO's desk" box (repeatable) |
 | `--cro-file FILE` | `cro_desk.txt` | File with CRO notes, one per line |
 | `--pending-file FILE` | `pending_items.txt` | Pending items: `Item \| Owner \| Due \| Status` per line |
 

@@ -1,8 +1,8 @@
 # This Week in Risk: project notes
 
 A Python tool that finds the week's most impactful developments in Indian banking risk
-management for **a foreign bank operating in India**, in six blocks of three items (Credit,
-Market, Non-financial risks, Cyber security, Fraud, Compliance), and produces slides and a
+management for **a foreign bank operating in India**, in six blocks of three items (Credit
+risk, Market risk, Non-financial risk, Cyber security risk, Fraud risk, Compliance risk), and produces slides and a
 web page for the weekly status meeting ("This week in risk"). The user runs it on their own Windows machine.
 
 ## Run it
@@ -43,7 +43,7 @@ Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
    group). Wider coverage ranks higher.
 5. **Block and score.** `CATEGORIES` are the six blocks (`BLOCKS`, in display order); a story
    takes the block with the most regex hits (headline hits double; ties go to the earlier
-   block, so a draft ECL rule can land in Compliance rather than Credit). Score adds the
+   block, so a draft ECL rule can land in Compliance risk rather than Credit risk). Score adds the
    profile's focus / less-relevant terms, peer foreign banks, source weight (RBI first),
    severity words and recency. `pick()` takes the best `top` (default 3) per block;
    `profile.priority.topics` (MSME lending, India–Russia) add `priority.weight` (3.0), and
@@ -53,10 +53,12 @@ Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
    by default; `--provider claude` uses the Anthropic SDK (`claude-opus-5-5`). The AI picks
    3 per block from the best ~7 candidates of each block (it may move a story to another
    block; a block it leaves empty keeps the keyword picks), writes a headline and a "why it matters for us"
-   line (at most 30 words) for each, and picks a CRO focus item with what the CRO should ask
-   the team. Shown items missing a "why" get one follow-up request. Any failure falls back to the
+   line (at most 30 words) for each, and picks the **story of the week** (`cro_focus`: the
+   single highest-impact item, giving the CRO visibility in the bank or an action point for
+   the branch) with an action point. Without AI it is the highest-scoring story shown. Shown items missing a "why" get one follow-up request. Any failure falls back to the
    keyword ranking, and the output says why.
-7. **Write** the slides (1: "From the CRO's desk" panel and "Pending items" table from
+7. **Write** the slides (1: "For CRO's desk" panel (story of the week, why, action point,
+   then the user's notes small) and "Pending items" table from
    `pending_items.txt`, overdue in red; 2: the six blocks, 3 × 2; 3: "Also on the radar"),
    the HTML page and Markdown. The page is a **one-screen dashboard** on screens at least
    1200 × 700 (target 1920 × 1080, no page scroll): the six blocks 3 × 2 on the left, a
@@ -72,8 +74,11 @@ Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
 
 - Focus on **impact for a foreign bank**, not routine penalties, co-op banks, microfinance,
   farm loans, local crime, quarterly results or retail product news.
-- A **"From the CRO's desk" box**: the user's own notes (`cro_desk.txt` or `--cro "..."`)
-  plus one focus item.
+- A **"For CRO's desk" box** (renamed from "From the CRO's desk" on 6 Nov 2026). Its
+  emphasis is one **story of the week**: the max-impact story, giving the CRO visibility
+  inside the bank or an action point within the branch. The user's own notes
+  (`cro_desk.txt` or `--cro "..."`) follow in smaller type. The story is starred in its block.
+- Block names end in "risk": Credit risk, Market risk, and so on.
 - **Risk as an enabler for the business.** The CRO's greatest focus is **MSME lending**,
   then **India–Russia** (payments, rupee–rouble, vostro, sanctions). These are
   `profile.priority.topics` and `profile.guidance` (passed to the AI) in `sources.json`.

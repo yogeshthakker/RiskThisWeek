@@ -16,8 +16,8 @@ What it does, in order:
    naming a foreign bank or restricting business) are set aside, listed at the end.
 3. Group.    Puts the same story from several outlets together; a story that
    many outlets carry ranks higher.
-4. Score.    Puts each story in one of six blocks (Credit, Market, Non-financial
-   risks, Cyber security, Fraud, Compliance) and scores it by block terms, the bank
+4. Score.    Puts each story in one of six blocks (Credit risk, Market risk,
+   Non-financial risk, Cyber security risk, Fraud risk, Compliance risk) and scores it by block terms, the bank
    profile in sources.json (CRO priorities such as MSME lending and India–Russia
    well up, focus topics up, less relevant topics down, news on foreign banks up),
    source (RBI first), severity words and recency. The best 3 in each block are
@@ -29,7 +29,7 @@ What it does, in order:
    fails (no key, daily limit reached, network), the keyword ranking stands.
    Keys can also live in a .env file next to this script.
 6. Write.    risk-week-<date>.md, .html and, when python-pptx is installed,
-   .pptx (slide 1: "From the CRO's desk" and the pending items from
+   .pptx (slide 1: "For CRO's desk" (the story of the week) and the pending items from
    pending_items.txt; slide 2: the six blocks; slide 3: "also on the radar"). The CRO
    box holds notes from cro_desk.txt or --cro, and the one item to act on first
    (picked by the AI, or without it the top item on a priority topic such as MSME).
@@ -89,7 +89,7 @@ BANKING = re.compile(
 # The six blocks of the report, in display order: block -> (weight, pattern).
 # An item goes to the block with the most hits (headline hits count double).
 CATEGORIES: dict[str, tuple[float, re.Pattern]] = {
-    "Credit": (1.8, re.compile(
+    "Credit risk": (1.8, re.compile(
         r"\bnpa|asset quality|provision|expected credit loss|\becl\b|default|stress|slippage|"
         r"write[- ]?off|unsecured|delinquen|restructur|insolvency|\bibc\b|bad loan|credit card|"
         r"microfinance|gold loan|sma[- ]?\d|\bmsmes?\b|\bsmes?\b|micro,? small and medium|"
@@ -99,26 +99,26 @@ CATEGORIES: dict[str, tuple[float, re.Pattern]] = {
         r"leverage ratio|capital (buffer|raising|infusion)|\bat1\b|large exposure|concentration|"
         r"(credit|loan) growth|lending|corporate (loan|credit|default|bond)|priority sector|\bpsl\b|"
         r"trade finance|letter of credit", re.I)),
-    "Market": (1.8, re.compile(
+    "Market risk": (1.8, re.compile(
         r"liquidity|\blcr\b|\bnsfr\b|repo rate|\bmpc\b|monetary policy|\bcrr\b|\bslr\b|"
         r"rate (hike|cut|increase)|deposit rates|deposit (growth|flight)|credit[- ]deposit|yield|bond|"
         r"interest rate risk|\birrbb\b|funding cost|call money|\bvrr\b|durable liquidity|forex|"
         r"foreign exchange|rupee|roubles?|rubles?|dollar|\bndf\b|derivative|hedg|forwards?\b|swaps?\b|"
         r"\bfpi\b|foreign portfolio|capital (flows|outflow|inflow)|\bccil\b|margin|clearing|g-sec|"
         r"government securities|crude|oil price|federal reserve|\bfed\b|global markets", re.I)),
-    "Non-financial risks": (1.6, re.compile(
+    "Non-financial risk": (1.6, re.compile(
         r"governance|\bboard\b|\bceo\b|auditor|whistle|mis-?sell|customer (service|protection)|"
         r"grievance|ombudsman|conduct|compensation|climate|\besg\b|green deposit|sustainab|"
         r"transition risk|outsourc|third[- ]party|vendor|business continuity|operational (resilience|risk)|"
         r"outage|downtime|disruption|it (risk|governance|resilience)|cloud|data protection|\bdpdp\b|"
         r"data locali|privacy|model risk|artificial intelligence|\bai\b|reputation|litigation", re.I)),
-    "Cyber security": (1.9, re.compile(
+    "Cyber security risk": (1.9, re.compile(
         r"cyber|hack|breach|ransomware|phishing|malware|data leak|dark web|cert-in|ddos|"
         r"vulnerabilit|zero[- ]day|security incident", re.I)),
-    "Fraud": (1.9, re.compile(
+    "Fraud risk": (1.9, re.compile(
         r"fraud|scam|mule account|money mule|digital arrest|forg(ed|ery)|ponzi|embezzl|cheat|siphon|"
         r"impersonat|counterfeit|fake (note|currency|loan|app)|wilful default", re.I)),
-    "Compliance": (1.8, re.compile(
+    "Compliance risk": (1.8, re.compile(
         r"circular|master direction|directions?\b|draft|guidelines|framework|norms|amendment|"
         r"consultation|discussion paper|regulat|supervis|inspection|\bkyc\b|\baml\b|money laundering|"
         r"\bpmla\b|\bfiu\b|\bcft\b|sanction|\bofac\b|\bfatf\b|terror financ|beneficial owner|"
@@ -719,10 +719,12 @@ def explain(stories: list[Story], provider, per_block: int, bank: str = DEFAULT_
         f"or what to check or prepare. Every item must have a why_it_matters.\n"
         + (f"Include at least one item on each of these priority topics when a candidate fits: "
            f"{', '.join(topics)}.\n" if topics else "") +
-        f"Then cro_focus: the id of the one item (from your picks) the Chief Risk Officer should act on "
-        f"first, and message: at most 35 words on what the CRO should ask the risk team to check or do "
-        f"this week. Frame it so risk enables the business: where we can grow safely, and what control "
-        f"or check makes that possible.\n\nCandidates:\n" + _candidates(stories)
+        f"Then cro_focus: the story of the week for the Chief Risk Officer: the id of the single item "
+        f"(from your picks) with the most impact for us, the one that gives the CRO the most visibility "
+        f"inside the bank or creates a clear action point for the branch or the business. message: the "
+        f"action point, at most 35 words: what the CRO should raise in the bank or ask the branch, business "
+        f"or risk team to do this week. Frame it so risk enables the business: where we can grow safely, "
+        f"and what control or check makes that possible.\n\nCandidates:\n" + _candidates(stories)
     )
     system = _system(bank, guidance)
     try:
@@ -950,11 +952,9 @@ def run(days: int = 7, top: int = 3, provider=None, sources: dict | None = None,
                 fill_why(missing, provider, profile.bank, ai_log, profile.guidance)
     shown = flatten(blocks)
     if focus is None and shown:
-        # No AI: the top item on the first CRO priority topic that has one (MSME lending first),
-        # else the best-scoring item shown.
-        lead = [s for pat in profile.topics.values()
-                for s in sorted(shown, key=lambda s: -s.score) if pat.search(s.lead.title)]
-        focus = CroFocus((lead or sorted(shown, key=lambda s: -s.score))[0], "")
+        # No AI: the story of the week is the highest-scoring story shown (CRO priorities such
+        # as MSME lending already score higher).
+        focus = CroFocus(max(shown, key=lambda s: s.score), "")
     return Result(start=start, end=end, top=shown, radar=radar_of(blocks, stories), collected=len(raw),
                   kept=len(kept), errors=errors, ai=ai, routine=routine,
                   cro_notes=list(cro_notes or []), cro_focus=focus, ai_log=ai_log,
@@ -1054,16 +1054,27 @@ def _title(res: Result) -> str:
     return f"This Week in Risk — week ending {res.end.strftime('%d %b %Y')}"
 
 
+CRO_TITLE = "For CRO's desk"
+STORY_LABEL = "Story of the week"
+
+
 def cro_box(res: Result) -> dict | None:
-    """What goes in the 'From the CRO's desk' box: your notes first, then this week's focus item."""
+    """The 'For CRO's desk' box: the story of the week (the single highest-impact item, with
+    why it matters and the action point), then the user's own notes."""
     focus = None
     if res.cro_focus:
-        st, msg = res.cro_focus.story, res.cro_focus.message
-        focus = {"headline": st.as_dict()["headline"], "link": st.lead.link,
-                 "message": msg or _clean(st.why or st.lead.summary, 220)}
+        st, action = res.cro_focus.story, res.cro_focus.message
+        d = st.as_dict()
+        focus = {"headline": d["headline"], "link": st.lead.link, "block": st.category,
+                 "why": _clean(d["why_it_matters"], 260), "action": action,
+                 "meta": f"{d['source']} · {d['date']}"}
     if not res.cro_notes and not focus:
         return None
     return {"notes": res.cro_notes, "focus": focus}
+
+
+def _is_story(res: Result, st: Story) -> bool:
+    return bool(res.cro_focus and res.cro_focus.story is st)
 
 
 def _blocks(res: Result) -> list[tuple[str, list[Story]]]:
@@ -1086,14 +1097,17 @@ def to_markdown(res: Result) -> str:
            f"{res.collected} items read, {res.kept} relevant. Summaries: {res.ai}._", ""]
     box = cro_box(res)
     if box:
-        out += ["> ### From the CRO's desk", ">"]
-        out += [f"> - {n}" for n in box["notes"]]
+        out += [f"> ### {CRO_TITLE}", ">"]
         if box["focus"]:
             f = box["focus"]
-            out += [">" if box["notes"] else "", f"> **Focus this week:** [{f['headline']}]({f['link']})"]
-            if f["message"]:
-                out += [">", f"> {f['message']}"]
-        out = [x for x in out if x != ""] + [""]
+            out += [f"> **{STORY_LABEL}** ({f['block']}): [{f['headline']}]({f['link']})"]
+            if f["why"]:
+                out += [">", f"> {f['why']}"]
+            if f["action"]:
+                out += [">", f"> **Action point:** {f['action']}"]
+        if box["notes"]:
+            out += [">", "> Notes:"] + [f"> - {n}" for n in box["notes"]]
+        out += [""]
     if res.pending:
         out += ["## Pending items", "", "| Item | Owner | Due | Status |", "|---|---|---|---|"]
         out += [f"| {p.item} | {p.owner} | {p.due} | {'**' + _status(p) + '**' if p.overdue else _status(p)} |"
@@ -1130,12 +1144,14 @@ def to_console(res: Result, files: dict) -> str:
     out = [_title(res), f"{res.collected} items read, {res.kept} relevant. Summaries: {res.ai}", ""]
     box = cro_box(res)
     if box:
-        out.append("FROM THE CRO'S DESK")
-        out += [f"  • {n}" for n in box["notes"]]
+        out.append(CRO_TITLE.upper())
         if box["focus"]:
             f = box["focus"]
-            out += [f"  Focus this week: {f['headline']}"] + ([f"  {f['message']}"] if f["message"] else [])
+            out += [f"  {STORY_LABEL} ({f['block']}): {f['headline']}"]
+            out += [f"  {f['why']}"] if f["why"] else []
+            out += [f"  Action point: {f['action']}"] if f["action"] else []
             out.append(f"  {f['link']}")
+        out += [f"  • {n}" for n in box["notes"]]
         out.append("")
     if res.pending:
         out.append("PENDING ITEMS")
@@ -1176,8 +1192,10 @@ def to_html(res: Result) -> str:
             more = f" · +{d['also_reported_by']} more" if d["also_reported_by"] else ""
             why = _clean(d["why_it_matters"], 240)
             items.append(
-                f'<li><span class="n">{n}</span><div><h3>{link(d["link"], d["headline"], "", d["headline"])}</h3>'
-                f'<p class="meta">{e(d["source"])} · {e(d["date"])}{e(more)}</p>'
+                f'<li><span class="n">{n}</span><div>'
+                f'<h3>{link(d["link"], d["headline"], "", d["headline"])}</h3><p class="meta">'
+                + (f'<span class="star">★ {e(STORY_LABEL)}</span> · ' if _is_story(res, st) else "")
+                + f'{e(d["source"])} · {e(d["date"])}{e(more)}</p>'
                 + (f'<p class="why" title="{e(why)}">{e(why)}</p>' if why else "")
                 + f'<p class="readp">{link(d["link"], "Read the article ↗", "read")}</p></div></li>')
         body = f'<ol>{"".join(items)}</ol>' if items else f'<p class="empty">{EMPTY_BLOCK}</p>'
@@ -1187,12 +1205,14 @@ def to_html(res: Result) -> str:
     cro = ""
     if box:
         notes = "".join(f"<li>{e(n)}</li>" for n in box["notes"])
-        cro = '<section class="panel cro"><h2>From the CRO\'s desk</h2>' + (f"<ul>{notes}</ul>" if notes else "")
+        cro = f'<section class="panel cro"><h2>{e(CRO_TITLE)}</h2>'
         if box["focus"]:
             f = box["focus"]
-            cro += (f'<p class="focus">Focus this week</p><p class="fh">{link(f["link"], f["headline"])}</p>'
-                    + (f"<p>{e(f['message'])}</p>" if f["message"] else ""))
-        cro += "</section>"
+            cro += (f'<p class="focus">★ {e(STORY_LABEL)} <span class="meta">· {e(f["block"])}</span></p>'
+                    f'<p class="fh">{link(f["link"], f["headline"])}</p><p class="meta">{e(f["meta"])}</p>'
+                    + (f'<p class="fwhy">{e(f["why"])}</p>' if f["why"] else "")
+                    + (f'<p class="act"><b>Action point:</b> {e(f["action"])}</p>' if f["action"] else ""))
+        cro += (f'<ul class="notes">{notes}</ul>' if notes else "") + "</section>"
     pending = ""
     if res.pending:
         late = sum(p.overdue for p in res.pending)
@@ -1227,9 +1247,12 @@ a{{color:var(--accent);text-decoration:none}} a:hover{{text-decoration:underline
 .panel,.block{{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 16px}}
 h2{{font-size:1.05rem;margin:0 0 6px}}
 .grid{{display:flex;flex-direction:column;gap:14px}} .side{{display:flex;flex-direction:column;gap:14px;order:-1}}
-.cro{{background:var(--tint);border-left:4px solid var(--accent)}} .cro ul{{margin:2px 0 6px;padding-left:18px}}
+.cro{{background:var(--tint);border-left:4px solid var(--accent)}}
 .cro .focus{{color:var(--accent);font-weight:700;font-size:.75rem;text-transform:uppercase;letter-spacing:.05em;margin-top:8px}}
-.cro .fh{{font-weight:700}}
+.cro .fh{{font-weight:700;font-size:1.12rem;line-height:1.3;margin-top:4px}} .cro .fwhy{{margin-top:6px}}
+.cro .act{{margin-top:8px;padding:8px 10px;background:var(--card);border-radius:6px}}
+.cro .notes{{margin:10px 0 0;padding:8px 0 0 18px;border-top:1px solid var(--line);font-size:.85rem;color:var(--muted)}}
+.star{{color:var(--accent);font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.04em}}
 .pending ul,.radar ul{{list-style:none;margin:0;padding:0}} .pending li{{padding:5px 0;border-top:1px solid var(--line)}}
 .pending li:first-child{{border-top:0}} .pending .it{{display:block}} .pending .pm{{color:var(--muted);font-size:.8rem}}
 .pending .pm b{{font-weight:600;color:var(--fg)}} .pending li.late .pm b{{color:var(--late)}}
@@ -1331,23 +1354,29 @@ def to_pptx(res: Result, path: Path) -> bool:
         p.space_after = Pt(space)
         return p
 
-    # Slide 1: from the CRO's desk, and the pending items
+    # Slide 1: for CRO's desk (the story of the week), and the pending items
     box = cro_box(res)
     if box or res.pending:
         s1 = prs.slides.add_slide(blank)
-        header(s1, _title(res), f"From the CRO's desk and pending items · {period}")
-        cro_w = 4.6 if res.pending else 12.3
+        header(s1, _title(res), f"{CRO_TITLE} and pending items · {period}")
+        cro_w = 5.2 if res.pending else 12.3
         if box:
             tf = panel(s1, 0.5, 1.4, cro_w, 5.75)
-            para(tf, "From the CRO's desk", 18, True, space=10)
-            for note in box["notes"]:
-                para(tf, f"• {note}", 13, space=6)
+            para(tf, CRO_TITLE, 18, True, space=10)
             if box["focus"]:
                 f = box["focus"]
-                para(tf, "Focus this week", 13, True, accent, space=3)
-                para(tf, f["headline"], 14, True, navy, link=f["link"] or None, space=4)
-                if f["message"]:
-                    para(tf, f["message"], 12.5, space=4)
+                para(tf, f"★ {STORY_LABEL} · {f['block']}", 12, True, accent, space=4)
+                para(tf, f["headline"], 18, True, navy, link=f["link"] or None, space=3)
+                para(tf, f["meta"], 10, False, grey, space=8)
+                if f["why"]:
+                    para(tf, f["why"], 13, space=8)
+                if f["action"]:
+                    para(tf, "Action point", 12, True, accent, space=2)
+                    para(tf, f["action"], 13, space=10)
+            if box["notes"]:
+                para(tf, "Notes", 11, True, grey, space=2)
+                for note in box["notes"]:
+                    para(tf, f"• {note}", 11, False, grey, space=3)
         if res.pending:
             x = 0.5 + cro_w + 0.3 if box else 0.5
             _pending_table(s1, res.pending, x, 1.4, 13.333 - 0.5 - x, navy, grey, red, white)
@@ -1370,7 +1399,8 @@ def to_pptx(res: Result, path: Path) -> bool:
             para(tf, EMPTY_BLOCK, 10.5, False, grey)
         for n, st in enumerate(stories, 1):
             d = st.as_dict()
-            para(tf, f"{n}. {_clean(d['headline'], 95)}", 11, True, navy, link=d["link"] or None, space=1)
+            star = "★ " if _is_story(res, st) else ""
+            para(tf, f"{n}. {star}{_clean(d['headline'], 95)}", 11, True, navy, link=d["link"] or None, space=1)
             if d["why_it_matters"]:
                 para(tf, _clean(d["why_it_matters"], 125), 9, False, grey, space=6)
 
@@ -1408,6 +1438,7 @@ def _pending_table(slide, items: list[Pending], x: float, y: float, w: float, na
     shown = items[:12]
     late = sum(p.overdue for p in items)
     title = slide.shapes.add_textbox(Inches(x), Inches(y - 0.05), Inches(w), Inches(0.4)).text_frame
+    title.word_wrap = True              # a fixed-width box, so the title sits on the left
     title.text = f"Pending items · {len(items)}" + (f" · {late} overdue" if late else "")
     title.paragraphs[0].alignment = 1   # left
     title.paragraphs[0].runs[0].font.size = Pt(18)
@@ -1478,7 +1509,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--json", action="store_true", help="also print the items as JSON")
     p.add_argument("--open", action="store_true", help="open the HTML page in the browser when done")
     p.add_argument("--cro", action="append", default=[], metavar="TEXT",
-                   help="a note for the 'From the CRO's desk' box (repeatable)")
+                   help="a note for the 'For CRO's desk' box (repeatable)")
     p.add_argument("--cro-file", default=str(Path(__file__).resolve().parent / "cro_desk.txt"),
                    help="file with CRO notes, one per line (default cro_desk.txt next to this script)")
     p.add_argument("--pending-file", default=str(Path(__file__).resolve().parent / "pending_items.txt"),
