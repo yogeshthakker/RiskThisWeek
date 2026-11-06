@@ -10,7 +10,7 @@ web page for the weekly status meeting ("This week in risk"). The user runs it o
 ```bash
 pip install -r requirements.txt
 python risk_week.py --ai --open        # Gemini free tier; --open opens the web page
-python -m unittest test_risk_week      # 42 tests, no network or key needed
+python -m unittest test_risk_week      # 44 tests, no network or key needed
 ```
 
 Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
@@ -50,7 +50,11 @@ Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
    `reserve()` puts the best story on a missing topic into its block. `Result.blocks` holds
    the blocks; `Result.top` is all shown items, block by block (`flatten`).
 6. **AI ranks first (`--ai`); keywords are the fallback** (the user's decision, 6 Nov 2026).
-   Gemini `gemini-3.5-flash-lite` over its REST API (no SDK) by default; `--provider claude`
+   Gemini **`gemini-3.8-flash`** over its REST API (no SDK) by default, retried once with
+   `gemini-3.5-flash-lite` on a 429, server/network error, 404, or cut-off/unreadable JSON
+   (`GeminiProvider.label` records which model answered; it shows in "ranked by"). No
+   `temperature` (ignored by Gemini 3.6+, may be rejected later); `maxOutputTokens` at least
+   16384 because on Gemini 3 it covers thinking too. `--provider claude`
    uses the Anthropic SDK (`claude-opus-5-5`). `run()` sends up to `AI_POOL` (150) stories,
    newest first, with source, date, outlet count and summary but **no keyword block or score**
    (~7k tokens). `explain()` returns an `AiPick`: the AI rates impact 1–10 (`Story.impact`,
@@ -111,8 +115,13 @@ Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
   research of 6 Nov 2026), BIS feeds (supported by the parser, but mostly research).
 - A real `--ai` run with AI-first ranking has not been checked yet (no API key in the cloud
   sandbox). Read `output/risk-week-<date>-ai-reply.json` after the first run.
-- Which free LLM API is best for this was researched on 6 Nov 2026 (see the session); the
-  default model may change.
+- Free LLM research (6 Nov 2026): Gemini's free tier with `gemini-3.8-flash` is the best fit
+  (free limits not published by Google; ~20 requests/day reported). Free-tier data may be used
+  by Google and read by reviewers. Possible second provider if needed: SambaNova or Groq
+  `gpt-oss-120b` (OpenAI-style API; Groq's free plan caps 8K tokens/min, the prompt is ~7.4K).
+  Ruled out: GitHub Models (retired), Mistral (no free API), Cerebras (trial only), DeepSeek,
+  Hugging Face. 3.8 Flash has not yet been run for real: check the first `--ai` run's
+  `ai-reply.json` (`model` and `finishReason`).
 
 ## History
 

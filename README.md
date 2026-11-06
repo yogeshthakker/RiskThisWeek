@@ -144,21 +144,25 @@ then run:
 python risk_week.py --ai
 ```
 
-Gemini picks the final 5 from the top candidates and writes a short headline and a
-"why it matters for us" line for each, using only the text of the news items. It is
-told which bank it writes for (the profile's `bank` sentence) and to pass over routine items. The default
-model is `gemini-3.5-flash-lite`, which is on Google's free tier. One run makes one
-request, far inside the free daily limit (your project's limit is shown in AI Studio).
-Nothing extra needs installing for Gemini.
+Gemini ranks the week's stories (see "How the items are chosen") and writes a short
+headline and a "why it matters for us" line for each pick, using only the text of the news
+items. It is told which bank it writes for (the profile's `bank` sentence and `guidance`).
+The default model is **`gemini-3.8-flash`**, Google's strongest Flash model, which is on the
+free tier (reportedly about 20 requests a day; your project's limit is shown in AI Studio).
+A run makes one or two requests. Nothing extra needs installing for Gemini.
 
-If the call fails for any reason (no key, daily limit reached, no network), the keyword
-ranking is used and the output says why. If an item comes back without a "why it matters"
+If `gemini-3.8-flash` fails (daily limit, server error, or a cut-off or unreadable reply),
+the request is retried once with **`gemini-3.5-flash-lite`**. If that fails too (or there is
+no key or no network), the keyword ranking is used. The page's "ranked by" line shows which
+model answered, and why a fallback was used. If an item comes back without a "why it matters"
 line, one short follow-up request fills it in. Every AI reply is saved as
 `output/risk-week-<date>-ai-reply.json`, so you can see exactly what the AI returned.
 
-On the free tier Google may use what is sent to improve its products. This tool sends
-only public news headlines and summaries, so that is fine here; don't reuse a free key
-for confidential bank documents.
+On the free tier Google may use what is sent to improve its products, and human reviewers
+may read it. This tool sends only public news, plus the `bank` description and `guidance`
+from `sources.json` (your notes and pending items are never sent). Keep those two settings
+generic if they should not leave the bank, and don't reuse a free key for confidential
+documents.
 
 To use Claude instead: set `ANTHROPIC_API_KEY`, `pip install anthropic`, and run
 `python risk_week.py --ai --provider claude` (default model `claude-opus-5-5`).

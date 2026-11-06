@@ -23,7 +23,8 @@ What it does, in order:
    source (RBI first), severity words and recency. The best 3 in each block are
    shown; each priority topic gets a place when a story exists.
 5. Rank.     With --ai the AI does the ranking: Gemini on Google's free tier
-   (GEMINI_API_KEY, model gemini-3.5-flash-lite) or Claude (--provider claude,
+   (GEMINI_API_KEY, model gemini-3.8-flash, falling back to gemini-3.5-flash-lite)
+   or Claude (--provider claude,
    ANTHROPIC_API_KEY) reads up to 150 stories (newest first, no keyword scores
    shown), rates each pick's impact 1-10, puts it in a block, picks 3 per block,
    the radar and the story of the week, and writes a headline and a "why it
@@ -745,15 +746,16 @@ def explain(stories: list[Story], provider, per_block: int, bank: str = DEFAULT_
         f"and what control or check makes that possible.\n\nCandidates:\n" + _candidates(stories)
     )
     system = _system(bank, guidance)
-    name = f"{getattr(provider, 'name', 'llm')} ({getattr(provider, 'model', '')})"
     try:
-        reply = provider.json_call(system, user, response_schema=AI_SCHEMA, max_output_tokens=6000)
+        reply = provider.json_call(system, user, response_schema=AI_SCHEMA, max_output_tokens=16384)
     except Exception as e:  # noqa: BLE001 — fall back to the keyword ranking
         if log is not None:
             log.append({"request": "rank", "error": f"{type(e).__name__}: {e}"[:500]})
-        return AiPick.failed(f"AI failed ({type(e).__name__}: {str(e)[:120]}); keyword ranking used")
+        return AiPick.failed(f"AI failed ({type(e).__name__}: {str(e)[:240]}); keyword ranking used")
+    name = (f"{getattr(provider, 'name', 'llm')} "
+            f"({getattr(provider, 'label', None) or getattr(provider, 'model', '')})")
     if log is not None:
-        log.append({"request": "rank", "candidates": len(stories), "reply": reply})
+        log.append({"request": "rank", "candidates": len(stories), "model": name, "reply": reply})
     reply = reply if isinstance(reply, dict) else {}
 
     def story(raw) -> Story | None:
@@ -865,16 +867,21 @@ def _post_json(url: str, body: dict, headers: dict, timeout: float = 90) -> dict
 
 
 class GeminiProvider:
-    """One JSON-mode call to Gemini over Google's REST API: no extra package needed.
+    """JSON-mode calls to Gemini over Google's REST API: no extra package needed.
 
     Needs GEMINI_API_KEY (free from aistudio.google.com/apikey). The default model,
-    gemini-3.5-flash-lite, is on the free tier; one run makes one request. On the
-    free tier Google may use what is sent to improve its products: here that is
-    public news headlines only.
+    gemini-3.8-flash, is on the free tier (about 20 requests a day; a run makes one or
+    two). If it fails (daily limit, server error, cut-off or unreadable reply), the call
+    is retried once with gemini-3.5-flash-lite; only then does the run fall back to the
+    keyword ranking. On the free tier Google may use what is sent to improve its
+    products, and human reviewers may read it: here that is public news and the
+    profile's bank description and guidance.
     """
 
     name = "gemini"
-    DEFAULT_MODEL = "gemini-3.5-flash-lite"
+    DEFAULT_MODEL = "gemini-3.8-flash"
+    FALLBACK_MODEL = "gemini-3.5-flash-lite"
+    MIN_OUTPUT_TOKENS = 16384   # on Gemini 3 this budget covers thinking as well as the answer
 
     def __init__(self, model: str | None = None, post: Callable[..., dict] = _post_json):
         self.key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
@@ -882,9 +889,24 @@ class GeminiProvider:
             raise RuntimeError("set GEMINI_API_KEY (free key: https://aistudio.google.com/apikey)")
         self.model = model or os.environ.get("RISK_WEEK_MODEL") or self.DEFAULT_MODEL
         self.post = post
+        self.label = self.model          # which model answered, and why a fallback was used
 
     def json_call(self, system_prompt, user_content, response_schema=None, max_output_tokens=1500) -> dict:
-        config: dict = {"temperature": 0.2, "maxOutputTokens": max(max_output_tokens, 2048),
+        models = [self.model] + ([self.FALLBACK_MODEL] if self.model != self.FALLBACK_MODEL else [])
+        errors: list[str] = []
+        for model in models:
+            try:
+                out = self._call(model, system_prompt, user_content, response_schema, max_output_tokens)
+            except RuntimeError as e:
+                errors.append(f"{model}: {e}")
+                continue
+            self.label = model if not errors else f"{model}, after {errors[0][:120]}"
+            return out
+        raise RuntimeError(" | ".join(errors))
+
+    def _call(self, model, system_prompt, user_content, response_schema, max_output_tokens) -> dict:
+        # No temperature: Gemini 3.6+ ignores it, and Google says later models will reject it.
+        config: dict = {"maxOutputTokens": max(max_output_tokens, self.MIN_OUTPUT_TOKENS),
                         "responseMimeType": "application/json"}
         if response_schema:
             config["responseJsonSchema"] = response_schema
@@ -894,26 +916,32 @@ class GeminiProvider:
             "generationConfig": config,
         }
         try:
-            reply = self.post(GEMINI_URL.format(model=urllib.parse.quote(self.model)), body,
+            reply = self.post(GEMINI_URL.format(model=urllib.parse.quote(model)), body,
                               {"x-goog-api-key": self.key})
         except urllib.error.HTTPError as e:
             detail = e.read().decode("utf-8", "replace")[:300]
             if e.code == 429:
-                raise RuntimeError(f"Gemini free-tier limit reached for {self.model} "
-                                   "(daily limits reset at midnight Pacific time)") from e
+                raise RuntimeError("free-tier limit reached (daily limits reset at midnight Pacific time)") from e
             if e.code == 404:
-                raise RuntimeError(f"Gemini model '{self.model}' not found; set --model or RISK_WEEK_MODEL") from e
-            raise RuntimeError(f"Gemini HTTP {e.code}: {detail}") from e
+                raise RuntimeError("model not found; set --model or RISK_WEEK_MODEL") from e
+            raise RuntimeError(f"HTTP {e.code}: {detail}") from e
+        except (urllib.error.URLError, TimeoutError, OSError) as e:
+            raise RuntimeError(f"network: {type(e).__name__}: {e}") from e
         candidates = reply.get("candidates") or []
         if not candidates:
-            raise RuntimeError(f"Gemini returned no answer: {str(reply.get('promptFeedback', ''))[:200]}")
+            raise RuntimeError(f"no answer: {str(reply.get('promptFeedback', ''))[:200]}")
+        finish = candidates[0].get("finishReason")
         parts = (candidates[0].get("content") or {}).get("parts") or []
         text = "".join(p.get("text", "") for p in parts if not p.get("thought")).strip()
         if not text:
-            raise RuntimeError(f"Gemini returned an empty answer ({candidates[0].get('finishReason')})")
+            raise RuntimeError(f"empty answer ({finish})")
         if text.startswith("```"):
             text = text.strip("`").removeprefix("json").strip()
-        return json.loads(text)
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError as e:
+            cut = " (cut off: output limit reached)" if finish == "MAX_TOKENS" else ""
+            raise RuntimeError(f"reply is not valid JSON{cut}") from e
 
 
 class ClaudeProvider:
@@ -1561,7 +1589,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--ai", action="store_true", help="let an AI pick and explain the items")
     p.add_argument("--provider", choices=["gemini", "claude"], default="gemini",
                    help="gemini: free tier, GEMINI_API_KEY (default); claude: ANTHROPIC_API_KEY")
-    p.add_argument("--model", help="model name (default gemini-3.5-flash-lite or claude-opus-5-5; "
+    p.add_argument("--model", help="model name (default gemini-3.8-flash, with gemini-3.5-flash-lite as "
+                                   "fallback; or claude-opus-5-5 with --provider claude; "
                                    "or set RISK_WEEK_MODEL)")
     p.add_argument("--json", action="store_true", help="also print the items as JSON")
     p.add_argument("--open", action="store_true", help="open the HTML page in the browser when done")

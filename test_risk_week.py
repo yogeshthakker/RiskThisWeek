@@ -528,11 +528,13 @@ class TestGemini(unittest.TestCase):
                                             "why_it_matters": "W"}]})
 
         g = rw.GeminiProvider(post=post)
-        self.assertEqual(g.model, "gemini-3.5-flash-lite")
+        self.assertEqual(g.model, "gemini-3.8-flash")
         out = g.json_call("sys", "user", rw.AI_SCHEMA)
         self.assertEqual(out["items"][0]["headline"], "H")
         url, body, headers = calls[0]
-        self.assertIn("/models/gemini-3.5-flash-lite:generateContent", url)
+        self.assertIn("/models/gemini-3.8-flash:generateContent", url)
+        self.assertNotIn("temperature", body["generationConfig"])            # ignored by Gemini 3.6+
+        self.assertGreaterEqual(body["generationConfig"]["maxOutputTokens"], 16384)   # includes thinking
         self.assertEqual(headers, {"x-goog-api-key": "k"})
         self.assertNotIn("k", url)                                   # key in a header, not the URL
         self.assertEqual(body["generationConfig"]["responseMimeType"], "application/json")
@@ -544,7 +546,7 @@ class TestGemini(unittest.TestCase):
             {"id": 1, "headline": "Gemini headline", "category": "Credit risk", "why_it_matters": "W"}]})
         res = rw.run(top=3, sources=SOURCES, fetcher=fetcher, now=NOW, provider=rw.GeminiProvider(post=post))
         self.assertEqual(res.top[0].headline, "Gemini headline")
-        self.assertIn("gemini (gemini-3.5-flash-lite)", res.ai)
+        self.assertIn("gemini (gemini-3.8-flash)", res.ai)
 
     def test_daily_limit_falls_back_to_keywords(self):
         def post(url, body, headers):
@@ -553,6 +555,32 @@ class TestGemini(unittest.TestCase):
         res = rw.run(top=3, sources=SOURCES, fetcher=fetcher, now=NOW, provider=rw.GeminiProvider(post=post))
         self.assertIn("keyword ranking used", res.ai)
         self.assertTrue(res.top)
+
+    def test_falls_back_to_flash_lite(self):
+        urls = []
+
+        def post(url, body, headers):
+            urls.append(url)
+            if "gemini-3.8-flash:" in url:
+                raise urllib.error.HTTPError(url, 429, "Too Many Requests", {}, io.BytesIO(b"quota"))
+            return gemini_reply({"items": [{"id": 1, "headline": "Lite", "category": "Credit risk",
+                                            "impact": 7, "why_it_matters": "W"}], "radar": [],
+                                 "cro_focus": {"id": 1, "message": "m"}})
+
+        res = rw.run(top=3, sources=SOURCES, fetcher=fetcher, now=NOW, provider=rw.GeminiProvider(post=post))
+        self.assertIn("/models/gemini-3.8-flash:", urls[0])
+        self.assertIn("/models/gemini-3.5-flash-lite:", urls[1])
+        self.assertIn("gemini-3.5-flash-lite, after gemini-3.8-flash: free-tier limit", res.ai)
+        self.assertIn("Lite", [s.headline for s in res.top])
+
+    def test_cut_off_reply_tries_fallback_then_keywords(self):
+        cut = {"candidates": [{"content": {"parts": [{"text": '{"items": [{"id": 1'}]},
+                               "finishReason": "MAX_TOKENS"}]}
+        res = rw.run(top=3, sources=SOURCES, fetcher=fetcher, now=NOW,
+                     provider=rw.GeminiProvider(post=lambda url, body, headers: cut))
+        self.assertIn("cut off", res.ai)
+        self.assertIn("gemini-3.5-flash-lite", res.ai)
+        self.assertIn("keyword ranking used", res.ai)
 
     def test_fenced_json_and_thoughts_tolerated(self):
         post = lambda url, body, headers: {"candidates": [{"content": {"parts": [  # noqa: E731
