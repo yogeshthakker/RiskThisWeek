@@ -124,7 +124,12 @@ The filters and the keyword ranking:
    the ranking when it is below the threshold, names no foreign bank and restricts no
    business. These are listed at the end of the web page, so nothing is lost.
 3. **Group.** The same story from several outlets counts once, and wider coverage ranks it
-   higher.
+   higher. This is done on your computer, in two passes: first headlines that share most of
+   their words, then the same news told in different words ("CERT-In warns banks of AI
+   attacks" and "I4C warns of AI-powered attacks on banks"). Words that are rare that week
+   count most, and a few synonyms count as the same word (alert = warn, crackdown = curbs).
+   Only these unique stories are sent to the AI, each with the number of outlets that
+   carried it.
 4. **Block and score.** Each story goes to one block, by the words it uses:
 
    | Block | For example |

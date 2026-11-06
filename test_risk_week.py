@@ -295,6 +295,50 @@ class TestAiFirst(unittest.TestCase):
         self.assertTrue(all(s.impact is None for s in res.top))
 
 
+class TestSameStory(unittest.TestCase):
+    """The second grouping pass, on one week's real headlines (test_headlines.json, 6 Nov 2026)."""
+
+    @classmethod
+    def setUpClass(cls):
+        titles = json.loads((pathlib.Path(__file__).resolve().parent / "test_headlines.json")
+                            .read_text(encoding="utf-8"))
+        stories = []
+        for n, title in enumerate(titles):
+            it = rw.Item(title=title, link=f"https://x/{n}", source=f"S{n}", published=NOW)
+            stories.append(rw.Story(items=[it], category="Credit risk", score=100 - n * 0.1))
+        cls.before = len(stories)
+        cls.merged = rw.merge_same_story(stories)
+
+    def story_of(self, words):
+        found = [s for s in self.merged if any(words in it.title for it in s.items)]
+        self.assertEqual(len(found), 1, words)
+        return {it.title for it in found[0].items}
+
+    def test_fewer_stories(self):
+        self.assertLess(len(self.merged), self.before)
+        self.assertEqual(sum(len(s.items) for s in self.merged), self.before)   # nothing lost
+
+    def test_same_story_in_different_words_is_merged(self):
+        hedging = self.story_of("RBI crackdown on rupee bets")
+        self.assertIn("RBI’s rupee-speculation curbs push corporate hedging lower", hedging)
+        self.assertIn("India’s Dollar Hedging Slumps as RBI Cracks Down on Speculation", hedging)
+        cert = self.story_of("CERT-In issues critical alert")
+        self.assertGreaterEqual(len([t for t in cert if "CERT-In" in t or "I4C" in t]), 3)
+        self.assertIn("US Sanctions Chandigarh Couple Over Alleged Iran Shipping Fraud",
+                      self.story_of("US sanctions Indian couple behind fake flag"))
+
+    def test_different_stories_stay_apart(self):
+        self.assertNotIn("Bank of England makes first rate hike since 2023",
+                         self.story_of("Riksbank delivers first rate hike"))
+        self.assertNotIn("RBI Sets Up A New Market Committee", self.story_of("Govt sets up banking committee"))
+        self.assertFalse(any("A7" in t for t in self.story_of("Razorpay gets final licence")))
+
+    def test_small_sets_left_alone(self):
+        few = [rw.Story(items=[rw.Item(title=t, link=t, source="s", published=NOW)], category="x", score=1)
+               for t in ("CERT-In warns banks of AI attacks", "CERT-In alert on AI attacks on banks")]
+        self.assertEqual(len(rw.merge_same_story(few)), 2)
+
+
 class TestPrivacy(unittest.TestCase):
     def test_notes_and_pending_never_sent_to_ai(self):
         sent = []

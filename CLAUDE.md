@@ -10,7 +10,7 @@ web page for the weekly status meeting ("This week in risk"). The user runs it o
 ```bash
 pip install -r requirements.txt
 python risk_week.py --ai --open        # Gemini free tier; --open opens the web page
-python -m unittest test_risk_week      # 49 tests, no network or key needed
+python -m unittest test_risk_week      # 53 tests, no network or key needed
 ```
 
 Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
@@ -25,6 +25,7 @@ Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
 | `cro_desk.txt` | The user's notes for the CRO box, one per line. Git-ignored (may be internal); `cro_desk.example.txt` shows the format |
 | `pending_items.txt` | Pending items for the status meeting, `Item \| Owner \| Due \| Status` per line. Every run shows them and asks for updates first (`review_pending`: number = edit, `a` add, `d N` done, `x N` delete, Enter = carry on; saved with `save_pending`, header comments kept); skipped with `--no-prompt` or when stdin is not a terminal. Git-ignored; `pending_items.example.txt` shows the format |
 | `test_risk_week.py` | unittest tests using sample feeds and fake AI replies |
+| `test_headlines.json` | One week's real headlines (6 Nov 2026), used to test the same-story grouping |
 | `.env` | `GEMINI_API_KEY=...` on the user's machine. Git-ignored |
 
 ## How it works
@@ -39,8 +40,15 @@ Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
 3. **Set aside routine enforcement.** A fine or direction aimed at one bank stays out of the
    ranking if it is under `penalty_threshold_crore` (₹10 crore), names no foreign bank and
    restricts no business. These are listed at the end of the page, not dropped.
-4. **Group** the same story across outlets (word-stem overlap against every headline in a
-   group). Wider coverage ranks higher.
+4. **Group locally, so the AI gets unique stories only** (the user's request, 6 Nov 2026).
+   First `group()`: word-stem overlap against every headline in a group. Then
+   `merge_same_story()`: the same news in different words, by a cosine score over words
+   weighted by rarity that week (log IDF over stories; `COMMON_WORDS` weigh 0; `SAME_WORD`
+   synonyms, hyphenated words joined) plus "anchor" words shared by at most 5 stories:
+   merge if score ≥ 0.42, or ≥ 0.33 with 1 anchor, or ≥ 0.28 with 2 anchors (union-find;
+   skipped below 20 stories). Tuned on 6 Nov 2026 news: 206 → 189 stories, no wrong merges
+   seen (closest: two related bond-fundraising stories). `test_headlines.json` holds that
+   week's headlines for `TestSameStory`. Wider coverage ranks higher; the AI sees "N outlets".
 5. **Block and score.** `CATEGORIES` are the six blocks (`BLOCKS`, in display order); a story
    takes the block with the most regex hits (headline hits double; ties go to the earlier
    block, so a draft ECL rule can land in Compliance risk rather than Credit risk). Score adds the

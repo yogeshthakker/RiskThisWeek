@@ -14,8 +14,10 @@ What it does, in order:
    operations, VRRR results, ...), look-back stories and anything not about banking.
    Fines and directions aimed at one bank below the profile's threshold (and not
    naming a foreign bank or restricting business) are set aside, listed at the end.
-3. Group.    Puts the same story from several outlets together; a story that
-   many outlets carry ranks higher.
+3. Group.    Puts the same story from several outlets together, in two passes:
+   headlines that share most words, then the same news told in different words
+   (rare words this week and a few synonyms weigh most). Only these unique stories
+   go to the AI; a story that many outlets carry ranks higher.
 4. Score.    Puts each story in one of six blocks (Credit risk, Market risk,
    Non-financial risk, Cyber security risk, Fraud risk, Compliance risk) and scores it by block terms, the bank
    profile in sources.json (CRO priorities such as MSME lending and India–Russia
@@ -601,6 +603,88 @@ def reserve(blocks: dict[str, list[Story]], stories: list[Story], profile: "Prof
     return blocks
 
 
+# Second grouping pass: the same story told in different words ("CERT-In warns banks of AI
+# attacks" / "I4C warns of AI-powered attacks on banks"). Words that are rare this week weigh
+# more than common ones, and a few synonyms count as the same word.
+SAME_WORD = {
+    "alert": "warn", "warning": "warn", "warns": "warn", "flag": "warn", "flags": "warn", "caution": "warn",
+    "crackdown": "curb", "curbs": "curb", "clampdown": "curb", "cracks": "curb", "crack": "curb",
+    "bet": "specul", "bets": "specul", "speculation": "specul", "speculative": "specul",
+    "cyberattack": "cyber", "cyberattacks": "cyber", "cybersecurity": "cyber", "hacker": "hack", "hackers": "hack",
+    "government": "govt", "lender": "bank", "lenders": "bank", "banks": "bank",
+    "slumps": "fall", "slump": "fall", "drops": "fall", "declines": "fall", "lower": "fall", "low": "fall",
+    "ai-powered": "ai", "ai-driven": "ai", "committee": "panel", "committees": "panel", "panels": "panel",
+    "iranian": "iran", "russian": "russia", "rouble": "ruble", "roubles": "ruble",
+}
+COMMON_WORDS = set(("rbi india indian bank says report sector financial finance new week amid first gets get "
+                    "set sets cr crore rs lakh issue issu play plays key big top over more year years month").split())
+
+
+def _story_words(title: str) -> set[str]:
+    out = set()
+    for w in re.findall(r"[a-z0-9₹][a-z0-9₹\-]*", title.lower().replace("…", " ").replace("’", "'")):
+        w = SAME_WORD.get(w, w)
+        w = SAME_WORD.get(w.replace("-", ""), w.replace("-", ""))      # "cross-border" is one word
+        if w and w not in STOP and len(w) > 1:
+            out.add(_stem(w))
+    return out
+
+
+def merge_same_story(stories: list[Story], min_stories: int = 20) -> list[Story]:
+    """Merge stories that tell the same news in different words, so each reaches the AI once.
+
+    Two stories are the same when the rare words they share weigh enough (a cosine score over
+    rarity-weighted words) and they share distinctive 'anchor' words (in at most 5 stories this
+    week). Skipped for small sets, where word rarity means little.
+    """
+    n = len(stories)
+    if n < min_stories:
+        return stories
+    words = [set().union(*(_story_words(it.title) for it in s.items)) for s in stories]
+    df: dict[str, int] = {}
+    for ws in words:
+        for t in ws:
+            df[t] = df.get(t, 0) + 1
+    weight = {t: (0.0 if t in COMMON_WORDS else math.log((n + 1) / c)) for t, c in df.items()}
+    total = [sum(weight[t] for t in ws) for ws in words]
+
+    def same(i: int, j: int) -> bool:
+        if not total[i] or not total[j]:
+            return False
+        shared = words[i] & words[j]
+        score = sum(weight[t] for t in shared) / math.sqrt(total[i] * total[j])
+        anchors = sum(1 for t in shared if df[t] <= 5 and weight[t] and not t.isdigit())
+        return score >= 0.42 or (score >= 0.33 and anchors >= 1) or (score >= 0.28 and anchors >= 2)
+
+    parent = list(range(n))
+
+    def root(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    for i in range(n):
+        for j in range(i + 1, n):
+            if root(i) != root(j) and same(i, j):
+                parent[root(j)] = root(i)
+    clusters: dict[int, list[Story]] = {}
+    for i in range(n):
+        clusters.setdefault(root(i), []).append(stories[i])
+    out: list[Story] = []
+    for members in clusters.values():
+        if len(members) == 1:
+            out.append(members[0])
+            continue
+        members.sort(key=lambda s: -s.score)
+        items = [it for s in members for it in s.items]          # the best-scoring story leads
+        outlets = {it.publisher or it.source for it in items}
+        bonus = 0.9 * math.log2(len(outlets)) if len(outlets) > 1 else 0.0
+        out.append(Story(items=items, category=members[0].category, score=members[0].lead.score + bonus))
+    out.sort(key=lambda s: -s.score)
+    return out
+
+
 def pick(stories: list[Story], per_block: int = 3) -> tuple[dict[str, list[Story]], list[Story]]:
     """The best `per_block` stories in each block, and the next best for 'also on the radar'."""
     blocks: dict[str, list[Story]] = {b: [] for b in BLOCKS}
@@ -727,7 +811,9 @@ def explain(stories: list[Story], provider, per_block: int, bank: str = DEFAULT_
     the keyword ranking is then used. Every reply is appended to `log` (when given).
     """
     user = (
-        f"The report has six blocks: {', '.join(BLOCKS)}.\n"
+        f"The report has six blocks: {', '.join(BLOCKS)}. Each candidate is a different story: the same "
+        f"news from several outlets has already been merged, and 'N outlets' shows how widely it was "
+        f"covered.\n"
         f"1. Read every candidate and judge its impact for us, {bank}, on a scale of 1 (minor) to 10 "
         f"(must reach the CRO this week).\n"
         f"2. For each block, pick the {per_block} items with the highest impact that belong in it (fewer "
@@ -1031,7 +1117,7 @@ def run(days: int = 7, top: int = 3, provider=None, sources: dict | None = None,
     ranked = [i for i in kept if i not in routine]
     for i in ranked:
         score_item(i, start, end, profile)
-    stories = group(ranked)
+    stories = merge_same_story(group(ranked))   # each story once, however many outlets carry it
     routine = _dedupe_routine(routine)
 
     ai_log: list = []
