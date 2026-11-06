@@ -482,6 +482,53 @@ class TestPending(unittest.TestCase):
         self.assertEqual(rw._status(got[2]), "Open")
         self.assertEqual(rw.load_pending(pathlib.Path("/no/such/file"), self.TODAY), [])
 
+    def review(self, text, answers):
+        out = []
+        answers = iter(answers)
+        d = tempfile.mkdtemp()
+        f = pathlib.Path(d) / "pending_items.txt"
+        if text is not None:
+            f.write_text(text, encoding="utf-8")
+        items = rw.review_pending(f, ask=lambda prompt: next(answers), say=out.append, today=self.TODAY)
+        return items, f, "\n".join(out)
+
+    def test_review_shows_items_and_enter_changes_nothing(self):
+        text = "# my header\nBoard paper | CRO office | 20 Nov 2026 | Open\n"
+        items, f, shown = self.review(text, [""])
+        self.assertIn("1. Board paper · CRO office · 20 Nov 2026 · Open", shown)
+        self.assertEqual(f.read_text(encoding="utf-8"), text)          # untouched
+        self.assertEqual([p.item for p in items], ["Board paper"])
+
+    def test_review_edit_done_add_delete_and_save(self):
+        text = "# my header\nBoard paper | CRO office | 20 Nov 2026 | Open\nOld item | X | | Open\n"
+        items, f, shown = self.review(text, [
+            "1", "", "Risk team", "31 Feb 2026", "02 Nov 2026", "",    # edit 1: owner, a bad date, then a good one
+            "a", "MSME scorecard", "Credit", "15 Nov 2026", "",         # add (status defaults to Open)
+            "x 3",                                                     # delete "Old item" (third after sorting)
+            "huh",                                                     # not understood: nothing changes
+            "",                                                        # carry on
+        ])
+        self.assertIn("Could not read that date", shown)
+        self.assertIn("Not understood", shown)
+        self.assertIn("Saved", shown)
+        saved = f.read_text(encoding="utf-8")
+        self.assertTrue(saved.startswith("# my header\n"))              # comments kept
+        self.assertIn("Board paper | Risk team | 02 Nov 2026 | Open", saved)
+        self.assertIn("MSME scorecard | Credit | 15 Nov 2026 | Open", saved)
+        self.assertNotIn("Old item", saved)
+        self.assertEqual(items[0].item, "Board paper")                 # now overdue: first
+        self.assertTrue(items[0].overdue)
+        again = rw.load_pending(f, self.TODAY)
+        self.assertEqual([p.item for p in again], [p.item for p in items])
+
+    def test_review_mark_done_and_new_file(self):
+        items, f, shown = self.review(None, ["a", "First item", "", "", "", "d 1", ""])
+        self.assertIn("none yet", shown)
+        self.assertEqual(items[0].status, "Done")
+        saved = f.read_text(encoding="utf-8")
+        self.assertTrue(saved.startswith("# Pending items for the weekly status meeting"))
+        self.assertIn("First item |  |  | Done", saved)
+
     def test_example_file_parses(self):
         got = rw.load_pending(pathlib.Path(__file__).resolve().parent / "pending_items.example.txt", self.TODAY)
         self.assertEqual(len(got), 4)

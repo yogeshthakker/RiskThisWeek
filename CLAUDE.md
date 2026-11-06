@@ -10,7 +10,7 @@ web page for the weekly status meeting ("This week in risk"). The user runs it o
 ```bash
 pip install -r requirements.txt
 python risk_week.py --ai --open        # Gemini free tier; --open opens the web page
-python -m unittest test_risk_week      # 46 tests, no network or key needed
+python -m unittest test_risk_week      # 49 tests, no network or key needed
 ```
 
 Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
@@ -23,7 +23,7 @@ Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
 | `risk_week.py` | The whole tool: collect, filter, group, score, AI, write. Standard library only, plus python-pptx for the slide |
 | `sources.json` | Feeds, Google News searches and the bank **profile** (what ranks up or down). The user edits this to tune results |
 | `cro_desk.txt` | The user's notes for the CRO box, one per line. Git-ignored (may be internal); `cro_desk.example.txt` shows the format |
-| `pending_items.txt` | Pending items for the status meeting, `Item \| Owner \| Due \| Status` per line, kept by hand. Git-ignored; `pending_items.example.txt` shows the format |
+| `pending_items.txt` | Pending items for the status meeting, `Item \| Owner \| Due \| Status` per line. Every run shows them and asks for updates first (`review_pending`: number = edit, `a` add, `d N` done, `x N` delete, Enter = carry on; saved with `save_pending`, header comments kept); skipped with `--no-prompt` or when stdin is not a terminal. Git-ignored; `pending_items.example.txt` shows the format |
 | `test_risk_week.py` | unittest tests using sample feeds and fake AI replies |
 | `.env` | `GEMINI_API_KEY=...` on the user's machine. Git-ignored |
 
@@ -94,6 +94,7 @@ Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
   then **India–Russia** (payments, rupee–rouble, vostro, sanctions). These are
   `profile.priority.topics` and `profile.guidance` (passed to the AI) in `sources.json`.
 - **Pending items** are the CRO's second focus: a hand-kept file shown next to the CRO box.
+  Each run displays them and asks for updates (the user's request of 6 Nov 2026).
 - **Six blocks of three items**, using the full page width, and the whole page on one
   1920 × 1080 screen without scrolling (the user's requests of 6 Nov 2026).
 - No home-regulator feed: the user said not to add one.

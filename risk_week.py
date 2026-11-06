@@ -1121,21 +1121,138 @@ def load_pending(path: Path, today: date | None = None) -> list[Pending]:
         parts = [x.strip() for x in re.sub(r"^[-*•]\s*", "", line).split("|")] + ["", "", ""]
         if not parts[0]:
             continue
-        p = Pending(item=parts[0], owner=parts[1], due=parts[2], status=parts[3])
-        p.due_date = _parse_due(p.due) if p.due else None
-        p.overdue = bool(p.due_date and p.due_date < today and not _DONE.match(p.status))
-        out.append(p)
-
-    def key(p: Pending):
-        done = bool(_DONE.match(p.status))
-        return (0 if p.overdue else 2 if done else 1, p.due_date or date.max)
-    return sorted(out, key=key)
+        out.append(Pending(item=parts[0], owner=parts[1], due=parts[2], status=parts[3]))
+    return _refresh(out, today)
 
 
 def _status(p: Pending) -> str:
     if p.overdue:
         return "Overdue" + (f" ({p.status})" if p.status else "")
     return p.status or "Open"
+
+
+PENDING_HEADER = """\
+# Pending items for the weekly status meeting, one per line:
+#   Item | Owner | Due date | Status
+# Only the item is required. Dates like 20 Nov 2026 or 2026-11-20. Status is free text (Open, In progress, Done...).
+# Items past their due date that are not Done show as Overdue, at the top and in red.
+# risk_week.py shows these at the start of every run and asks for updates; you can also edit this file.
+"""
+
+
+def _refresh(items: list[Pending], today: date) -> list[Pending]:
+    for p in items:
+        p.due_date = _parse_due(p.due) if p.due else None
+        p.overdue = bool(p.due_date and p.due_date < today and not _DONE.match(p.status))
+
+    def key(p: Pending):
+        done = bool(_DONE.match(p.status))
+        return (0 if p.overdue else 2 if done else 1, p.due_date or date.max)
+    return sorted(items, key=key)
+
+
+def save_pending(path: Path, items: list[Pending]) -> None:
+    """Write the items back, keeping the comment lines at the top of the file."""
+    try:
+        old = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        old = []
+    header = []
+    for line in old:
+        if line.strip() and not line.strip().startswith("#"):
+            break
+        header.append(line)
+    if not any(h.strip() for h in header):
+        header = PENDING_HEADER.splitlines()
+    body = [" | ".join([p.item, p.owner, p.due, p.status]).rstrip(" |") for p in items]
+    path.write_text("\n".join(header + body) + "\n", encoding="utf-8")
+
+
+def review_pending(path: Path, ask: Callable[[str], str] = input, say: Callable[[str], None] = print,
+                   today: date | None = None) -> list[Pending]:
+    """Show the pending items and ask for updates; save the file if anything changed.
+
+    Commands: a number edits that item, 'a' adds one, 'd N' marks item N done, 'x N' deletes it,
+    and Enter on its own carries on. When editing, Enter keeps the value shown in brackets.
+    """
+    today = today or datetime.now(IST).date()
+    items = load_pending(path, today)
+    changed = False
+
+    def show() -> None:
+        say("")
+        if not items:
+            say(f"PENDING ITEMS ({path.name}): none yet")
+        else:
+            say(f"PENDING ITEMS ({path.name})")
+            for n, p in enumerate(items, 1):
+                rest = " · ".join(x for x in (p.owner, p.due) if x)
+                say(f"  {n:2d}. {p.item}" + (f" · {rest}" if rest else "") + f" · {_status(p)}")
+
+    def field_(label: str, current: str, check: Callable[[str], bool] = lambda v: True,
+               hint: str = "") -> str:
+        while True:
+            v = ask(f"    {label}" + (f" [{current}]" if current else "") + ": ").strip()
+            if not v:
+                return current
+            if v == "-":                     # '-' clears a field
+                return ""
+            if check(v):
+                return v
+            say(f"    {hint}")
+
+    def edit(p: Pending) -> None:
+        p.item = field_("Item", p.item) or p.item
+        p.owner = field_("Owner", p.owner)
+        p.due = field_("Due date", p.due, lambda v: _parse_due(v) is not None,
+                       "Could not read that date: use 20 Nov 2026 or 2026-11-20")
+        p.status = field_("Status (Open, In progress, Done...)", p.status)
+
+    def number(text: str) -> int | None:
+        try:
+            n = int(text)
+        except ValueError:
+            return None
+        return n - 1 if 1 <= n <= len(items) else None
+
+    show()
+    while True:
+        try:
+            cmd = ask("Update? number = edit, a = add, d N = done, x N = delete, Enter = continue: ").strip()
+        except EOFError:
+            break
+        if not cmd:
+            break
+        parts = cmd.split()
+        op, arg = (parts[0].lower(), parts[1] if len(parts) > 1 else "")
+        if op == "a":
+            new = Pending(item="")
+            new.item = field_("Item", "")
+            if not new.item:
+                continue
+            new.owner = field_("Owner", "")
+            new.due = field_("Due date", "", lambda v: _parse_due(v) is not None,
+                             "Could not read that date: use 20 Nov 2026 or 2026-11-20")
+            new.status = field_("Status (Open, In progress, Done...)", "") or "Open"
+            items.append(new)
+        elif op in ("d", "x") and number(arg) is not None:
+            i = number(arg)
+            if op == "d":
+                items[i].status = "Done"
+            else:
+                say(f"    Deleted: {items.pop(i).item}")
+        elif number(op) is not None:
+            edit(items[number(op)])
+        else:
+            say("    Not understood. Examples: 2 (edit item 2), a (add), d 3 (mark 3 done), x 4 (delete 4)")
+            continue
+        changed = True
+        items = _refresh(items, today)
+        show()
+    if changed:
+        save_pending(path, items)
+        say(f"Saved {path}")
+    return _refresh(items, today)
 
 
 def _dedupe_routine(items: list[Item]) -> list[Item]:
@@ -1620,9 +1737,17 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--pending-file", default=str(Path(__file__).resolve().parent / "pending_items.txt"),
                    help="pending items for the status meeting, 'Item | Owner | Due | Status' per line "
                         "(default pending_items.txt next to this script)")
+    p.add_argument("--no-prompt", action="store_true",
+                   help="do not ask for pending-item updates at the start (also skipped when not run "
+                        "from a terminal)")
     a = p.parse_args(argv)
 
     load_dotenv(Path(__file__).resolve().parent / ".env", Path.cwd() / ".env")
+    pending_path = Path(a.pending_file)
+    if not a.no_prompt and sys.stdin.isatty():
+        pending = review_pending(pending_path)     # before the news, so updates are not a wait
+    else:
+        pending = load_pending(pending_path)
     provider = None
     if a.ai:
         try:
@@ -1633,7 +1758,7 @@ def main(argv: list[str] | None = None) -> int:
     notes = load_cro_notes(Path(a.cro_file)) + a.cro
     res = run(days=a.days, top=a.top, provider=provider, sources=load_sources(a.sources),
               log=lambda m: print(m, file=sys.stderr), cro_notes=notes,
-              pending=load_pending(Path(a.pending_file)))
+              pending=pending)
     files = write(res, a.out_dir)
     print(to_console(res, files))
     if a.json:

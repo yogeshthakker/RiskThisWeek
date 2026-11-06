@@ -50,6 +50,22 @@ hand, one item per line:
 MSME credit policy: revised scorecard to Credit Committee | Credit Risk | 15 Nov 2026 | In progress
 ```
 
+**Every run starts by showing the pending items and asking for updates**, before it reads
+the news:
+
+```
+PENDING ITEMS (pending_items.txt)
+   1. RBI inspection (ISE) data requests: responses to open queries · Compliance · 07 Nov 2026 · Open
+   2. MSME credit policy: revised scorecard to Credit Committee · Credit Risk · 15 Nov 2026 · In progress
+Update? number = edit, a = add, d N = done, x N = delete, Enter = continue:
+```
+
+Type `2` to edit item 2 (each field shows its current value in brackets: press Enter to keep
+it, or `-` to clear it), `a` to add an item, `d 2` to mark item 2 done, `x 2` to delete it,
+and Enter on its own to carry on. Changes are saved to `pending_items.txt` (comment lines at
+the top are kept). Use `--no-prompt` to skip the questions; they are also skipped when the
+tool is not run from a terminal (for example from a scheduled task).
+
 The columns are Item, Owner, Due date and Status; only the item is required. Dates can be
 written `15 Nov 2026` or `2026-11-15`. An item past its due date that is not `Done` shows
 as **Overdue**, in red, at the top; done items go to the bottom (delete them when they no
@@ -185,6 +201,7 @@ Change either model with `--model` or `RISK_WEEK_MODEL`.
 | `--cro TEXT` | none | A note for the "For CRO's desk" box (repeatable) |
 | `--cro-file FILE` | `cro_desk.txt` | File with CRO notes, one per line |
 | `--pending-file FILE` | `pending_items.txt` | Pending items: `Item \| Owner \| Due \| Status` per line |
+| `--no-prompt` | off | Don't ask for pending-item updates at the start |
 
 ## Tests
 
