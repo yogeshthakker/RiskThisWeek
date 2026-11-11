@@ -1409,9 +1409,9 @@ EMPTY_BLOCK = "Nothing significant this week."
 def _compliance_markdown(res: Result) -> list[str]:
     info = res.compliance_info
     if info.get("error") and not res.compliance:
-        return ["## Pending RBI compliance items", "", f"_Not read: {info['error']}_", ""]
+        return [f"## Pending RBI compliance items{_ise_label(info)}", "", f"_Not read: {info['error']}_", ""]
     late = sum(i.overdue for i in res.compliance)
-    out = ["## Pending RBI compliance items", "",
+    out = [f"## Pending RBI compliance items{_ise_label(info)}", "",
            f"_{len(res.compliance)} open" + (f", {late} overdue" if late else "") + f", of {info.get('total', 0)}"
            + (f" · [source page]({info['url']})" if info.get("url") else "") + "_", ""]
     if res.compliance:
@@ -1499,10 +1499,10 @@ def to_console(res: Result, files: dict) -> str:
     info = res.compliance_info
     if info:
         if info.get("error") and not res.compliance:
-            out += [f"PENDING RBI COMPLIANCE: not read ({info['error']})", ""]
+            out += [f"PENDING RBI COMPLIANCE{_ise_label(info).upper()}: not read ({info['error']})", ""]
         else:
             late = sum(i.overdue for i in res.compliance)
-            out.append(f"PENDING RBI COMPLIANCE ({len(res.compliance)} open" + (f", {late} overdue" if late else "")
+            out.append(f"PENDING RBI COMPLIANCE{_ise_label(info).upper()} ({len(res.compliance)} open" + (f", {late} overdue" if late else "")
                        + f", of {info.get('total', 0)})")
             out += [f"  • {_clean(i.observation, 110)}" + "".join(f" · {x}" for x in (i.department, i.deadline) if x)
                     + f" · {i.shown_status}" for i in res.compliance[:12]]
@@ -1592,7 +1592,7 @@ def to_html(res: Result) -> str:
         else:
             body = (f'<ul>{rows}</ul>' if rows else '<p class="meta">No open items.</p>')
         src = f'<p class="meta">{link(info["url"], "Open the Confluence page ↗")}</p>' if info.get("url") else ""
-        comp = (f'<section class="panel pending comp"><h2>Pending RBI compliance <span class="meta">'
+        comp = (f'<section class="panel pending comp"><h2>Pending RBI compliance{e(_ise_label(info))} <span class="meta">'
                 f'{len(res.compliance)} open' + (f" · {late} overdue" if late else "")
                 + (f" · of {info['total']}" if info.get("total") else "") + f'</span></h2>{body}{src}</section>')
     radar = "".join(f'<li>{link(s.lead.link, s.as_dict()["headline"], "", s.as_dict()["headline"])} '
@@ -1814,7 +1814,7 @@ def _compliance_slide(prs, layout, header, res: Result, period: str, navy, grey,
     items, info = res.compliance, res.compliance_info
     late = sum(i.overdue for i in items)
     slide = prs.slides.add_slide(layout)
-    header(slide, "Pending RBI compliance items",
+    header(slide, f"Pending RBI compliance items{_ise_label(info)}",
            f"{len(items)} open" + (f" · {late} overdue" if late else "") + f" · of {info.get('total', 0)} "
            f"on '{info.get('title', 'the Confluence page')}' · {period}")
     shown = items[:10]
@@ -1932,7 +1932,7 @@ _ANCHOR = (r'<ac:structured-macro[^>]*ac:name="anchor"[^>]*>\s*<ac:parameter ac:
 # Clearer names for the two pages: NEWS_PAGE_ID is where the report is published, ISE_PAGE_ID is
 # the RBI compliance (ISE) page that is only read.
 CONFIG_ALIASES = {"NEWS_PAGE_ID": "PAGE_ID", "REPORT_PAGE_ID": "PAGE_ID",
-                  "ISE_PAGE_ID": "COMPLIANCE_PAGE_ID"}
+                  "ISE_PAGE_ID": "COMPLIANCE_PAGE_ID", "COMPLIANCE_DEPARTMENT": "ISE_DEPARTMENT"}
 
 
 def load_confluence_config(path: Path) -> dict | None:
@@ -2030,7 +2030,7 @@ def to_confluence(res: Result) -> str:
                         f"<td>{e(i.deadline)}</td><td>{_status_macro(i.shown_status, colour)}</td>"
                         f"<td>{e(i.comments)}</td></tr>")
         src = f' <a href="{e(info["url"])}">(source page)</a>' if info.get("url") else ""
-        out.append(f"<h3>Pending RBI compliance items{src}</h3>"
+        out.append(f"<h3>Pending RBI compliance items{e(_ise_label(info))}{src}</h3>"
                    f"<p><em>{len(res.compliance)} open of {info.get('total', 0)}</em></p>"
                    + ("<table><tbody><tr><th>Sub-section</th><th>Observation</th><th>Department</th>"
                       "<th>Deadline</th><th>Status</th><th>Comments</th></tr>" + "".join(rows) + "</tbody></table>"
@@ -2263,7 +2263,9 @@ def confluence_check(a) -> str:
         if info.get("error"):
             out += f"\nISE page (read only): {info['error']}"
         else:
-            out += (f"\nISE page (read only): OK. '{info['title']}': {info['total']} observation(s), "
+            scope = (f"{info['page_total']} observation(s) on the page; {info['total']} for department "
+                     f"'{info['department']}'" if info.get("department") else f"{info['total']} observation(s)")
+            out += (f"\nISE page (read only): OK. '{info['title']}': {scope}: "
                     f"{info['closed']} compliant, {len(items)} open, {info['overdue']} overdue")
             dated = len(items) - info["no_deadline"] - info["unread_deadlines"]
             out += f"\n  Open items with a deadline the tool understood: {dated} of {len(items)}"
@@ -2280,6 +2282,7 @@ def confluence_check(a) -> str:
 # ---------------------------------------------------------------------------
 
 COMPLIANCE_DONE = ("compliant", "closed", "complied")    # status values that mean the item is done
+ISE_DEPARTMENT = "risk"     # only rows whose Department contains this word ("" = every department)
 
 
 @dataclass
@@ -2507,20 +2510,37 @@ def load_compliance(cfg: dict | None, client: "ConfluenceClient | None" = None,
         client = client or ConfluenceClient(cfg)
         page = client.get_page(page_id)
         storage = ((page.get("body") or {}).get("storage") or {}).get("value", "")
-        items = parse_compliance(storage, today, done)
+        everything = parse_compliance(storage, today, done)
     except Exception as e:  # noqa: BLE001 — the report goes ahead without this section
         return [], {"error": f"{type(e).__name__}: {e}"[:300]}
+    dept = cfg.get("ISE_DEPARTMENT", ISE_DEPARTMENT)
+    dept = str(dept if dept is not None else "").strip()
+    if dept:                                    # whole word, any case: "risk" matches "Credit Risk"
+        pat = re.compile(rf"(?<![a-z]){re.escape(dept.lower())}(?![a-z])")
+        items = [i for i in everything if pat.search(i.department.lower())]
+    else:
+        items = everything
     open_items = [i for i in items if not i.done]
     unread = [i.deadline for i in open_items if i.deadline and not i.due_date]
     info = {"title": page.get("title") or "RBI compliance", "url": client.page_url(page_id),
+            "department": dept, "page_total": len(everything),
             "total": len(items), "closed": sum(i.done for i in items),
             "overdue": sum(i.overdue for i in items),
             "no_deadline": sum(1 for i in open_items if not i.deadline),
             "unread_deadlines": len(unread),
             "unread_examples": list(dict.fromkeys(_clean(u, 40) for u in unread))[:4]}
-    if not items:
+    if not everything:
         info["error"] = "no table with 'Observation' and 'Official deadline' / status columns found"
+    elif not items:
+        depts = sorted({i.department for i in everything if i.department})[:8]
+        info["error"] = (f"no rows with department '{dept}' among {len(everything)} observations "
+                         f"(departments on the page: {', '.join(depts) or 'none'})")
     return open_compliance(items), info
+
+
+def _ise_label(info: dict) -> str:
+    """' · Risk' when the ISE items are filtered to a department."""
+    return f" · {info['department'].title()}" if info.get("department") else ""
 
 
 def confluence_step(res: Result, a, files: dict) -> str:

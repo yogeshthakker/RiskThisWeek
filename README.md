@@ -224,6 +224,9 @@ Confluence page, each with a link to the source page.
   deadline" or "Compliant/Non-Compliant submitted to RBI" column (whatever date is in that
   heading). Sub-section, CBS / Non-CBS, Department, Head of Department and "Comments received
   from departments" are read too; merged cells are filled down.
+- **Department filter:** only rows whose Department contains the word "risk" (any case, so
+  "Risk", "Credit Risk" and "Risk Management" all count). Set `ISE_DEPARTMENT = "Treasury"` for
+  another department, or `ISE_DEPARTMENT = ""` for all. Counts cover the filtered rows.
 - **Pending** means the status is not exactly "Compliant" (so "Non-Compliant" and blanks are
   open). Change this with `COMPLIANCE_DONE = ["Compliant", "Closed"]`.
 - **Overdue** means the official deadline (e.g. `15.04.2026`) has passed and the item is open:

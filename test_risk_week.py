@@ -1,5 +1,6 @@
 import io
 import json
+import re
 import os
 import pathlib
 import sys
@@ -528,7 +529,7 @@ COMPLIANCE_PAGE = (
     '<td>Operations</td><td>A. Sharma</td><td>Remediation in progress</td><td>30.10.2026</td>'
     '<td><ac:structured-macro ac:name="status"><ac:parameter ac:name="colour">Red</ac:parameter>'
     '<ac:parameter ac:name="title">Non-Compliant</ac:parameter></ac:structured-macro></td></tr>'
-    '<tr><td>Beneficial owner &amp; UBO records incomplete</td><td>Non-CBS</td><td>Compliance</td><td>B. Rao</td>'
+    '<tr><td>Beneficial owner &amp; UBO records incomplete</td><td>Non-CBS</td><td>Credit Risk</td><td>B. Rao</td>'
     '<td></td><td>15.12.2026</td><td></td></tr>'
     '<tr><td>Outsourcing</td><td>Vendor risk assessments not refreshed</td><td>Non-CBS</td><td>IT</td>'
     '<td>C. Iyer</td><td>Done</td><td>15.04.2026</td><td>Compliant</td></tr>'
@@ -559,6 +560,21 @@ class TestCompliance(unittest.TestCase):
         self.assertEqual(kyc.shown_status, "Overdue (Non-Compliant)")
         self.assertEqual(ubo.shown_status, "Open")
 
+    def test_department_filter(self):
+        cfg = dict(TestConfluence.CFG, COMPLIANCE_PAGE_ID="999")
+        load = lambda c: rw.load_compliance(c, client=rw.ConfluenceClient(c, opener=FakeConfluence(body=COMPLIANCE_PAGE)),
+                                            today=self.TODAY)  # noqa: E731
+        items, info = load(cfg)                                   # default: department contains "risk"
+        self.assertEqual([i.department for i in items], ["Credit Risk"])
+        self.assertEqual((info["page_total"], info["total"], info["department"]), (3, 1, "risk"))
+        items, info = load(dict(cfg, ISE_DEPARTMENT=""))          # every department
+        self.assertEqual(len(items), 2)
+        items, info = load(dict(cfg, ISE_DEPARTMENT="Treasury"))
+        self.assertEqual(items, [])
+        self.assertIn("no rows with department 'Treasury'", info["error"])
+        self.assertIn("Credit Risk", info["error"])               # lists what is there
+        self.assertFalse(re.search(r"(?<![a-z])risk(?![a-z])", "asterisk"))   # whole word only
+
     def test_deadline_formats(self):
         d = lambda y, m, day: datetime(y, m, day).date()  # noqa: E731
         cases = {"15.04.2026": d(2026, 4, 15), "15/04/26": d(2026, 4, 15), "2026-04-15": d(2026, 4, 15),
@@ -579,7 +595,7 @@ class TestCompliance(unittest.TestCase):
 
     def test_load_reads_the_page_and_reports_problems(self):
         fake = FakeConfluence(body=COMPLIANCE_PAGE)
-        cfg = dict(TestConfluence.CFG, COMPLIANCE_PAGE_ID="999")
+        cfg = dict(TestConfluence.CFG, COMPLIANCE_PAGE_ID="999", ISE_DEPARTMENT="")
         items, info = rw.load_compliance(cfg, client=rw.ConfluenceClient(cfg, opener=fake), today=self.TODAY)
         self.assertIn("/rest/api/content/999?", fake.calls[0][1])
         self.assertEqual([c[0] for c in fake.calls], ["GET"])      # read only
@@ -596,7 +612,7 @@ class TestCompliance(unittest.TestCase):
 
     def test_shown_in_every_format(self):
         res = rw.run(top=3, sources=SOURCES, fetcher=fetcher, now=NOW)
-        cfg = dict(TestConfluence.CFG, COMPLIANCE_PAGE_ID="999")
+        cfg = dict(TestConfluence.CFG, COMPLIANCE_PAGE_ID="999", ISE_DEPARTMENT="")
         res.compliance, res.compliance_info = rw.load_compliance(
             cfg, client=rw.ConfluenceClient(cfg, opener=FakeConfluence(body=COMPLIANCE_PAGE)), today=self.TODAY)
         self.assertIn("## Pending RBI compliance items", rw.to_markdown(res))

@@ -10,7 +10,7 @@ web page for the weekly status meeting ("This week in risk"). The user runs it o
 ```bash
 pip install -r requirements.txt
 python risk_week.py --ai --open        # Gemini free tier; --open opens the web page
-python -m unittest test_risk_week      # 72 tests, no network or key needed
+python -m unittest test_risk_week      # 73 tests, no network or key needed
 ```
 
 Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
@@ -116,7 +116,11 @@ Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
    "closed", "complied"); overdue = open and past the deadline (`dd.mm.yyyy` parsed). Shown
    as `Result.compliance` (open items, overdue first) in the sidebar, a slide after slide 1,
    Markdown, console and the weekly Confluence page. Any problem is reported, never fatal.
-   Deadlines are read by `_first_date` (dd.mm.yyyy, dd/mm/yy, ISO, "15th Apr'26", "April 15,
+   **Department filter** (user's request, 11 Nov 2026): only rows whose Department contains
+   the whole word `ISE_DEPARTMENT` (default "risk", any case; `""` = all; alias
+   `COMPLIANCE_DEPARTMENT`). `info` has `page_total` (all rows) and `total` (filtered); titles
+   read "Pending RBI compliance items · Risk"; no matching rows is reported with the
+   departments found. Deadlines are read by `_first_date` (dd.mm.yyyy, dd/mm/yy, ISO, "15th Apr'26", "April 15,
    2026", month + year = end of month); `--confluence-check` reports open items whose deadline
    was not understood, with examples. **First real check (11 Nov 2026):** the ISE 2025 page
    (id 19000597275) gave 119 observations, 64 compliant, 55 open, 0 overdue; "0 overdue"
