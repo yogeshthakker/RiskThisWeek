@@ -228,6 +228,13 @@ Confluence page, each with a link to the source page.
   shown first, in red.
 - These items are never sent to the AI. `--confluence-check` also reports how many it found.
 
+**Safety checks.** Publishing is refused, and nothing is sent, when a setting appears twice
+in `Confluence PAT.txt` with different values, when `PAGE_ID` is the compliance page, or when
+the target page already has content this tool did not write (so a real page is never
+overwritten by mistake). `--confluence-check` warns about each of these. To replace a page's
+existing content on purpose, run once with `--confluence-replace` (the old version stays in
+the page history).
+
 `--no-confluence` skips publishing for one run (and reading the compliance page). `--confluence-dry-run` writes the page content
 to `output/risk-week-<date>-confluence.xml` instead of uploading it.
 

@@ -10,7 +10,7 @@ web page for the weekly status meeting ("This week in risk"). The user runs it o
 ```bash
 pip install -r requirements.txt
 python risk_week.py --ai --open        # Gemini free tier; --open opens the web page
-python -m unittest test_risk_week      # 66 tests, no network or key needed
+python -m unittest test_risk_week      # 69 tests, no network or key needed
 ```
 
 Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
@@ -97,7 +97,11 @@ Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
    blocks, expand for routine enforcement). Each week sits between anchor macros
    `rtw-week-<ISO week>` / `rtw-end-<ISO week>`; `build_confluence_body()` keeps the latest week
    on top and earlier weeks in expand macros, replaces a repeated week, keeps `KEEP_WEEKS` (26).
-   409 is retried once. Errors never stop the run. `--confluence-check` (read-only),
+   409 is retried once. Errors never stop the run. **Guards** (`publish_problems`, added
+   11 Nov 2026 after the user's settings file had two `PAGE_ID` lines and the second was the
+   ISE compliance page): refuse when a key is duplicated with different values (`_DUPLICATES`),
+   when `PAGE_ID == COMPLIANCE_PAGE_ID`, or when `foreign_content()` finds > 40 characters on
+   the page not written by this tool, unless `--confluence-replace`. `--confluence-check` (read-only),
    `--no-confluence`, `--confluence-dry-run`. Tested only against a fake server: the user's
    Confluence (internal host) is not reachable from the cloud sandbox.
 

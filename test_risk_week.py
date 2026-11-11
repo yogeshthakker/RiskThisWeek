@@ -465,6 +465,38 @@ class TestConfluence(unittest.TestCase):
         self.assertIn("OK. Page 'This Week in Risk' (id 123), version 3", out)
         self.assertEqual([c[0] for c in fake.calls], ["GET"])
 
+    def test_refuses_a_page_with_other_content(self):
+        fake = FakeConfluence(body="<h1>ISE 2025</h1><table><tr><td>Observation 1: KYC refresh pending for "
+                                   "accounts flagged in the inspection</td></tr></table>")
+        msg = rw.publish_confluence(self.res, self.CFG, client=self.client(fake))
+        self.assertIn("not published", msg)
+        self.assertIn("content not written by this tool", msg)
+        self.assertEqual([c[0] for c in fake.calls], ["GET"])     # nothing written
+        msg = rw.publish_confluence(self.res, self.CFG, client=self.client(fake), allow_replace=True)
+        self.assertIn("published", msg)
+        self.assertEqual(fake.calls[-1][0], "PUT")
+
+    def test_own_page_and_empty_page_are_fine(self):
+        fake = FakeConfluence(body="<p></p>")
+        rw.publish_confluence(self.res, self.CFG, client=self.client(fake))
+        self.assertEqual(rw.foreign_content(fake.body), "")
+        later = rw.run(top=3, sources=SOURCES, fetcher=fetcher, now=NOW + rw.timedelta(days=7))
+        self.assertIn("published", rw.publish_confluence(later, self.CFG, client=self.client(fake)))
+        self.assertEqual(rw.foreign_content(fake.body), "")       # two weeks, still all ours
+
+    def test_refuses_duplicate_settings_and_the_compliance_page(self):
+        with tempfile.TemporaryDirectory() as d:
+            f = pathlib.Path(d) / "c.txt"
+            f.write_text('CONFLUENCE_BASE_URL = "https://c.example.com"\nPAGE_ID = "111"\nPAT = "x"\n'
+                         'PAGE_ID = "222"\n', encoding="utf-8")
+            cfg = rw.load_confluence_config(f)
+        self.assertEqual(cfg["_DUPLICATES"], ["PAGE_ID"])
+        fake = FakeConfluence()
+        self.assertIn("more than once", rw.publish_confluence(self.res, cfg, client=self.client(fake)))
+        same = dict(self.CFG, COMPLIANCE_PAGE_ID="123")
+        self.assertIn("RBI compliance page", rw.publish_confluence(self.res, same, client=self.client(fake)))
+        self.assertEqual(fake.calls, [])                          # refused before any request
+
     def test_http_errors_explained(self):
         def denied(method, url, body, headers):
             raise urllib.error.HTTPError(url, 401, "Unauthorized", {}, io.BytesIO(b""))

@@ -1950,9 +1950,12 @@ def load_confluence_config(path: Path) -> dict | None:
         q = re.match(r"""(['"])(.*?)\1""", raw)
         raw = q.group(0) if q else raw.split("#", 1)[0].strip()
         try:
-            cfg[key] = ast.literal_eval(raw)
+            value = ast.literal_eval(raw)
         except (ValueError, SyntaxError):
-            cfg[key] = raw
+            value = raw
+        if key in cfg and cfg[key] != value and key not in cfg.setdefault("_DUPLICATES", []):
+            cfg["_DUPLICATES"].append(key)      # the same setting twice: publishing is refused
+        cfg[key] = value
     if os.environ.get("CONFLUENCE_PAT"):
         cfg["PAT"] = os.environ["CONFLUENCE_PAT"]
     return cfg
@@ -2144,9 +2147,44 @@ class ConfluenceClient:
         })
 
 
+_INTRO = re.compile(r"<p><em>Updated each week by risk_week\.py\..*?</em></p>|<h2>Previous weeks</h2>", re.S)
+
+
+def foreign_content(body: str) -> str:
+    """Text on the page that this tool did not write (empty when the page is empty or all ours)."""
+    rest = body or ""
+    for week in _weeks_on_page(rest).values():
+        rest = rest.replace(week, "")
+    rest = _INTRO.sub("", rest)
+    rest = re.sub(r'<ac:parameter ac:name="title">[^<]*</ac:parameter>', "", rest)   # our expand titles
+    return re.sub(r"\s+", " ", html.unescape(re.sub(r"<[^>]+>", " ", rest))).strip()
+
+
+def publish_problems(cfg: dict, existing: str | None = None, allow_replace: bool = False) -> list[str]:
+    """Reasons not to publish: settings that point at the wrong page, or a page with other content."""
+    out = []
+    if cfg.get("_DUPLICATES"):
+        out.append(f"{', '.join(cfg['_DUPLICATES'])} appear(s) more than once in {CONFLUENCE_FILE} with "
+                   f"different values; keep one of each")
+    page, comp = str(cfg.get("PAGE_ID") or "").strip(), str(cfg.get("COMPLIANCE_PAGE_ID") or "").strip()
+    if page and page == comp:
+        out.append("PAGE_ID is the RBI compliance page (COMPLIANCE_PAGE_ID); the report needs a page of its own")
+    if existing is not None and not allow_replace:
+        other = foreign_content(existing)
+        if len(other) > 40:
+            out.append(f"page {page} already has content not written by this tool (\"{other[:80]}…\"); "
+                       f"publishing would replace it. Use an empty page of its own, or run once with "
+                       f"--confluence-replace if replacing it is intended")
+    return out
+
+
 def publish_confluence(res: Result, cfg: dict, client: ConfluenceClient | None = None,
-                       dry_run_file: Path | None = None) -> str:
-    """Put this week on the Confluence page (one new page version). Returns what happened."""
+                       dry_run_file: Path | None = None, allow_replace: bool = False) -> str:
+    """Put this week on the Confluence page (one new page version). Returns what happened.
+
+    Refuses (and changes nothing) when the settings are ambiguous, point at the compliance page,
+    or the page holds content this tool did not write, unless `allow_replace`.
+    """
     missing = [k for k in ("CONFLUENCE_BASE_URL", "PAGE_ID", "PAT") if not str(cfg.get(k) or "").strip()]
     week = to_confluence(res)
     key = _week_key(res)
@@ -2156,12 +2194,18 @@ def publish_confluence(res: Result, cfg: dict, client: ConfluenceClient | None =
         return f"dry run: page content written to {dry_run_file} (nothing uploaded)"
     if missing:
         return f"not published: {', '.join(missing)} missing in {CONFLUENCE_FILE}"
+    problems = publish_problems(cfg)
+    if problems:
+        return "not published: " + "; ".join(problems)
     client = client or ConfluenceClient(cfg)
     message = f"This Week in Risk: {_title(res)}"
     for attempt in (1, 2):                  # a 409 means someone saved meanwhile: read again, retry once
         page = client.get_page()
-        body = build_confluence_body(((page.get("body") or {}).get("storage") or {}).get("value", ""),
-                                     week, key, keep)
+        existing = ((page.get("body") or {}).get("storage") or {}).get("value", "")
+        problems = publish_problems(cfg, existing, allow_replace)
+        if problems:
+            return "not published: " + "; ".join(problems)
+        body = build_confluence_body(existing, week, key, keep)
         try:
             client.update_page(page.get("title") or "This Week in Risk", body,
                                int((page.get("version") or {}).get("number") or 1), message)
@@ -2196,10 +2240,15 @@ def confluence_check(a) -> str:
         page = ConfluenceClient(cfg).get_page()
     except Exception as e:  # noqa: BLE001
         return f"Confluence: check failed ({type(e).__name__}: {e})"[:600]
-    weeks = len(_weeks_on_page(((page.get("body") or {}).get("storage") or {}).get("value", "")))
+    existing = ((page.get("body") or {}).get("storage") or {}).get("value", "")
+    weeks = len(_weeks_on_page(existing))
     ssl_note = " (TLS certificate check is off: VERIFY_SSL = False)" if cfg.get("VERIFY_SSL") is False else ""
     out = (f"Confluence: OK. Page '{page.get('title')}' (id {cfg['PAGE_ID']}), version "
            f"{(page.get('version') or {}).get('number')}, {weeks} week(s) from this tool on it{ssl_note}")
+    problems = publish_problems(cfg, existing)
+    out += "".join(f"\nWARNING: publishing would be refused: {p_}" for p_ in problems)
+    if not problems:
+        out += "\nPublishing: OK (the page is empty or holds only this tool's reports)"
     if str(cfg.get("COMPLIANCE_PAGE_ID") or "").strip():
         items, info = load_compliance(cfg)
         if info.get("error"):
@@ -2428,7 +2477,8 @@ def confluence_step(res: Result, a, files: dict) -> str:
     if a.confluence_dry_run:
         dry = Path(files["html"]).with_name(Path(files["html"]).stem + "-confluence.xml")
     try:
-        return "Confluence: " + publish_confluence(res, cfg or {}, dry_run_file=dry)
+        return "Confluence: " + publish_confluence(res, cfg or {}, dry_run_file=dry,
+                                                   allow_replace=a.confluence_replace)
     except Exception as e:  # noqa: BLE001 — the report files are already written
         return f"Confluence: not published ({type(e).__name__}: {e})"[:600]
 
@@ -2459,6 +2509,9 @@ def main(argv: list[str] | None = None) -> int:
                    help=f"Confluence settings file (default '{CONFLUENCE_FILE}' next to this script or in "
                         f"the current folder); the report is published when it has a PAT")
     p.add_argument("--no-confluence", action="store_true", help="do not publish to Confluence")
+    p.add_argument("--confluence-replace", action="store_true",
+                   help="allow publishing to a page that has content not written by this tool (it is "
+                        "replaced; the old version stays in the page history)")
     p.add_argument("--confluence-check", action="store_true",
                    help="only check the Confluence settings (reads the page title; changes nothing) and stop")
     p.add_argument("--confluence-dry-run", action="store_true",
