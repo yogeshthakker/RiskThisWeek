@@ -1929,6 +1929,12 @@ _ANCHOR = (r'<ac:structured-macro[^>]*ac:name="anchor"[^>]*>\s*<ac:parameter ac:
            r'rtw-{kind}-{key}</ac:parameter>\s*</ac:structured-macro>')
 
 
+# Clearer names for the two pages: NEWS_PAGE_ID is where the report is published, ISE_PAGE_ID is
+# the RBI compliance (ISE) page that is only read.
+CONFIG_ALIASES = {"NEWS_PAGE_ID": "PAGE_ID", "REPORT_PAGE_ID": "PAGE_ID",
+                  "ISE_PAGE_ID": "COMPLIANCE_PAGE_ID"}
+
+
 def load_confluence_config(path: Path) -> dict | None:
     """Settings from a file of KEY = value lines (Python-style values, '#' comments).
 
@@ -1947,6 +1953,7 @@ def load_confluence_config(path: Path) -> dict | None:
         if not m or line.lstrip().startswith("#"):
             continue
         key, raw = m.group(1).upper(), m.group(2).strip()
+        key = CONFIG_ALIASES.get(key, key)
         q = re.match(r"""(['"])(.*?)\1""", raw)
         raw = q.group(0) if q else raw.split("#", 1)[0].strip()
         try:
@@ -2164,8 +2171,10 @@ def publish_problems(cfg: dict, existing: str | None = None, allow_replace: bool
     """Reasons not to publish: settings that point at the wrong page, or a page with other content."""
     out = []
     if cfg.get("_DUPLICATES"):
-        out.append(f"{', '.join(cfg['_DUPLICATES'])} appear(s) more than once in {CONFLUENCE_FILE} with "
-                   f"different values; keep one of each")
+        names = {"PAGE_ID": "PAGE_ID / NEWS_PAGE_ID", "COMPLIANCE_PAGE_ID": "COMPLIANCE_PAGE_ID / ISE_PAGE_ID"}
+        out.append(f"{', '.join(names.get(k, k) for k in cfg['_DUPLICATES'])} appear(s) more than once in "
+                   f"{CONFLUENCE_FILE} with different values; use NEWS_PAGE_ID for the page the report is "
+                   f"published to and ISE_PAGE_ID for the compliance page that is read")
     page, comp = str(cfg.get("PAGE_ID") or "").strip(), str(cfg.get("COMPLIANCE_PAGE_ID") or "").strip()
     if page and page == comp:
         out.append("PAGE_ID is the RBI compliance page (COMPLIANCE_PAGE_ID); the report needs a page of its own")
@@ -2243,7 +2252,7 @@ def confluence_check(a) -> str:
     existing = ((page.get("body") or {}).get("storage") or {}).get("value", "")
     weeks = len(_weeks_on_page(existing))
     ssl_note = " (TLS certificate check is off: VERIFY_SSL = False)" if cfg.get("VERIFY_SSL") is False else ""
-    out = (f"Confluence: OK. Page '{page.get('title')}' (id {cfg['PAGE_ID']}), version "
+    out = (f"Confluence: OK. News page (published to): '{page.get('title')}' (id {cfg['PAGE_ID']}), version "
            f"{(page.get('version') or {}).get('number')}, {weeks} week(s) from this tool on it{ssl_note}")
     problems = publish_problems(cfg, existing)
     out += "".join(f"\nWARNING: publishing would be refused: {p_}" for p_ in problems)
@@ -2252,9 +2261,9 @@ def confluence_check(a) -> str:
     if str(cfg.get("COMPLIANCE_PAGE_ID") or "").strip():
         items, info = load_compliance(cfg)
         if info.get("error"):
-            out += f"\nRBI compliance page: {info['error']}"
+            out += f"\nISE page (read only): {info['error']}"
         else:
-            out += (f"\nRBI compliance page: OK. '{info['title']}': {info['total']} observation(s), "
+            out += (f"\nISE page (read only): OK. '{info['title']}': {info['total']} observation(s), "
                     f"{info['closed']} compliant, {len(items)} open, {info['overdue']} overdue")
     return out
 

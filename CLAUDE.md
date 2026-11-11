@@ -10,7 +10,7 @@ web page for the weekly status meeting ("This week in risk"). The user runs it o
 ```bash
 pip install -r requirements.txt
 python risk_week.py --ai --open        # Gemini free tier; --open opens the web page
-python -m unittest test_risk_week      # 69 tests, no network or key needed
+python -m unittest test_risk_week      # 70 tests, no network or key needed
 ```
 
 Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
@@ -27,7 +27,7 @@ Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
 | `test_risk_week.py` | unittest tests using sample feeds and fake AI replies |
 | `test_headlines.json` | One week's real headlines (6 Nov 2026), used to test the same-story grouping |
 | `.env` | `GEMINI_API_KEY=...` on the user's machine. Git-ignored |
-| `Confluence PAT.txt` | On the user's machine only, **never committed** (git-ignored): `CONFLUENCE_BASE_URL`, `PAGE_ID`, `PAT`, `VERIFY_SSL`, `CONFLUENCE_TIMEOUT` as `KEY = value` lines. `confluence.example.txt` is the template |
+| `Confluence PAT.txt` | On the user's machine only, **never committed** (git-ignored). One file, two pages: `NEWS_PAGE_ID` (publish target; alias of `PAGE_ID`) and `ISE_PAGE_ID` (the RBI compliance / ISE page, read only; alias of `COMPLIANCE_PAGE_ID`), plus `CONFLUENCE_BASE_URL`, `PAT`, `VERIFY_SSL`, `CONFLUENCE_TIMEOUT` as `KEY = value` lines. `confluence.example.txt` is the template |
 
 ## How it works
 

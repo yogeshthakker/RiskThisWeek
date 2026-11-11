@@ -213,7 +213,9 @@ Set it up once:
 
 ### Pending RBI compliance items from Confluence
 
-Add `COMPLIANCE_PAGE_ID = "<page id>"` to `Confluence PAT.txt` and each run reads that page
+`Confluence PAT.txt` serves two pages: **`NEWS_PAGE_ID`**, where the weekly report is
+published, and **`ISE_PAGE_ID`**, the RBI compliance page that is only read (the older names
+`PAGE_ID` and `COMPLIANCE_PAGE_ID` still work). With `ISE_PAGE_ID` set, each run reads that page
 (read only) and shows its open items as **Pending RBI compliance**: in the page sidebar, on a
 slide of its own after "For CRO's desk", in the Markdown and console, and on the weekly
 Confluence page, each with a link to the source page.

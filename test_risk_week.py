@@ -462,7 +462,7 @@ class TestConfluence(unittest.TestCase):
             fake = FakeConfluence(version=3)
             with mock.patch.object(rw.ConfluenceClient, "_open", lambda self, *args: fake(*args)):
                 out = rw.confluence_check(type("A", (), {"confluence_config": str(f)})())
-        self.assertIn("OK. Page 'This Week in Risk' (id 123), version 3", out)
+        self.assertIn("OK. News page (published to): 'This Week in Risk' (id 123), version 3", out)
         self.assertEqual([c[0] for c in fake.calls], ["GET"])
 
     def test_refuses_a_page_with_other_content(self):
@@ -483,6 +483,18 @@ class TestConfluence(unittest.TestCase):
         later = rw.run(top=3, sources=SOURCES, fetcher=fetcher, now=NOW + rw.timedelta(days=7))
         self.assertIn("published", rw.publish_confluence(later, self.CFG, client=self.client(fake)))
         self.assertEqual(rw.foreign_content(fake.body), "")       # two weeks, still all ours
+
+    def test_purpose_named_page_keys(self):
+        with tempfile.TemporaryDirectory() as d:
+            f = pathlib.Path(d) / "c.txt"
+            f.write_text('CONFLUENCE_BASE_URL = "https://c.example.com"\nNEWS_PAGE_ID = "111"\n'
+                         'ISE_PAGE_ID = "19000597275"\nPAT = "x"\n', encoding="utf-8")
+            cfg = rw.load_confluence_config(f)
+        self.assertEqual((cfg["PAGE_ID"], cfg["COMPLIANCE_PAGE_ID"]), ("111", "19000597275"))
+        self.assertNotIn("_DUPLICATES", cfg)
+        self.assertEqual(rw.publish_problems(cfg), [])
+        example = rw.load_confluence_config(pathlib.Path(__file__).resolve().parent / "confluence.example.txt")
+        self.assertEqual(example["PAGE_ID"], "123456789")
 
     def test_refuses_duplicate_settings_and_the_compliance_page(self):
         with tempfile.TemporaryDirectory() as d:
