@@ -2265,6 +2265,13 @@ def confluence_check(a) -> str:
         else:
             out += (f"\nISE page (read only): OK. '{info['title']}': {info['total']} observation(s), "
                     f"{info['closed']} compliant, {len(items)} open, {info['overdue']} overdue")
+            dated = len(items) - info["no_deadline"] - info["unread_deadlines"]
+            out += f"\n  Open items with a deadline the tool understood: {dated} of {len(items)}"
+            if info["no_deadline"]:
+                out += f"; with no deadline: {info['no_deadline']}"
+            if info["unread_deadlines"]:
+                out += (f"; deadline not understood: {info['unread_deadlines']} (e.g. "
+                        + ", ".join(repr(x) for x in info["unread_examples"]) + ")")
     return out
 
 
@@ -2386,14 +2393,48 @@ class _TableReader(__import__("html.parser").parser.HTMLParser):
         return out
 
 
+_MONTHS = {m: i for i, names in enumerate(
+    [("jan", "january"), ("feb", "february"), ("mar", "march"), ("apr", "april"), ("may",), ("jun", "june"),
+     ("jul", "july"), ("aug", "august"), ("sep", "sept", "september"), ("oct", "october"),
+     ("nov", "november"), ("dec", "december")], 1) for m in names}
+_MON = r"(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sept?(?:ember)?|" \
+       r"oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\.?"
+
+
+def _ymd(y: str, m: int, d: int | None) -> date | None:
+    year = int(y) + (2000 if len(y) <= 2 else 0)
+    try:
+        if d is None:                                   # month and year only: the end of that month
+            nxt = date(year + (m == 12), m % 12 + 1, 1)
+            return nxt - timedelta(days=1)
+        return date(year, m, d)
+    except ValueError:
+        return None
+
+
 def _first_date(text: str) -> date | None:
-    d = _parse_due(text) if text else None
-    if d or not text:
-        return d
-    for m in re.finditer(r"\d{1,2}[./-]\d{1,2}[./-]\d{2,4}|\d{1,2}[ -][A-Za-z]{3,9},?[ -]\d{2,4}|\d{4}-\d{2}-\d{2}", text):
-        d = _parse_due(m.group(0).replace("-", " ") if re.search("[A-Za-z]", m.group(0)) else m.group(0))
+    """The first date in a deadline cell: 15.04.2026, 15/04/26, 2026-04-15, 15 April 2026,
+    15th Apr'26, April 15, 2026, or April 2026 / Apr'26 (the end of that month)."""
+    if not text:
+        return None
+    t = text.lower()
+    t = re.sub(r"(\d)(st|nd|rd|th)\b", r"\1", t)
+    t = re.sub(r"[’'`](\d{2})\b", r" \1", t)            # Mar'26 -> mar 26
+    t = t.replace(",", " ")
+    for m in re.finditer(r"\b(\d{4})-(\d{1,2})-(\d{1,2})\b|\b(\d{1,2})[./-](\d{1,2})[./-](\d{4}|\d{2})\b", t):
+        d = (_ymd(m.group(1), int(m.group(2)), int(m.group(3))) if m.group(1)
+             else _ymd(m.group(6), int(m.group(5)), int(m.group(4))))
         if d:
             return d
+    m = re.search(rf"\b(\d{{1,2}})[ -]{_MON}[ -]+(\d{{4}}|\d{{2}})\b", t)
+    if m:
+        return _ymd(m.group(3), _MONTHS[m.group(2)], int(m.group(1)))
+    m = re.search(rf"\b{_MON}[ -]+(\d{{1,2}})[ -]+(\d{{4}})\b", t)
+    if m:
+        return _ymd(m.group(3), _MONTHS[m.group(1)], int(m.group(2)))
+    m = re.search(rf"\b{_MON}[ -]+(\d{{4}}|\d{{2}})\b", t)
+    if m:
+        return _ymd(m.group(2), _MONTHS[m.group(1)], None)
     return None
 
 
@@ -2469,9 +2510,14 @@ def load_compliance(cfg: dict | None, client: "ConfluenceClient | None" = None,
         items = parse_compliance(storage, today, done)
     except Exception as e:  # noqa: BLE001 — the report goes ahead without this section
         return [], {"error": f"{type(e).__name__}: {e}"[:300]}
+    open_items = [i for i in items if not i.done]
+    unread = [i.deadline for i in open_items if i.deadline and not i.due_date]
     info = {"title": page.get("title") or "RBI compliance", "url": client.page_url(page_id),
             "total": len(items), "closed": sum(i.done for i in items),
-            "overdue": sum(i.overdue for i in items)}
+            "overdue": sum(i.overdue for i in items),
+            "no_deadline": sum(1 for i in open_items if not i.deadline),
+            "unread_deadlines": len(unread),
+            "unread_examples": list(dict.fromkeys(_clean(u, 40) for u in unread))[:4]}
     if not items:
         info["error"] = "no table with 'Observation' and 'Official deadline' / status columns found"
     return open_compliance(items), info

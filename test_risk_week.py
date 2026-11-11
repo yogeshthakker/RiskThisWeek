@@ -559,6 +559,24 @@ class TestCompliance(unittest.TestCase):
         self.assertEqual(kyc.shown_status, "Overdue (Non-Compliant)")
         self.assertEqual(ubo.shown_status, "Open")
 
+    def test_deadline_formats(self):
+        d = lambda y, m, day: datetime(y, m, day).date()  # noqa: E731
+        cases = {"15.04.2026": d(2026, 4, 15), "15/04/26": d(2026, 4, 15), "2026-04-15": d(2026, 4, 15),
+                 "15 April 2026": d(2026, 4, 15), "15th Apr'26": d(2026, 4, 15), "31st March, 2026": d(2026, 3, 31),
+                 "April 15, 2026": d(2026, 4, 15), "Sept 2026": d(2026, 9, 30), "Feb'28": d(2028, 2, 29),
+                 "March 2026 (revised to 30.06.2026)": d(2026, 6, 30), "15-Apr-2026": d(2026, 4, 15)}
+        for text, want in cases.items():
+            self.assertEqual(rw._first_date(text), want, text)
+        for text in ("Immediate", "Q1 FY27", "", "31.02.2026"):
+            self.assertIsNone(rw._first_date(text), text)
+
+    def test_check_reports_unread_deadlines(self):
+        page = COMPLIANCE_PAGE.replace("<td>15.12.2026</td>", "<td>Immediate</td>")
+        cfg = dict(TestConfluence.CFG, COMPLIANCE_PAGE_ID="999")
+        items, info = rw.load_compliance(cfg, client=rw.ConfluenceClient(cfg, opener=FakeConfluence(body=page)),
+                                         today=self.TODAY)
+        self.assertEqual((info["unread_deadlines"], info["unread_examples"]), (1, ["Immediate"]))
+
     def test_load_reads_the_page_and_reports_problems(self):
         fake = FakeConfluence(body=COMPLIANCE_PAGE)
         cfg = dict(TestConfluence.CFG, COMPLIANCE_PAGE_ID="999")
