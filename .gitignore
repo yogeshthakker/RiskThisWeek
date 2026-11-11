@@ -3,3 +3,7 @@ __pycache__/
 *.pyc
 .env
 cro_desk.txt
+pending_items.txt
+Confluence PAT.txt
+confluence*.txt
+!confluence.example.txt

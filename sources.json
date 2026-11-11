@@ -1,5 +1,5 @@
 {
-  "_comment": "Sources for risk_week.py. weight raises an item's score; google_news queries run as Google News searches limited to the period. 'profile' says what matters to the bank reading the report: 'focus' terms rank an item higher, 'less_relevant' terms lower, a named foreign bank higher; fines on one bank below penalty_threshold_crore are left out of the ranking. Terms are regular expressions, case-insensitive. Edit freely.",
+  "_comment": "Sources for risk_week.py. weight raises an item's score; google_news queries run as Google News searches limited to the period. 'profile' says what matters to the bank reading the report: 'priority' topics (the CRO's current priorities) rank an item well above others and each gets at least min_per_topic place(s) in the top when a story exists, 'focus' terms higher, 'less_relevant' terms lower, a named foreign bank higher; 'guidance' is passed to the AI; fines on one bank below penalty_threshold_crore are left out of the ranking. Terms are regular expressions, case-insensitive. Edit freely.",
   "feeds": [
     {
       "name": "RBI press releases",
@@ -14,38 +14,126 @@
       "primary": true
     },
     {
-      "name": "SEBI",
-      "url": "https://www.sebi.gov.in/sebirss.xml",
+      "name": "RBI speeches",
+      "url": "https://www.rbi.org.in/speeches_rss.xml",
+      "weight": 2.0,
+      "primary": true
+    },
+    {
+      "name": "RBI publications",
+      "url": "https://www.rbi.org.in/publication_rss.xml",
       "weight": 1.5,
       "primary": true
     },
     {
+      "name": "CCIL notifications",
+      "url": "https://www.ccilindia.com/o/rss/Notification-rss",
+      "weight": 2.5,
+      "primary": true
+    },
+    {
+      "name": "CCIL what's new",
+      "url": "https://www.ccilindia.com/web/ccil/what-s-news/-/journal/rss/43866/334136201",
+      "weight": 2.0,
+      "primary": true
+    },
+    {
+      "name": "SEBI",
+      "url": "https://www.sebi.gov.in/sebirss.xml",
+      "weight": 1.0,
+      "primary": true
+    },
+    {
+      "name": "FSB",
+      "url": "https://www.fsb.org/feed/",
+      "weight": 1.2,
+      "primary": true
+    },
+    {
+      "name": "UK OFSI",
+      "url": "https://www.gov.uk/government/organisations/office-of-financial-sanctions-implementation.atom",
+      "weight": 0.8,
+      "primary": true
+    },
+    {
+      "name": "Risk.net",
+      "url": "https://www.risk.net/feeds/rss",
+      "weight": 1.5
+    },
+    {
+      "name": "Business Standard finance",
+      "url": "https://www.business-standard.com/rss/finance/news-10301.rss",
+      "weight": 1.2
+    },
+    {
+      "name": "ET Banking",
+      "url": "https://economictimes.indiatimes.com/industry/banking/finance/banking/rssfeeds/13358319.cms",
+      "weight": 1.0
+    },
+    {
       "name": "ET BFSI",
       "url": "https://bfsi.economictimes.indiatimes.com/rss/topstories",
-      "weight": 1.5
+      "weight": 1.0
+    },
+    {
+      "name": "Central Banking",
+      "url": "https://www.centralbanking.com/feeds/rss",
+      "weight": 0.8
     }
   ],
   "google_news": {
     "weight": 1.0,
     "queries": [
-      "RBI draft directions banks",
-      "RBI circular banks",
+      "RBI MSME lending",
+      "MSME credit banks India",
+      "CGTMSE credit guarantee MSME",
+      "TReDS MSME invoice",
+      "India Russia payments banks",
+      "India Russia rupee trade settlement vostro",
+      "Russia sanctions Indian banks",
+      "RBI site:reuters.com",
+      "India RBI site:bloomberg.com",
+      "site:fatf-gafi.org",
+      "site:ofac.treasury.gov",
+      "OFAC sanctions India",
       "foreign banks India RBI",
-      "RBI liquidity banks rupee",
+      "RBI draft directions banks",
       "RBI FEMA foreign exchange regulations",
       "external commercial borrowing RBI",
-      "RBI expected credit loss Basel capital",
-      "priority sector lending foreign banks",
-      "RBI KYC AML sanctions banks",
+      "RBI expected credit loss",
+      "RBI rupee NDF OR forwards OR hedging",
+      "RBI liquidity banks rupee",
       "RBI cyber security outsourcing banks",
-      "data protection DPDP banks India",
+      "CERT-In advisory banks",
       "GIFT City IFSC banks",
-      "bank NPA asset quality India",
-      "RBI monetary policy repo rate"
+      "data protection DPDP banks India"
     ]
   },
   "profile": {
-    "bank": "a foreign bank operating in India through branches, focused on corporate and institutional lending, treasury and markets, trade finance, transaction banking and cross-border payments, with little retail business",
+    "bank": "a foreign bank operating in India through branches, focused on corporate and institutional lending, a growing MSME lending book, treasury and markets, trade finance, transaction banking and cross-border payments, with little retail business",
+    "guidance": "Risk should be an enabler for the business. The CRO's greatest focus is MSME lending: growth opportunities, RBI and government measures (credit guarantees, TReDS, priority sector, Udyam), and risks in MSME credit; prefer these items. Next, anything on India–Russia: payments, rupee–rouble trade, vostro accounts, sanctions and their effect on banks, trade finance and correspondent banking. The story of the week for the CRO is the single item with the most impact for us: the one that gives the CRO the most visibility inside the bank or creates a clear action point for the branch.",
+    "priority": {
+      "weight": 3.0,
+      "min_per_topic": 1,
+      "topics": {
+        "MSME lending": [
+          "\\bmsmes?\\b",
+          "\\bsmes?\\b",
+          "micro,? small and medium",
+          "small (and medium )?(business|enterprise)",
+          "\\budyam\\b",
+          "cgtmse|credit guarantee",
+          "\\btreds\\b|invoice (discount|financ)|supply[- ]chain financ",
+          "\\bmudra\\b|\\bsidbi\\b"
+        ],
+        "India–Russia": [
+          "\\brussian?\\b|moscow|kremlin",
+          "\\bvtb\\b|sberbank|\\bsber\\b|gazprombank",
+          "roubles?|rubles?|\\bvostro\\b",
+          "\\bspfs\\b|rosneft|lukoil|russian oil"
+        ]
+      }
+    },
     "focus": {
       "weight": 1.6,
       "terms": [
@@ -91,7 +179,12 @@
         "quarterly (profit|results)|\\bq[1-4]\\b (results|profit|net)|net profit",
         "shares? (rise|fall|jump|surge|slump)|target price|stock price",
         "personal loan|home loan|car loan|fd rates|fixed deposit rates|credit card (offer|reward)|savings account",
-        "festive|dhanteras|diwali"
+        "festive|dhanteras|diwali",
+        "recovery certificate|notice of demand",
+        "rupee (rises|falls|gains|slips|ends|settles) .{0,20}paise",
+        "live:|results today",
+        "\\bawards?\\b|honou?rs|felicitat",
+        "blood bank"
       ]
     },
     "foreign_banks": [
@@ -125,7 +218,9 @@
       "Goldman Sachs",
       "Morgan Stanley",
       "UBS",
-      "foreign bank"
+      "foreign bank",
+      "VTB",
+      "Gazprombank"
     ],
     "penalty_threshold_crore": 10
   }

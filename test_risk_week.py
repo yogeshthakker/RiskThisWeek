@@ -71,10 +71,9 @@ class FakeAI:
 
     def __init__(self, reply):
         self.reply = reply
-        self.prompt = ""
 
     def json_call(self, system_prompt, user_content, response_schema=None, max_output_tokens=1200):
-        self.prompt = user_content
+        self.prompt = getattr(self, "prompt", "") or user_content   # the first (pick) request
         self.system = system_prompt
         return self.reply
 
@@ -93,7 +92,7 @@ class TestParse(unittest.TestCase):
 
 class TestRun(unittest.TestCase):
     def setUp(self):
-        self.res = rw.run(days=7, top=5, sources=SOURCES, fetcher=fetcher, now=NOW)
+        self.res = rw.run(days=7, top=3, sources=SOURCES, fetcher=fetcher, now=NOW)
         self.titles = [s.lead.title for s in self.res.top]
 
     def test_noise_and_out_of_period_dropped(self):
@@ -114,9 +113,19 @@ class TestRun(unittest.TestCase):
         self.assertIn("Pusad", listed)
         self.assertIn("Alpha Finance", listed)
 
-    def test_rbi_draft_ranks_first_and_lookback_ranked_low(self):
-        self.assertIn("expected credit loss", self.titles[0])
-        self.assertIn("DHFL", self.titles[-1])               # only there to fill the list
+    def test_rbi_draft_leads_compliance_and_lookback_ranked_low(self):
+        self.assertIn("expected credit loss", self.res.blocks["Compliance risk"][0].lead.title)   # a draft rule
+        dhfl = [s for s in self.res.top if "DHFL" in s.lead.title]
+        others = [s for s in self.res.top if "DHFL" not in s.lead.title]
+        self.assertTrue(all(d.score < min(o.score for o in others) for d in dhfl))
+
+    def test_six_blocks_in_order(self):
+        self.assertEqual(list(self.res.blocks), ["Credit risk", "Market risk", "Non-financial risk",
+                                                 "Cyber security risk", "Fraud risk", "Compliance risk"])
+        self.assertTrue(all(len(v) <= 3 for v in self.res.blocks.values()))
+        self.assertEqual(self.res.top, rw.flatten(self.res.blocks))
+        cyber = self.res.blocks["Cyber security risk"][0].lead.title
+        self.assertIn("Cyber attack", cyber + self.res.blocks["Cyber security risk"][0].items[-1].title)
 
     def test_one_bad_source_reported_not_fatal(self):
         src = dict(SOURCES, feeds=SOURCES["feeds"] + [{"name": "Broken", "url": "nope"}])
@@ -129,22 +138,27 @@ class TestRun(unittest.TestCase):
             files = rw.write(self.res, d)
             md = pathlib.Path(files["markdown"]).read_text(encoding="utf-8")
             self.assertIn("This Week in Risk", md)
-            self.assertIn("## 1. [RBI issues draft directions", md)        # headline is the link
+            self.assertIn("## Compliance risk\n\n### 1. [RBI issues draft directions", md)   # headline is the link
             self.assertIn("](https://rbi/2)", md)
             self.assertIn("Routine enforcement, not ranked (3)", md)
             page = pathlib.Path(files["html"]).read_text(encoding="utf-8")
             self.assertIn('href="https://rbi/2" target="_blank"', page)
+            self.assertEqual(page.count('<section class="block">'), 6)
+            self.assertIn("Nothing significant this week.", page)
             self.assertIn("<details>", page)
             try:
                 from pptx import Presentation
             except ImportError:
                 self.assertNotIn("pptx", files)
                 return
-            slide = Presentation(files["pptx"]).slides[0]
+            slide = Presentation(files["pptx"]).slides[1]          # slide 1: CRO's desk; slide 2: blocks
             links = [(r.text, r.hyperlink.address) for sh in slide.shapes if sh.has_text_frame
                      for para in sh.text_frame.paragraphs for r in para.runs if r.hyperlink.address]
-            self.assertIn(("Read ↗", "https://rbi/2"), links)
-            self.assertTrue(any(text.startswith("RBI issues draft") for text, _ in links))
+            # the story of the week (here the RBI draft, the highest-impact item) is starred
+            self.assertTrue(any(t.startswith("1. ★ RBI issues draft") and u == "https://rbi/2" for t, u in links))
+            panels = [sh.text_frame.text.split("\n")[0] for sh in slide.shapes if sh.has_text_frame]
+            for block in rw.BLOCKS:
+                self.assertIn(block, panels)
 
     def test_console_has_plain_links(self):
         out = rw.to_console(self.res, {"html": "/tmp/x.html"})
@@ -218,15 +232,267 @@ class TestAI(unittest.TestCase):
         ]})
         res = rw.run(top=3, sources=SOURCES, fetcher=fetcher, now=NOW, provider=ai)
         self.assertIn("[1]", ai.prompt)
-        self.assertEqual(res.top[0].headline, "Cyber attack hits UPI")
-        self.assertEqual(len(res.top), 3)              # unknown id ignored, rest filled from ranking
-        self.assertNotIn("invented", rw.to_markdown(res))
-        self.assertTrue(res.ai.startswith("fake"))
+        picked = [s for s in res.top if s.headline == "Cyber attack hits UPI"]
+        self.assertEqual(len(picked), 1)
+        self.assertIn(picked[0].category, rw.BLOCKS)              # unknown block name: keyword block kept
+        self.assertEqual(res.blocks[picked[0].category], picked)  # the AI's pick only, in its block
+        self.assertNotIn("invented", rw.to_markdown(res))         # unknown id ignored
+        self.assertIn("fake (fake-1)", res.ai)
 
     def test_unusable_reply_falls_back(self):
         res = rw.run(top=3, sources=SOURCES, fetcher=fetcher, now=NOW, provider=FakeAI({"answer": "x"}))
         self.assertIn("keyword ranking used", res.ai)
-        self.assertEqual(len(res.top), 3)
+        plain = rw.run(top=3, sources=SOURCES, fetcher=fetcher, now=NOW)
+        self.assertEqual([s.lead.link for s in res.top], [s.lead.link for s in plain.top])
+
+
+class TestAiFirst(unittest.TestCase):
+    """With a provider, the AI ranks; the keyword ranking is only the fallback."""
+
+    def stories_in_prompt(self, prompt):
+        return {int(line[1:line.index("]")]): line for line in prompt.splitlines() if line.startswith("[")}
+
+    def test_ai_orders_by_impact_and_picks_radar(self):
+        probe = FakeAI({"items": []})
+        rw.run(top=3, sources=SOURCES, fetcher=fetcher, now=NOW, provider=probe)
+        lines = self.stories_in_prompt(probe.prompt)
+        self.assertNotIn("Credit risk;", probe.prompt)            # no keyword block or score is shown
+        ids = {k: v for k, v in lines.items()}
+        npa = next(k for k, v in ids.items() if "NPA" in v)
+        ecl = next(k for k, v in ids.items() if "expected credit loss" in v)
+        cyber = next(k for k, v in ids.items() if "cyber" in v.lower())
+        dhfl = next(k for k, v in ids.items() if "DHFL" in v)
+        ai = FakeAI({"items": [
+            {"id": npa, "category": "Credit risk", "impact": 4, "headline": "NPA", "why_it_matters": "a"},
+            {"id": ecl, "category": "Credit risk", "impact": 9, "headline": "ECL", "why_it_matters": "b"},
+        ], "radar": [cyber, ecl, 999], "cro_focus": {"id": ecl, "message": "Act."}})
+        res = rw.run(top=3, sources=SOURCES, fetcher=fetcher, now=NOW, provider=ai)
+        self.assertEqual([s.headline for s in res.blocks["Credit risk"]], ["ECL", "NPA"])   # by impact
+        self.assertEqual(res.blocks["Credit risk"][0].impact, 9)
+        self.assertEqual(res.blocks["Compliance risk"], [])       # the AI's judgement: nothing there
+        self.assertEqual(res.blocks["Fraud risk"], [])            # the DHFL look-back is not shown
+        self.assertEqual([s.lead.title for s in res.radar], [lines[cyber].split(") ", 1)[1]])
+        self.assertEqual(res.cro_focus.story.headline, "ECL")
+        self.assertIn("Impact 9/10", rw.to_markdown(res))
+        self.assertIn('<span class="imp">Impact 9/10</span>', rw.to_html(res))
+        self.assertTrue(dhfl)
+
+    def test_rejected_reply_leaves_stories_untouched(self):
+        ai = FakeAI({"items": [{"id": 1, "category": "Not a block", "impact": 9, "headline": "X",
+                                "why_it_matters": "y"}]})
+        ai2 = FakeAI({"items": [{"id": 999, "category": "Credit risk", "impact": 9, "headline": "X"}]})
+        plain = rw.run(top=3, sources=SOURCES, fetcher=fetcher, now=NOW)
+        for fake in (ai2,):
+            res = rw.run(top=3, sources=SOURCES, fetcher=fetcher, now=NOW, provider=fake)
+            self.assertIn("keyword ranking used", res.ai)
+            self.assertEqual([(s.lead.link, s.headline, s.impact) for s in res.top],
+                             [(s.lead.link, s.headline, s.impact) for s in plain.top])
+        self.assertTrue(ai)
+
+    def test_india_test_in_prompt(self):
+        ai = FakeAI({"items": []})
+        rw.run(top=3, sources=SOURCES, fetcher=fetcher, now=NOW, provider=ai)
+        self.assertIn("The India test", ai.system)
+        self.assertIn("detentions abroad", ai.system)
+        self.assertIn("passing the India test", ai.prompt)
+
+    def test_fallback_story_of_week_prefers_india(self):
+        news = rss(("UK court upholds detention of banker in sanctions case, warns banks", "https://g/uk", "",
+                    "Wed, 04 Nov 2026 08:00:00 GMT", "FT"),
+                   ("Indian banks see MSME loan demand rise", "https://g/in", "", "Tue, 03 Nov 2026 08:00:00 GMT", "M"))
+        src = {"feeds": [], "google_news": {"queries": ["x"]}}
+        res = rw.run(top=3, sources=src, fetcher=lambda u: news, now=NOW)
+        self.assertEqual(res.cro_focus.story.lead.link, "https://g/in")
+
+    def test_no_ai_says_keywords(self):
+        res = rw.run(top=3, sources=SOURCES, fetcher=fetcher, now=NOW)
+        self.assertEqual(res.ai, "keywords (AI off)")
+        self.assertTrue(all(s.impact is None for s in res.top))
+
+
+class TestSameStory(unittest.TestCase):
+    """The second grouping pass, on one week's real headlines (test_headlines.json, 6 Nov 2026)."""
+
+    @classmethod
+    def setUpClass(cls):
+        titles = json.loads((pathlib.Path(__file__).resolve().parent / "test_headlines.json")
+                            .read_text(encoding="utf-8"))
+        stories = []
+        for n, title in enumerate(titles):
+            it = rw.Item(title=title, link=f"https://x/{n}", source=f"S{n}", published=NOW)
+            stories.append(rw.Story(items=[it], category="Credit risk", score=100 - n * 0.1))
+        cls.before = len(stories)
+        cls.merged = rw.merge_same_story(stories)
+
+    def story_of(self, words):
+        found = [s for s in self.merged if any(words in it.title for it in s.items)]
+        self.assertEqual(len(found), 1, words)
+        return {it.title for it in found[0].items}
+
+    def test_fewer_stories(self):
+        self.assertLess(len(self.merged), self.before)
+        self.assertEqual(sum(len(s.items) for s in self.merged), self.before)   # nothing lost
+
+    def test_same_story_in_different_words_is_merged(self):
+        hedging = self.story_of("RBI crackdown on rupee bets")
+        self.assertIn("RBI’s rupee-speculation curbs push corporate hedging lower", hedging)
+        self.assertIn("India’s Dollar Hedging Slumps as RBI Cracks Down on Speculation", hedging)
+        cert = self.story_of("CERT-In issues critical alert")
+        self.assertGreaterEqual(len([t for t in cert if "CERT-In" in t or "I4C" in t]), 3)
+        self.assertIn("US Sanctions Chandigarh Couple Over Alleged Iran Shipping Fraud",
+                      self.story_of("US sanctions Indian couple behind fake flag"))
+
+    def test_different_stories_stay_apart(self):
+        self.assertNotIn("Bank of England makes first rate hike since 2023",
+                         self.story_of("Riksbank delivers first rate hike"))
+        self.assertNotIn("RBI Sets Up A New Market Committee", self.story_of("Govt sets up banking committee"))
+        self.assertFalse(any("A7" in t for t in self.story_of("Razorpay gets final licence")))
+
+    def test_small_sets_left_alone(self):
+        few = [rw.Story(items=[rw.Item(title=t, link=t, source="s", published=NOW)], category="x", score=1)
+               for t in ("CERT-In warns banks of AI attacks", "CERT-In alert on AI attacks on banks")]
+        self.assertEqual(len(rw.merge_same_story(few)), 2)
+
+
+class FakeConfluence:
+    """Answers the two REST calls the client makes, and remembers the page."""
+
+    def __init__(self, body="", version=7, conflicts=0):
+        self.body, self.version, self.conflicts = body, version, conflicts
+        self.calls = []
+
+    def __call__(self, method, url, body, headers):
+        self.calls.append((method, url, headers, json.loads(body) if body else None))
+        if method == "GET":
+            return json.dumps({"id": "123", "title": "This Week in Risk", "version": {"number": self.version},
+                               "body": {"storage": {"value": self.body}}}).encode()
+        if self.conflicts:
+            self.conflicts -= 1
+            raise urllib.error.HTTPError(url, 409, "Conflict", {}, io.BytesIO(b"stale"))
+        data = json.loads(body)
+        self.body, self.version = data["body"]["storage"]["value"], data["version"]["number"]
+        return b"{}"
+
+
+class TestConfluence(unittest.TestCase):
+    CFG = {"CONFLUENCE_BASE_URL": "https://confluence.example.com/", "PAGE_ID": "123", "PAT": "sekret-pat",
+           "VERIFY_SSL": False, "CONFLUENCE_TIMEOUT": 60}
+
+    def setUp(self):
+        self.res = rw.run(top=3, sources=SOURCES, fetcher=fetcher, now=NOW, cro_notes=["Board RAS 20 Nov"],
+                          pending=[rw.Pending(item="Old & late", owner="Risk", due="01 Nov 2026", status="Open",
+                                              overdue=True)])
+
+    def client(self, fake):
+        return rw.ConfluenceClient(self.CFG, opener=fake)
+
+    def test_reads_the_settings_file_format(self):
+        with tempfile.TemporaryDirectory() as d:
+            f = pathlib.Path(d) / "Confluence PAT.txt"
+            f.write_text('# ----\n# A.4 Confluence Configuration\n# ----\n'
+                         'CONFLUENCE_BASE_URL = "https://confluence.example.com"\nPAGE_ID = "20268286076"\n'
+                         'PAT = "abc#123"\nVERIFY_SSL = False           # development only\n'
+                         'CONFLUENCE_TIMEOUT = 60\n', encoding="utf-8")
+            cfg = rw.load_confluence_config(f)
+        self.assertEqual(cfg["CONFLUENCE_BASE_URL"], "https://confluence.example.com")
+        self.assertEqual(cfg["PAGE_ID"], "20268286076")
+        self.assertEqual(cfg["PAT"], "abc#123")                    # '#' inside quotes is kept
+        self.assertIs(cfg["VERIFY_SSL"], False)
+        self.assertEqual(cfg["CONFLUENCE_TIMEOUT"], 60)
+        self.assertIsNone(rw.load_confluence_config(pathlib.Path("/no/such/file.txt")))
+
+    def test_week_is_valid_confluence_storage(self):
+        week = rw.to_confluence(self.res)
+        import xml.etree.ElementTree as ET
+        ET.fromstring('<r xmlns:ac="http://atlassian.com/content" xmlns:ri="http://atlassian.com/resource">'
+                      + rw.build_confluence_body("", week, "2026-W45") + "</r>")     # well-formed XML
+        self.assertIn('ac:name="info"', week)
+        self.assertIn("For CRO&#x27;s desk", week)
+        self.assertIn("Old &amp; late", week)
+        self.assertIn('<ac:parameter ac:name="colour">Red</ac:parameter>', week)   # overdue
+        self.assertIn("<th>Credit risk</th>", week)
+        self.assertIn('href="https://rbi/2"', week)
+
+    def test_publish_updates_the_page_with_history(self):
+        fake = FakeConfluence()
+        msg = rw.publish_confluence(self.res, self.CFG, client=self.client(fake))
+        method, url, headers, data = fake.calls[-1]
+        self.assertEqual(method, "PUT")
+        self.assertEqual(url, "https://confluence.example.com/rest/api/content/123")
+        self.assertEqual(headers["Authorization"], "Bearer sekret-pat")
+        self.assertEqual(data["version"]["number"], 8)
+        self.assertEqual(data["title"], "This Week in Risk")
+        self.assertNotIn("sekret-pat", msg)
+        self.assertIn("2026-W45", msg)
+        # next week: last week moves under "Previous weeks"; the same week again is replaced
+        later = rw.run(top=3, sources=SOURCES, fetcher=fetcher, now=NOW + rw.timedelta(days=7))
+        rw.publish_confluence(later, self.CFG, client=self.client(fake))
+        rw.publish_confluence(later, self.CFG, client=self.client(fake))
+        weeks = rw._weeks_on_page(fake.body)
+        self.assertEqual(sorted(weeks), ["2026-W45", "2026-W46"])
+        self.assertLess(fake.body.index("rtw-week-2026-W46"), fake.body.index("<h2>Previous weeks</h2>"))
+        self.assertIn('<ac:parameter ac:name="title">This Week in Risk — week ending 05 Nov 2026</ac:parameter>',
+                      fake.body)
+        self.assertEqual(fake.version, 10)
+
+    def test_keep_limits_weeks_on_page(self):
+        body = ""
+        for n in range(5):
+            res = rw.run(top=3, sources=SOURCES, fetcher=fetcher, now=NOW + rw.timedelta(days=7 * n))
+            body = rw.build_confluence_body(body, rw.to_confluence(res), rw._week_key(res), keep=3)
+        self.assertEqual(sorted(rw._weeks_on_page(body)), ["2026-W47", "2026-W48", "2026-W49"])
+
+    def test_conflict_is_retried_once(self):
+        fake = FakeConfluence(conflicts=1)
+        rw.publish_confluence(self.res, self.CFG, client=self.client(fake))
+        self.assertEqual([c[0] for c in fake.calls], ["GET", "PUT", "GET", "PUT"])
+
+    def test_missing_pat_and_dry_run(self):
+        self.assertIn("PAT missing", rw.publish_confluence(self.res, dict(self.CFG, PAT="")))
+        with tempfile.TemporaryDirectory() as d:
+            f = pathlib.Path(d) / "page.xml"
+            msg = rw.publish_confluence(self.res, {}, dry_run_file=f)
+            self.assertIn("nothing uploaded", msg)
+            self.assertIn("rtw-week-2026-W45", f.read_text(encoding="utf-8"))
+
+    def test_check_reads_only(self):
+        with tempfile.TemporaryDirectory() as d:
+            f = pathlib.Path(d) / "c.txt"
+            f.write_text('CONFLUENCE_BASE_URL = "https://c.example.com"\nPAGE_ID = "123"\nPAT = "x"\n', encoding="utf-8")
+            fake = FakeConfluence(version=3)
+            with mock.patch.object(rw.ConfluenceClient, "_open", lambda self, *args: fake(*args)):
+                out = rw.confluence_check(type("A", (), {"confluence_config": str(f)})())
+        self.assertIn("OK. Page 'This Week in Risk' (id 123), version 3", out)
+        self.assertEqual([c[0] for c in fake.calls], ["GET"])
+
+    def test_http_errors_explained(self):
+        def denied(method, url, body, headers):
+            raise urllib.error.HTTPError(url, 401, "Unauthorized", {}, io.BytesIO(b""))
+        with self.assertRaises(RuntimeError) as c:
+            rw.publish_confluence(self.res, self.CFG, client=self.client(denied))
+        self.assertIn("PAT was not accepted", str(c.exception))
+        self.assertNotIn("sekret-pat", str(c.exception))
+
+
+class TestPrivacy(unittest.TestCase):
+    def test_notes_and_pending_never_sent_to_ai(self):
+        sent = []
+
+        class Spy:
+            name, model = "spy", "spy-1"
+
+            def json_call(self, system_prompt, user_content, response_schema=None, max_output_tokens=0):
+                sent.append(system_prompt + user_content)
+                return {"items": [{"id": 1, "category": "Credit risk", "impact": 5, "headline": "H",
+                                   "why_it_matters": ""}], "radar": [], "cro_focus": {"id": 1, "message": "m"}}
+
+        pend = [rw.Pending(item="SECRET-PENDING-ITEM", owner="SECRET-OWNER")]
+        rw.run(top=3, sources=SOURCES, fetcher=fetcher, now=NOW, provider=Spy(),
+               cro_notes=["SECRET-CRO-NOTE"], pending=pend)
+        self.assertEqual(len(sent), 2)                             # rank, then fill_why
+        for text in sent:
+            for secret in ("SECRET-PENDING-ITEM", "SECRET-OWNER", "SECRET-CRO-NOTE"):
+                self.assertNotIn(secret, text)
 
 
 class SeqAI:
@@ -239,7 +505,7 @@ class SeqAI:
 
     def json_call(self, system_prompt, user_content, response_schema=None, max_output_tokens=1200):
         self.prompts.append(user_content)
-        return self.replies.pop(0)
+        return self.replies.pop(0) if self.replies else {}
 
 
 class TestSummariesAndCro(unittest.TestCase):
@@ -251,19 +517,21 @@ class TestSummariesAndCro(unittest.TestCase):
             self.pick([{"id": 1, "headline": "A", "category": "Capital", "why_it_matters": ""},
                        {"id": 2, "headline": "B", "category": "Capital", "why_it_matters": " "},
                        {"id": 3, "headline": "C", "category": "Capital", "why_it_matters": "Has one."}]),
-            {"items": [{"id": 1, "why_it_matters": "Filled A."}, {"id": 2, "why_it_matters": "Filled B."}]},
+            {"items": [{"id": n, "why_it_matters": f"Filled {n}."} for n in range(1, 30)]},
         )
         res = rw.run(top=3, sources=SOURCES, fetcher=fetcher, now=NOW, provider=ai)
-        self.assertEqual([s.why for s in res.top], ["Filled A.", "Filled B.", "Has one."])
+        whys = [s.why for s in res.top]
+        self.assertTrue(all(whys))
+        self.assertIn("Has one.", whys)                           # an AI line is kept, not asked again
         self.assertEqual(len(ai.prompts), 2)
-        self.assertNotIn("Has one", ai.prompts[1])                # only the missing ones are asked again
-        self.assertEqual([e["request"] for e in res.ai_log], ["pick", "fill_why"])
+        kept = next(s for s in res.top if s.why == "Has one.")
+        self.assertNotIn(kept.lead.title, ai.prompts[1])          # only the missing ones are asked again
+        self.assertEqual([e["request"] for e in res.ai_log], ["rank", "fill_why"])
 
     def test_other_key_names_accepted(self):
         ai = SeqAI(self.pick([{"id": 1, "headline": "A", "category": "Capital", "why": "Via 'why'."}]))
         res = rw.run(top=1, sources=SOURCES, fetcher=fetcher, now=NOW, provider=ai)
-        self.assertEqual(res.top[0].why, "Via 'why'.")
-        self.assertEqual(len(ai.prompts), 1)
+        self.assertIn("Via 'why'.", [s.why for s in res.top])
 
     def test_cro_focus_from_ai(self):
         ai = SeqAI(self.pick([{"id": 1, "headline": "A", "category": "Capital", "why_it_matters": "x"},
@@ -274,12 +542,13 @@ class TestSummariesAndCro(unittest.TestCase):
         box = rw.cro_box(res)
         self.assertEqual(box["notes"], ["RAS review to Board on 20 Nov"])
         self.assertEqual(box["focus"]["headline"], "B")
-        self.assertEqual(box["focus"]["message"], "Ask Credit to check exposure.")
+        self.assertEqual(box["focus"]["action"], "Ask Credit to check exposure.")
+        self.assertEqual(box["focus"]["why"], "y")
         self.assertIn("cro_focus", ai.prompts[0])
 
-    def test_cro_focus_without_ai_is_top_item(self):
+    def test_story_of_week_without_ai_is_highest_impact(self):
         res = rw.run(top=3, sources=SOURCES, fetcher=fetcher, now=NOW)
-        self.assertIs(res.cro_focus.story, res.top[0])
+        self.assertIs(res.cro_focus.story, max(res.top, key=lambda s: s.score))
         self.assertIsNotNone(rw.cro_box(res))
 
     def test_cro_box_in_every_format(self):
@@ -289,24 +558,28 @@ class TestSummariesAndCro(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             files = rw.write(res, d)
             md = pathlib.Path(files["markdown"]).read_text(encoding="utf-8")
-            self.assertIn("> ### From the CRO's desk", md)
+            self.assertIn("> ### For CRO's desk", md)
             self.assertIn("> - Board RAS review 20 Nov", md)
-            self.assertIn("**Focus this week:**", md)
+            self.assertIn("> **Story of the week** (", md)
+            self.assertIn("> **Action point:** Ask Treasury to size it.", md)
+            self.assertIn('<span class="star">★ Story of the week</span>',
+                          pathlib.Path(files["html"]).read_text(encoding="utf-8"))
             page = pathlib.Path(files["html"]).read_text(encoding="utf-8")
-            self.assertIn('<aside class="cro">', page)
+            self.assertIn('<section class="panel cro">', page)
             self.assertIn("Board RAS review 20 Nov", page)
-            self.assertIn('"request": "pick"', pathlib.Path(files["ai_reply"]).read_text(encoding="utf-8"))
-            self.assertIn("FROM THE CRO'S DESK", rw.to_console(res, files))
+            self.assertIn('"request": "rank"', pathlib.Path(files["ai_reply"]).read_text(encoding="utf-8"))
+            self.assertIn("FOR CRO'S DESK", rw.to_console(res, files))
             try:
                 from pptx import Presentation
             except ImportError:
                 return
             texts = [sh.text_frame.text for sh in Presentation(files["pptx"]).slides[0].shapes
                      if sh.has_text_frame]
-            panel = [x for x in texts if x.startswith("From the CRO's desk")]
+            panel = [x for x in texts if x.startswith("For CRO's desk")]
             self.assertEqual(len(panel), 1)
             self.assertIn("Board RAS review 20 Nov", panel[0])
-            self.assertIn("Focus this week", panel[0])
+            self.assertIn("Story of the week", panel[0])
+            self.assertIn("Action point", panel[0])
 
     def test_notes_file(self):
         with tempfile.TemporaryDirectory() as d:
@@ -319,6 +592,145 @@ class TestSummariesAndCro(unittest.TestCase):
         notes = rw.load_cro_notes(pathlib.Path(__file__).resolve().parent / "cro_desk.example.txt")
         self.assertEqual(len(notes), 2)
 
+
+
+class TestFeedFormats(unittest.TestCase):
+    def test_gzip_bare_ampersand_and_rss1(self):
+        import gzip
+        amp = (b'<?xml version="1.0"?><rss><channel><item><title>Margins for FX & IRS segment</title>'
+               b'<link>https://ccil/1</link><pubDate>Thu, 05 Nov 2026 10:00:00</pubDate></item></channel></rss>')
+        self.assertEqual(rw.parse_feed(gzip.compress(amp), "CCIL")[0].title, "Margins for FX & IRS segment")
+        rdf = (b'<?xml version="1.0"?><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" '
+               b'xmlns="http://purl.org/rss/1.0/" xmlns:dc="http://purl.org/dc/elements/1.1/">'
+               b'<channel><title>BIS</title></channel><item><title>Basel speech</title><link>https://bis/1</link>'
+               b'<dc:date>2026-11-04T10:00:00Z</dc:date></item></rdf:RDF>')
+        got = rw.parse_feed(rdf, "BIS")
+        self.assertEqual((got[0].title, got[0].link), ("Basel speech", "https://bis/1"))
+        self.assertEqual(got[0].published.day, 4)
+
+
+class TestPriorities(unittest.TestCase):
+    def test_msme_and_russia_outrank_other_focus(self):
+        prof = rw.Profile.from_sources(rw.load_sources())
+        msme = rw.relevance(item("RBI widens credit guarantee cover for MSME loans"), prof)
+        russia = rw.relevance(item("Indian banks halt payments for Russian oil after sanctions"), prof)
+        other = rw.relevance(item("RBI amends FEMA rules for liquidity facility"), prof)
+        self.assertGreater(msme, other)
+        self.assertGreater(russia, other)
+        self.assertEqual(rw.categorise(item("Banks step up MSME lending via TReDS"))[0], "Credit risk")
+
+    def test_priority_topic_gets_a_slot(self):
+        news = rss(*[(f"RBI tightens cyber security norms for banks, round {n}", f"https://g/c{n}",
+                      "", "Wed, 04 Nov 2026 08:00:00 GMT", f"P{n}") for n in range(3)],
+                   ("Bank of Baroda sees MSME loan demand rise", "https://g/m", "", "Tue, 03 Nov 2026 08:00:00 GMT", "M"),
+                   ("NPA slippages and asset quality stress rise in bank loans", "https://g/npa", "",
+                    "Wed, 04 Nov 2026 08:00:00 GMT", "N"))
+        src = {"feeds": [{"name": "RBI", "url": "rbi", "weight": 3, "primary": True}],
+               "google_news": {"queries": ["x"]},
+               "profile": {"priority": {"weight": 0, "topics": {"MSME lending": ["\\bmsmes?\\b"]}}}}
+        f = lambda u: RBI if u == "rbi" else news
+        res = rw.run(top=1, sources=src, fetcher=f, now=NOW)       # one place in Credit: NPA story or MSME
+        self.assertIn("https://g/m", [s.lead.link for s in res.top])
+        no = rw.run(top=1, sources=dict(src, profile={}), fetcher=f, now=NOW)
+        self.assertNotIn("https://g/m", [s.lead.link for s in no.top])
+
+    def test_guidance_reaches_ai(self):
+        ai = FakeAI({"items": []})
+        src = dict(SOURCES, profile={"guidance": "MSME lending first"})
+        rw.run(top=3, sources=src, fetcher=fetcher, now=NOW, provider=ai)
+        self.assertIn("MSME lending first", ai.system)
+
+
+class TestPending(unittest.TestCase):
+    TODAY = datetime(2026, 11, 6).date()
+
+    def load(self, text):
+        with tempfile.TemporaryDirectory() as d:
+            f = pathlib.Path(d) / "pending_items.txt"
+            f.write_text(text, encoding="utf-8")
+            return rw.load_pending(f, self.TODAY)
+
+    def test_parse_order_and_overdue(self):
+        got = self.load("# comment\n\nLater | A | 20 Nov 2026 | Open\n"
+                        "Closed one | B | 01 Nov 2026 | Done\nLate one | C | 2026-11-02 | In progress\n"
+                        "- No details\n")
+        self.assertEqual([p.item for p in got], ["Late one", "Later", "No details", "Closed one"])
+        self.assertTrue(got[0].overdue)
+        self.assertFalse(got[3].overdue)
+        self.assertEqual(rw._status(got[0]), "Overdue (In progress)")
+        self.assertEqual(rw._status(got[2]), "Open")
+        self.assertEqual(rw.load_pending(pathlib.Path("/no/such/file"), self.TODAY), [])
+
+    def review(self, text, answers):
+        out = []
+        answers = iter(answers)
+        d = tempfile.mkdtemp()
+        f = pathlib.Path(d) / "pending_items.txt"
+        if text is not None:
+            f.write_text(text, encoding="utf-8")
+        items = rw.review_pending(f, ask=lambda prompt: next(answers), say=out.append, today=self.TODAY)
+        return items, f, "\n".join(out)
+
+    def test_review_shows_items_and_enter_changes_nothing(self):
+        text = "# my header\nBoard paper | CRO office | 20 Nov 2026 | Open\n"
+        items, f, shown = self.review(text, [""])
+        self.assertIn("1. Board paper · CRO office · 20 Nov 2026 · Open", shown)
+        self.assertEqual(f.read_text(encoding="utf-8"), text)          # untouched
+        self.assertEqual([p.item for p in items], ["Board paper"])
+
+    def test_review_edit_done_add_delete_and_save(self):
+        text = "# my header\nBoard paper | CRO office | 20 Nov 2026 | Open\nOld item | X | | Open\n"
+        items, f, shown = self.review(text, [
+            "1", "", "Risk team", "31 Feb 2026", "02 Nov 2026", "",    # edit 1: owner, a bad date, then a good one
+            "a", "MSME scorecard", "Credit", "15 Nov 2026", "",         # add (status defaults to Open)
+            "x 3",                                                     # delete "Old item" (third after sorting)
+            "huh",                                                     # not understood: nothing changes
+            "",                                                        # carry on
+        ])
+        self.assertIn("Could not read that date", shown)
+        self.assertIn("Not understood", shown)
+        self.assertIn("Saved", shown)
+        saved = f.read_text(encoding="utf-8")
+        self.assertTrue(saved.startswith("# my header\n"))              # comments kept
+        self.assertIn("Board paper | Risk team | 02 Nov 2026 | Open", saved)
+        self.assertIn("MSME scorecard | Credit | 15 Nov 2026 | Open", saved)
+        self.assertNotIn("Old item", saved)
+        self.assertEqual(items[0].item, "Board paper")                 # now overdue: first
+        self.assertTrue(items[0].overdue)
+        again = rw.load_pending(f, self.TODAY)
+        self.assertEqual([p.item for p in again], [p.item for p in items])
+
+    def test_review_mark_done_and_new_file(self):
+        items, f, shown = self.review(None, ["a", "First item", "", "", "", "d 1", ""])
+        self.assertIn("none yet", shown)
+        self.assertEqual(items[0].status, "Done")
+        saved = f.read_text(encoding="utf-8")
+        self.assertTrue(saved.startswith("# Pending items for the weekly status meeting"))
+        self.assertIn("First item |  |  | Done", saved)
+
+    def test_example_file_parses(self):
+        got = rw.load_pending(pathlib.Path(__file__).resolve().parent / "pending_items.example.txt", self.TODAY)
+        self.assertEqual(len(got), 4)
+
+    def test_pending_in_every_format(self):
+        pend = self.load("Board RAS paper | CRO office | 01 Nov 2026 | Open\nMSME policy | Credit | 20 Nov 2026 |\n")
+        res = rw.run(top=3, sources=SOURCES, fetcher=fetcher, now=NOW, pending=pend)
+        with tempfile.TemporaryDirectory() as d:
+            files = rw.write(res, d)
+            md = pathlib.Path(files["markdown"]).read_text(encoding="utf-8")
+            self.assertIn("## Pending items", md)
+            self.assertIn("| Board RAS paper | CRO office | 01 Nov 2026 | **Overdue (Open)** |", md)
+            self.assertIn('class="late"', pathlib.Path(files["html"]).read_text(encoding="utf-8"))
+            self.assertIn("PENDING ITEMS", rw.to_console(res, files))
+            try:
+                from pptx import Presentation
+            except ImportError:
+                return
+            slide = Presentation(files["pptx"]).slides[0]           # next to the CRO's desk
+            tables = [sh.table for sh in slide.shapes if sh.has_table]
+            self.assertEqual(len(tables), 1)
+            self.assertEqual(tables[0].cell(1, 0).text, "Board RAS paper")
+            self.assertEqual(tables[0].cell(1, 3).text, "Overdue (Open)")
 
 def gemini_reply(obj):
     return {"candidates": [{"content": {"parts": [{"text": json.dumps(obj)}]}, "finishReason": "STOP"}]}
@@ -342,11 +754,13 @@ class TestGemini(unittest.TestCase):
                                             "why_it_matters": "W"}]})
 
         g = rw.GeminiProvider(post=post)
-        self.assertEqual(g.model, "gemini-3.5-flash-lite")
+        self.assertEqual(g.model, "gemini-3.8-flash")
         out = g.json_call("sys", "user", rw.AI_SCHEMA)
         self.assertEqual(out["items"][0]["headline"], "H")
         url, body, headers = calls[0]
-        self.assertIn("/models/gemini-3.5-flash-lite:generateContent", url)
+        self.assertIn("/models/gemini-3.8-flash:generateContent", url)
+        self.assertNotIn("temperature", body["generationConfig"])            # ignored by Gemini 3.6+
+        self.assertGreaterEqual(body["generationConfig"]["maxOutputTokens"], 16384)   # includes thinking
         self.assertEqual(headers, {"x-goog-api-key": "k"})
         self.assertNotIn("k", url)                                   # key in a header, not the URL
         self.assertEqual(body["generationConfig"]["responseMimeType"], "application/json")
@@ -358,7 +772,7 @@ class TestGemini(unittest.TestCase):
             {"id": 1, "headline": "Gemini headline", "category": "Credit risk", "why_it_matters": "W"}]})
         res = rw.run(top=3, sources=SOURCES, fetcher=fetcher, now=NOW, provider=rw.GeminiProvider(post=post))
         self.assertEqual(res.top[0].headline, "Gemini headline")
-        self.assertTrue(res.ai.startswith("gemini (gemini-3.5-flash-lite)"))
+        self.assertIn("gemini (gemini-3.8-flash)", res.ai)
 
     def test_daily_limit_falls_back_to_keywords(self):
         def post(url, body, headers):
@@ -366,7 +780,70 @@ class TestGemini(unittest.TestCase):
 
         res = rw.run(top=3, sources=SOURCES, fetcher=fetcher, now=NOW, provider=rw.GeminiProvider(post=post))
         self.assertIn("keyword ranking used", res.ai)
-        self.assertEqual(len(res.top), 3)
+        self.assertTrue(res.top)
+
+    def test_falls_back_to_flash_lite(self):
+        urls = []
+
+        def post(url, body, headers):
+            urls.append(url)
+            if "gemini-3.8-flash:" in url:
+                raise urllib.error.HTTPError(url, 429, "Too Many Requests", {}, io.BytesIO(b"quota"))
+            return gemini_reply({"items": [{"id": 1, "headline": "Lite", "category": "Credit risk",
+                                            "impact": 7, "why_it_matters": "W"}], "radar": [],
+                                 "cro_focus": {"id": 1, "message": "m"}})
+
+        waits = []
+        res = rw.run(top=3, sources=SOURCES, fetcher=fetcher, now=NOW,
+                     provider=rw.GeminiProvider(post=post, sleep=waits.append))
+        self.assertEqual(waits, [])                                # a daily limit is not retried
+        self.assertIn("/models/gemini-3.8-flash:", urls[0])
+        self.assertIn("/models/gemini-3.5-flash-lite:", urls[1])
+        self.assertIn("gemini-3.5-flash-lite, after gemini-3.8-flash: free-tier limit", res.ai)
+        self.assertIn("Lite", [s.headline for s in res.top])
+
+    def test_busy_model_retried_before_fallback(self):
+        calls, waits = [], []
+
+        def post(url, body, headers):
+            calls.append(url)
+            if len(calls) < 3:                                    # busy twice, then answers
+                raise urllib.error.HTTPError(url, 503, "Unavailable", {}, io.BytesIO(b"high demand"))
+            return gemini_reply({"items": [{"id": 1, "headline": "Flash", "category": "Credit risk",
+                                            "impact": 8, "why_it_matters": "W"}], "radar": [],
+                                 "cro_focus": {"id": 1, "message": "m"}})
+
+        g = rw.GeminiProvider(post=post, sleep=waits.append)
+        res = rw.run(top=3, sources=SOURCES, fetcher=fetcher, now=NOW, provider=g)
+        self.assertTrue(all("gemini-3.8-flash:" in u for u in calls))   # no fallback needed
+        self.assertEqual(waits, [10, 30])
+        self.assertIn("gemini-3.8-flash on try 3", res.ai)
+
+    def test_busy_three_times_then_flash_lite(self):
+        calls, waits = [], []
+
+        def post(url, body, headers):
+            calls.append(url)
+            if "gemini-3.8-flash:" in url:
+                raise urllib.error.HTTPError(url, 503, "Unavailable", {}, io.BytesIO(b"high demand"))
+            return gemini_reply({"items": [{"id": 1, "headline": "Lite", "category": "Credit risk",
+                                            "impact": 8, "why_it_matters": "W"}], "radar": [],
+                                 "cro_focus": {"id": 1, "message": "m"}})
+
+        res = rw.run(top=3, sources=SOURCES, fetcher=fetcher, now=NOW,
+                     provider=rw.GeminiProvider(post=post, sleep=waits.append))
+        self.assertEqual(sum("gemini-3.8-flash:" in u for u in calls), 3)
+        self.assertIn("gemini-3.5-flash-lite, after gemini-3.8-flash: HTTP 503", res.ai)
+        self.assertIn("tried 3 times", res.ai)
+
+    def test_cut_off_reply_tries_fallback_then_keywords(self):
+        cut = {"candidates": [{"content": {"parts": [{"text": '{"items": [{"id": 1'}]},
+                               "finishReason": "MAX_TOKENS"}]}
+        res = rw.run(top=3, sources=SOURCES, fetcher=fetcher, now=NOW,
+                     provider=rw.GeminiProvider(post=lambda url, body, headers: cut))
+        self.assertIn("cut off", res.ai)
+        self.assertIn("gemini-3.5-flash-lite", res.ai)
+        self.assertIn("keyword ranking used", res.ai)
 
     def test_fenced_json_and_thoughts_tolerated(self):
         post = lambda url, body, headers: {"candidates": [{"content": {"parts": [  # noqa: E731

@@ -1,0 +1,10 @@
+# Pending items for the weekly status meeting, one per line:
+#   Item | Owner | Due date | Status
+# Copy this file to pending_items.txt and edit it before each meeting; pending_items.txt is not committed to git.
+# Only the item is required. Dates like 20 Nov 2026 or 2026-11-20. Status is free text (Open, In progress, Done...).
+# Items past their due date that are not Done show as Overdue, at the top and in red.
+# risk_week.py shows these at the start of every run and asks for updates; you can also edit this file.
+MSME credit policy: revised scorecard and delegation limits to Credit Committee | Credit Risk | 15 Nov 2026 | In progress
+RBI inspection (ISE) data requests: responses to open queries | Compliance | 07 Nov 2026 | Open
+India–Russia vostro account: sanctions screening review | Financial Crime | 30 Nov 2026 | Open
+ECL parallel run results to Audit Committee | Finance / Risk | 31 Oct 2026 | Done
