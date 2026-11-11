@@ -209,6 +209,13 @@ The tools:
 | `risk_week_publish` | Takes GigaCode's ranking, writes the slides, page and Markdown to `output/` next to the script, adds pending items, CRO notes and ISE items locally, and publishes to Confluence |
 | `risk_week_check` | The read-only Confluence check |
 
+**Batch codes.** `risk_week_prepare` returns a batch code with its numbered list and saves
+the list in `output/`; `risk_week_publish` needs that code. So the numbers in a ranking always
+refer to the list that was ranked, even if the server was restarted in between, and a ranking
+made for an older list is refused. Publish also checks each pick's headline against the story
+its number points to, and refuses a ranking whose numbers are clearly shifted. Call prepare
+once per report: a second call makes a new list with new numbers.
+
 GigaCode receives only the news candidates and the ranking instructions (which include the
 profile's `bank` description and `guidance`). Pending items, CRO notes and the ISE page stay
 on your computer; `risk_week_publish` replies with file paths, counts and the Confluence link

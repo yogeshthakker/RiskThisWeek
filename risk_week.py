@@ -2657,7 +2657,9 @@ MCP_TOOLS = [
                     "risk_week_prepare: writes the slides, web page and Markdown, adds the user's pending "
                     "items, CRO notes and RBI compliance (ISE) items locally, and publishes the week to "
                     "Confluence. Returns where the files are and the Confluence link.",
-     "inputSchema": {"type": "object", "required": ["ranking"], "properties": {
+     "inputSchema": {"type": "object", "required": ["batch", "ranking"], "properties": {
+         "batch": {"type": "string", "description": "The batch code risk_week_prepare returned with the "
+                                                    "candidates you ranked"},
          "ranking": {"description": "Your ranking as a JSON object (or a JSON string) with keys items, "
                                     "radar and cro_focus, exactly as described by risk_week_prepare.",
                      "type": ["object", "string"]},
@@ -2667,6 +2669,34 @@ MCP_TOOLS = [
                     "to, whether publishing is allowed, and the RBI compliance (ISE) page counts.",
      "inputSchema": {"type": "object", "properties": {}}},
 ]
+def ranking_mismatches(pool: list[Story], ranking) -> list[str]:
+    """Picks whose headline shares no meaningful word with the story their id points to.
+
+    Returns the mismatches when more than a quarter of the picks have one (a sign of ids from a
+    different candidate list); an occasional rewritten headline is fine.
+    """
+    if isinstance(ranking, str):
+        try:
+            ranking = json.loads(ranking)
+        except ValueError:
+            return []
+    items = (ranking or {}).get("items") if isinstance(ranking, dict) else None
+    bad, checked = [], 0
+    for r in items or []:
+        try:
+            idx = int(r.get("id")) - 1
+        except (TypeError, ValueError, AttributeError):
+            continue
+        headline = str(r.get("headline") or "")
+        if not (0 <= idx < len(pool)) or not headline:
+            continue
+        checked += 1
+        story_words = set().union(*(_story_words(it.title) for it in pool[idx].items)) - COMMON_WORDS
+        if not (_story_words(headline) - COMMON_WORDS) & story_words:
+            bad.append(f"  [{idx + 1}] '{_clean(headline, 70)}' vs '{_clean(pool[idx].lead.title, 70)}'")
+    return bad if checked and len(bad) * 4 > checked else []
+
+
 _EXAMPLE_REPLY = {
     "items": [{"id": 12, "category": "Credit risk", "impact": 8, "headline": "Twelve words at most",
                "why_it_matters": "One or two sentences on what it means for us."}],
@@ -2759,16 +2789,61 @@ class McpServer:
         self.pool = self.week.pool()
         if not self.pool:
             return "No candidate stories this week (all feeds empty or unreachable).", True
+        import hashlib
+        self.batch = hashlib.sha1("\n".join(s.lead.link or s.lead.title for s in self.pool)
+                                  .encode("utf-8")).hexdigest()[:8]
+        self._save()
         prof = self.week.profile
-        return ("Rank this week's candidates, then call risk_week_publish with your ranking as the "
-                "`ranking` argument.\n\n## Instructions\n" + _system(prof.bank, prof.guidance)
+        return (f"Batch: {self.batch}\n"
+                "Rank this week's candidates, then call risk_week_publish with batch "
+                f"\"{self.batch}\" and your ranking as the `ranking` argument. Do not call "
+                "risk_week_prepare again before publishing: a new call makes a new list with new "
+                "numbers.\n\n## Instructions\n" + _system(prof.bank, prof.guidance)
                 + "\n\n" + ranking_prompt(self.pool, self.top, prof.bank, list(prof.topics))
                 + "\n\n## Answer format for `ranking` (JSON; ids are the numbers in brackets)\n"
                 + json.dumps(_EXAMPLE_REPLY, ensure_ascii=False, indent=1))
 
+    def _state_file(self) -> Path:
+        return Path(self.out_dir or DEFAULT_OUT) / ".risk-week-mcp-batch.pickle"
+
+    def _save(self) -> None:
+        import pickle
+        try:
+            f = self._state_file()
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_bytes(pickle.dumps({"batch": self.batch, "week": self.week, "pool": self.pool,
+                                        "top": self.top}))
+        except Exception as e:  # noqa: BLE001 — publishing in the same session still works
+            print(f"[risk-week] could not save the batch: {e}", file=sys.stderr)
+
+    def _load(self, batch: str) -> bool:
+        """The saved candidate list for `batch`, for a publish call from a new server process."""
+        import pickle
+        try:
+            state = pickle.loads(self._state_file().read_bytes())  # noqa: S301 — our own file
+        except Exception:  # noqa: BLE001
+            return False
+        if state.get("batch") != batch:
+            return False
+        self.batch, self.week, self.pool, self.top = state["batch"], state["week"], state["pool"], state["top"]
+        return True
+
     def publish(self, args: dict) -> str:
+        batch = str(args.get("batch") or "").strip()
+        if not batch:
+            return ("Pass `batch`: the code risk_week_prepare returned with the candidates you ranked.", True)
+        if getattr(self, "batch", None) != batch and not self._load(batch):
+            return (f"Batch {batch} is not the current candidate list (it was replaced by a later "
+                    f"risk_week_prepare, or never existed). The numbers in your ranking refer to that "
+                    f"list, so they cannot be used: call risk_week_prepare once, rank that list, and "
+                    f"publish with its batch code.", True)
         if self.week is None or not self.pool:
             return "Call risk_week_prepare first: there are no candidates to rank yet.", True
+        mismatch = ranking_mismatches(self.pool, args.get("ranking"))
+        if mismatch:
+            return ("Some ids do not match the candidates they point to (the headline shares no words "
+                    "with the story), so the ranking was not used:\n" + "\n".join(mismatch[:6])
+                    + "\nCheck the numbers in brackets in the batch you ranked and send it again.", True)
         picked = parse_ranking(self.pool, args.get("ranking"), self.top,
                                f"GigaCode via MCP, {len(self.pool)} candidates")
         if not picked.ok:
@@ -2789,7 +2864,11 @@ class McpServer:
         files = write(res, self.out_dir)
         published = (confluence_step(res, a, files) if args.get("publish", True)
                      else "Confluence: not published (publish = false)")
-        self.week, self.pool = None, []       # one report per prepare
+        self.week, self.pool, self.batch = None, [], None    # one report per prepare
+        try:
+            self._state_file().unlink()
+        except OSError:
+            pass
         # Only a short confirmation goes back to the client: no pending items, CRO notes or ISE rows.
         shown = sum(len(v) for v in res.blocks.values())
         story = res.cro_focus.story.as_dict()["headline"] if res.cro_focus else "none"
