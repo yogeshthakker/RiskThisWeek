@@ -560,6 +560,21 @@ class TestCompliance(unittest.TestCase):
         self.assertEqual(kyc.shown_status, "Overdue (Non-Compliant)")
         self.assertEqual(ubo.shown_status, "Open")
 
+    def test_rmp_items(self):
+        page = COMPLIANCE_PAGE.replace("<td>15.12.2026</td>", "<td>RMP</td>")
+        items = rw.parse_compliance(page, self.TODAY)
+        ubo = items[1]
+        self.assertTrue(ubo.rmp and ubo.severe and not ubo.overdue)
+        self.assertEqual(ubo.shown_status, "RMP: deadline per mitigation plan")
+        self.assertEqual([i.observation[:8] for i in rw.open_compliance(items)], ["Benefici", "Periodic"])  # RMP first
+        self.assertEqual(rw._ise_counts(rw.open_compliance(items)), "2 open, 1 on RMP, 1 overdue")
+        cfg = dict(TestConfluence.CFG, COMPLIANCE_PAGE_ID="999", ISE_DEPARTMENT="")
+        _, info = rw.load_compliance(cfg, client=rw.ConfluenceClient(cfg, opener=FakeConfluence(body=page)),
+                                     today=self.TODAY)
+        self.assertEqual((info["rmp"], info["unread_deadlines"]), (1, 0))     # not "not understood"
+        self.assertTrue(rw._RMP.search("As per Risk Mitigation Plan"))
+        self.assertFalse(rw._RMP.search("RMPL vendor"))
+
     def test_department_filter(self):
         cfg = dict(TestConfluence.CFG, COMPLIANCE_PAGE_ID="999")
         load = lambda c: rw.load_compliance(c, client=rw.ConfluenceClient(c, opener=FakeConfluence(body=COMPLIANCE_PAGE)),

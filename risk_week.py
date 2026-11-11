@@ -1410,15 +1410,14 @@ def _compliance_markdown(res: Result) -> list[str]:
     info = res.compliance_info
     if info.get("error") and not res.compliance:
         return [f"## Pending RBI compliance items{_ise_label(info)}", "", f"_Not read: {info['error']}_", ""]
-    late = sum(i.overdue for i in res.compliance)
     out = [f"## Pending RBI compliance items{_ise_label(info)}", "",
-           f"_{len(res.compliance)} open" + (f", {late} overdue" if late else "") + f", of {info.get('total', 0)}"
+           f"_{_ise_counts(res.compliance)}, of {info.get('total', 0)}"
            + (f" · [source page]({info['url']})" if info.get("url") else "") + "_", ""]
     if res.compliance:
         out += ["| Sub-section | Observation | Department | Deadline | Status |", "|---|---|---|---|---|"]
         cell = lambda t: t.replace("|", "/")  # noqa: E731
         out += [f"| {cell(i.subsection)} | {cell(i.observation)} | {cell(i.owner)} | {cell(i.deadline)} | "
-                f"{'**' + i.shown_status + '**' if i.overdue else i.shown_status} |" for i in res.compliance]
+                f"{'**' + i.shown_status + '**' if i.severe else i.shown_status} |" for i in res.compliance]
         out.append("")
     return out
 
@@ -1501,9 +1500,8 @@ def to_console(res: Result, files: dict) -> str:
         if info.get("error") and not res.compliance:
             out += [f"PENDING RBI COMPLIANCE{_ise_label(info).upper()}: not read ({info['error']})", ""]
         else:
-            late = sum(i.overdue for i in res.compliance)
-            out.append(f"PENDING RBI COMPLIANCE{_ise_label(info).upper()} ({len(res.compliance)} open" + (f", {late} overdue" if late else "")
-                       + f", of {info.get('total', 0)})")
+            out.append(f"PENDING RBI COMPLIANCE{_ise_label(info).upper()} ({_ise_counts(res.compliance)}"
+                       f", of {info.get('total', 0)})")
             out += [f"  • {_clean(i.observation, 110)}" + "".join(f" · {x}" for x in (i.department, i.deadline) if x)
                     + f" · {i.shown_status}" for i in res.compliance[:12]]
             if len(res.compliance) > 12:
@@ -1579,10 +1577,9 @@ def to_html(res: Result) -> str:
     comp = ""
     info = res.compliance_info
     if info:
-        late = sum(i.overdue for i in res.compliance)
         late_cls = ' class="late"'
         rows = "".join(
-            f'<li{late_cls if i.overdue else ""} title="{e(("Comments: " + i.comments) if i.comments else i.observation)}">'
+            f'<li{late_cls if i.severe else ""} title="{e(("Comments: " + i.comments) if i.comments else i.observation)}">'
             f'<span class="it">{e(i.observation)}</span><span class="pm">'
             + " · ".join(e(x) for x in (i.subsection, i.department, i.deadline) if x)
             + f'{" · " if (i.subsection or i.department or i.deadline) else ""}<b>{e(i.shown_status)}</b></span></li>'
@@ -1593,7 +1590,7 @@ def to_html(res: Result) -> str:
             body = (f'<ul>{rows}</ul>' if rows else '<p class="meta">No open items.</p>')
         src = f'<p class="meta">{link(info["url"], "Open the Confluence page ↗")}</p>' if info.get("url") else ""
         comp = (f'<section class="panel pending comp"><h2>Pending RBI compliance{e(_ise_label(info))} <span class="meta">'
-                f'{len(res.compliance)} open' + (f" · {late} overdue" if late else "")
+                f'{e(_ise_counts(res.compliance)).replace(", ", " · ")}'
                 + (f" · of {info['total']}" if info.get("total") else "") + f'</span></h2>{body}{src}</section>')
     radar = "".join(f'<li>{link(s.lead.link, s.as_dict()["headline"], "", s.as_dict()["headline"])} '
                     f'<span class="meta">{e(s.category)}</span></li>' for s in res.radar)
@@ -1812,10 +1809,9 @@ def _compliance_slide(prs, layout, header, res: Result, period: str, navy, grey,
     from pptx.dml.color import RGBColor
     from pptx.util import Inches, Pt
     items, info = res.compliance, res.compliance_info
-    late = sum(i.overdue for i in items)
     slide = prs.slides.add_slide(layout)
     header(slide, f"Pending RBI compliance items{_ise_label(info)}",
-           f"{len(items)} open" + (f" · {late} overdue" if late else "") + f" · of {info.get('total', 0)} "
+           f"{_ise_counts(items).replace(', ', ' · ')} · of {info.get('total', 0)} "
            f"on '{info.get('title', 'the Confluence page')}' · {period}")
     shown = items[:10]
     widths = [1.8, 6.0, 1.9, 1.3, 1.3]
@@ -1843,8 +1839,8 @@ def _compliance_slide(prs, layout, header, res: Result, period: str, navy, grey,
             for para in cell.text_frame.paragraphs:
                 for run in para.runs:
                     run.font.size = Pt(size)
-                    run.font.color.rgb = red if it.overdue and c == 4 else navy
-                    run.font.bold = it.overdue and c == 4
+                    run.font.color.rgb = red if it.severe and c == 4 else navy
+                    run.font.bold = it.severe and c == 4
     note = slide.shapes.add_textbox(Inches(0.5), Inches(6.95), Inches(12.3), Inches(0.35)).text_frame
     note.word_wrap = True               # a fixed-width box, so the text sits on the left
     p = note.paragraphs[0]
@@ -2025,13 +2021,13 @@ def to_confluence(res: Result) -> str:
     if res.compliance or info.get("total"):
         rows = []
         for i in res.compliance:
-            colour = "Red" if i.overdue else "Yellow" if re.search(r"non", i.status, re.I) else "Grey"
+            colour = "Red" if i.severe else "Yellow" if re.search(r"non", i.status, re.I) else "Grey"
             rows.append(f"<tr><td>{e(i.subsection)}</td><td>{e(i.observation)}</td><td>{e(i.owner)}</td>"
                         f"<td>{e(i.deadline)}</td><td>{_status_macro(i.shown_status, colour)}</td>"
                         f"<td>{e(i.comments)}</td></tr>")
         src = f' <a href="{e(info["url"])}">(source page)</a>' if info.get("url") else ""
         out.append(f"<h3>Pending RBI compliance items{e(_ise_label(info))}{src}</h3>"
-                   f"<p><em>{len(res.compliance)} open of {info.get('total', 0)}</em></p>"
+                   f"<p><em>{e(_ise_counts(res.compliance))}, of {info.get('total', 0)}</em></p>"
                    + ("<table><tbody><tr><th>Sub-section</th><th>Observation</th><th>Department</th>"
                       "<th>Deadline</th><th>Status</th><th>Comments</th></tr>" + "".join(rows) + "</tbody></table>"
                       if rows else ""))
@@ -2266,9 +2262,13 @@ def confluence_check(a) -> str:
             scope = (f"{info['page_total']} observation(s) on the page; {info['total']} for department "
                      f"'{info['department']}'" if info.get("department") else f"{info['total']} observation(s)")
             out += (f"\nISE page (read only): OK. '{info['title']}': {scope}: "
-                    f"{info['closed']} compliant, {len(items)} open, {info['overdue']} overdue")
-            dated = len(items) - info["no_deadline"] - info["unread_deadlines"]
+                    f"{info['closed']} compliant, {len(items)} open"
+                    + (f", {info['rmp']} on a risk mitigation plan (RMP)" if info.get("rmp") else "")
+                    + f", {info['overdue']} overdue")
+            dated = len(items) - info["no_deadline"] - info["unread_deadlines"] - info.get("rmp", 0)
             out += f"\n  Open items with a deadline the tool understood: {dated} of {len(items)}"
+            if info.get("rmp"):
+                out += f"; on RMP (deadline in the plan): {info['rmp']}"
             if info["no_deadline"]:
                 out += f"; with no deadline: {info['no_deadline']}"
             if info["unread_deadlines"]:
@@ -2298,6 +2298,12 @@ class ComplianceItem:
     due_date: date | None = None
     overdue: bool = False
     done: bool = False
+    rmp: bool = False           # on a risk mitigation plan: most severe, deadlines kept in the plan
+
+    @property
+    def severe(self) -> bool:
+        """Shown first and in red: overdue, or open on a risk mitigation plan."""
+        return not self.done and (self.overdue or self.rmp)
 
     @property
     def owner(self) -> str:
@@ -2307,6 +2313,8 @@ class ComplianceItem:
     def shown_status(self) -> str:
         if self.overdue:
             return "Overdue" + (f" ({self.status})" if self.status else "")
+        if self.rmp and not self.done:
+            return "RMP: deadline per mitigation plan" + (f" ({self.status})" if self.status else "")
         return self.status or "Open"
 
 
@@ -2486,14 +2494,26 @@ def parse_compliance(storage: str, today: date | None = None,
                                 deadline=get("deadline"), status=get("status"))
             it.done = re.sub(r"\s+", " ", it.status.lower()).strip() in done_set
             it.due_date = _first_date(it.deadline)
-            it.overdue = bool(it.due_date and it.due_date < today and not it.done)
+            it.rmp = bool(_RMP.search(it.deadline))
+            it.overdue = bool(it.due_date and it.due_date < today and not it.done and not it.rmp)
             items.append(it)
     return items
 
 
+_RMP = re.compile(r"\brmp\b|risk[ -]?mitigation[ -]?plan", re.I)
+
+
 def open_compliance(items: list[ComplianceItem]) -> list[ComplianceItem]:
-    """Open items, overdue first, then by deadline (items without a date last)."""
-    return sorted((i for i in items if not i.done), key=lambda i: (not i.overdue, i.due_date or date.max))
+    """Open items: those on a risk mitigation plan (RMP, the most severe) first, then overdue,
+    then the rest by deadline (items without a date last)."""
+    return sorted((i for i in items if not i.done),
+                  key=lambda i: (0 if i.rmp else 1 if i.overdue else 2, i.due_date or date.max))
+
+
+def _ise_counts(items: list[ComplianceItem]) -> str:
+    """'23 open, 3 on RMP, 10 overdue' (the parts that are not zero)."""
+    rmp, late = sum(i.rmp for i in items), sum(i.overdue and not i.rmp for i in items)
+    return (f"{len(items)} open" + (f", {rmp} on RMP" if rmp else "") + (f", {late} overdue" if late else ""))
 
 
 def load_compliance(cfg: dict | None, client: "ConfluenceClient | None" = None,
@@ -2522,11 +2542,12 @@ def load_compliance(cfg: dict | None, client: "ConfluenceClient | None" = None,
     else:
         items = everything
     open_items = [i for i in items if not i.done]
-    unread = [i.deadline for i in open_items if i.deadline and not i.due_date]
+    unread = [i.deadline for i in open_items if i.deadline and not i.due_date and not i.rmp]
     info = {"title": page.get("title") or "RBI compliance", "url": client.page_url(page_id),
             "department": dept, "page_total": len(everything),
             "total": len(items), "closed": sum(i.done for i in items),
             "overdue": sum(i.overdue for i in items),
+            "rmp": sum(1 for i in open_items if i.rmp),
             "no_deadline": sum(1 for i in open_items if not i.deadline),
             "unread_deadlines": len(unread),
             "unread_examples": list(dict.fromkeys(_clean(u, 40) for u in unread))[:4]}
