@@ -1,10 +1,16 @@
-# Settings for publishing the report to Confluence.
-# Copy this file to "Confluence PAT.txt" (same folder as risk_week.py) and fill in PAT.
+# Settings for Confluence. One file, two pages:
+#   NEWS_PAGE_ID - the page the weekly report is published to (an empty page of its own)
+#   ISE_PAGE_ID  - the RBI compliance (ISE) page, only read, shown as "Pending RBI compliance"
+# Copy this file to "Confluence PAT.txt" (same folder as risk_week.py) and fill it in.
 # "Confluence PAT.txt" is git-ignored: never commit your token.
 CONFLUENCE_BASE_URL = "https://confluence.example.com"
-PAGE_ID = "123456789"
+NEWS_PAGE_ID = "123456789"
+ISE_PAGE_ID = ""
 PAT = ""                      # your Confluence personal access token
 VERIFY_SSL = True             # False only for development (skips the TLS certificate check)
 # CA_BUNDLE = "C:/certs/bank-root-ca.pem"   # better than VERIFY_SSL = False for an internal CA
 CONFLUENCE_TIMEOUT = 60
-KEEP_WEEKS = 26               # weeks kept on the page; older ones stay in Confluence's page history
+KEEP_WEEKS = 26               # weeks kept on the news page; older ones stay in Confluence's page history
+# The ISE table needs an "Observation" column and an "Official deadline" or "Compliant/Non-Compliant" column.
+# COMPLIANCE_DONE = ["Compliant", "Closed"]   # status values that mean an ISE item is done
+# (PAGE_ID and COMPLIANCE_PAGE_ID are accepted as older names for NEWS_PAGE_ID and ISE_PAGE_ID.)

@@ -10,7 +10,7 @@ web page for the weekly status meeting ("This week in risk"). The user runs it o
 ```bash
 pip install -r requirements.txt
 python risk_week.py --ai --open        # Gemini free tier; --open opens the web page
-python -m unittest test_risk_week      # 63 tests, no network or key needed
+python -m unittest test_risk_week      # 70 tests, no network or key needed
 ```
 
 Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
@@ -27,7 +27,7 @@ Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
 | `test_risk_week.py` | unittest tests using sample feeds and fake AI replies |
 | `test_headlines.json` | One week's real headlines (6 Nov 2026), used to test the same-story grouping |
 | `.env` | `GEMINI_API_KEY=...` on the user's machine. Git-ignored |
-| `Confluence PAT.txt` | On the user's machine only, **never committed** (git-ignored): `CONFLUENCE_BASE_URL`, `PAGE_ID`, `PAT`, `VERIFY_SSL`, `CONFLUENCE_TIMEOUT` as `KEY = value` lines. `confluence.example.txt` is the template |
+| `Confluence PAT.txt` | On the user's machine only, **never committed** (git-ignored). One file, two pages: `NEWS_PAGE_ID` (publish target; alias of `PAGE_ID`) and `ISE_PAGE_ID` (the RBI compliance / ISE page, read only; alias of `COMPLIANCE_PAGE_ID`), plus `CONFLUENCE_BASE_URL`, `PAT`, `VERIFY_SSL`, `CONFLUENCE_TIMEOUT` as `KEY = value` lines. `confluence.example.txt` is the template |
 
 ## How it works
 
@@ -97,9 +97,26 @@ Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
    blocks, expand for routine enforcement). Each week sits between anchor macros
    `rtw-week-<ISO week>` / `rtw-end-<ISO week>`; `build_confluence_body()` keeps the latest week
    on top and earlier weeks in expand macros, replaces a repeated week, keeps `KEEP_WEEKS` (26).
-   409 is retried once. Errors never stop the run. `--confluence-check` (read-only),
+   409 is retried once. Errors never stop the run. **Guards** (`publish_problems`, added
+   11 Nov 2026 after the user's settings file had two `PAGE_ID` lines and the second was the
+   ISE compliance page): refuse when a key is duplicated with different values (`_DUPLICATES`),
+   when `PAGE_ID == COMPLIANCE_PAGE_ID`, or when `foreign_content()` finds > 40 characters on
+   the page not written by this tool, unless `--confluence-replace`. `--confluence-check` (read-only),
    `--no-confluence`, `--confluence-dry-run`. Tested only against a fake server: the user's
    Confluence (internal host) is not reachable from the cloud sandbox.
+
+9. **Pending RBI compliance items** (user's request, 11 Nov 2026). If `Confluence PAT.txt` has
+   `COMPLIANCE_PAGE_ID`, `load_compliance()` GETs that page at the start (read only, never sent
+   to the AI) and `parse_compliance()` reads every table with an "Observation" column plus a
+   deadline or "Compliant/Non-Compliant" column (`_TableReader`: stdlib HTMLParser, rowspan /
+   colspan filled, only a status macro's title kept; `_column_map` matches headings loosely).
+   The user's headings: Sub-section, Observation, CBS / Non-CBS, Department, Head of
+   Department, Comments received from departments, Official deadline, Compliant/Non-Compliant
+   submitted to RBI (15.04.2026). Done = status exactly in `COMPLIANCE_DONE` ("compliant",
+   "closed", "complied"); overdue = open and past the deadline (`dd.mm.yyyy` parsed). Shown
+   as `Result.compliance` (open items, overdue first) in the sidebar, a slide after slide 1,
+   Markdown, console and the weekly Confluence page. Any problem is reported, never fatal.
+   Tested only on a sample table: the real page's layout has not been seen.
 
 ## Decisions the user made
 

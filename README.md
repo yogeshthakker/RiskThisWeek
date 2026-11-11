@@ -211,7 +211,33 @@ Set it up once:
    the console prints the page link. A Confluence problem never stops the run: the local
    files are written first.
 
-`--no-confluence` skips publishing for one run. `--confluence-dry-run` writes the page content
+### Pending RBI compliance items from Confluence
+
+`Confluence PAT.txt` serves two pages: **`NEWS_PAGE_ID`**, where the weekly report is
+published, and **`ISE_PAGE_ID`**, the RBI compliance page that is only read (the older names
+`PAGE_ID` and `COMPLIANCE_PAGE_ID` still work). With `ISE_PAGE_ID` set, each run reads that page
+(read only) and shows its open items as **Pending RBI compliance**: in the page sidebar, on a
+slide of its own after "For CRO's desk", in the Markdown and console, and on the weekly
+Confluence page, each with a link to the source page.
+
+- **Which table:** any table on the page with an "Observation" column and an "Official
+  deadline" or "Compliant/Non-Compliant submitted to RBI" column (whatever date is in that
+  heading). Sub-section, CBS / Non-CBS, Department, Head of Department and "Comments received
+  from departments" are read too; merged cells are filled down.
+- **Pending** means the status is not exactly "Compliant" (so "Non-Compliant" and blanks are
+  open). Change this with `COMPLIANCE_DONE = ["Compliant", "Closed"]`.
+- **Overdue** means the official deadline (e.g. `15.04.2026`) has passed and the item is open:
+  shown first, in red.
+- These items are never sent to the AI. `--confluence-check` also reports how many it found.
+
+**Safety checks.** Publishing is refused, and nothing is sent, when a setting appears twice
+in `Confluence PAT.txt` with different values, when `PAGE_ID` is the compliance page, or when
+the target page already has content this tool did not write (so a real page is never
+overwritten by mistake). `--confluence-check` warns about each of these. To replace a page's
+existing content on purpose, run once with `--confluence-replace` (the old version stays in
+the page history).
+
+`--no-confluence` skips publishing for one run (and reading the compliance page). `--confluence-dry-run` writes the page content
 to `output/risk-week-<date>-confluence.xml` instead of uploading it.
 
 **What goes on the page:** everything in the report, including your CRO notes and pending
