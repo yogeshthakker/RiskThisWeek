@@ -125,7 +125,9 @@ Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
    was not understood, with examples. **First real check (11 Nov 2026):** the ISE 2025 page
    (id 19000597275) gave 119 observations, 64 compliant, 55 open, 0 overdue; "0 overdue"
    looked unlikely, so the date reader was widened and the check now shows unread deadlines.
-   The news page is the user's personal space home (2 weeks published by then).
+   The news page was then moved to a dedicated empty page "This week in Risk". With the
+   department filter: 28 risk rows, 5 compliant, 23 open, 10 overdue; 7 deadlines unread
+   (typos like "Septemebr", now read by month prefix; "RMP" is not a date).
 
 ## Decisions the user made
 

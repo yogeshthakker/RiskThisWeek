@@ -580,10 +580,12 @@ class TestCompliance(unittest.TestCase):
         cases = {"15.04.2026": d(2026, 4, 15), "15/04/26": d(2026, 4, 15), "2026-04-15": d(2026, 4, 15),
                  "15 April 2026": d(2026, 4, 15), "15th Apr'26": d(2026, 4, 15), "31st March, 2026": d(2026, 3, 31),
                  "April 15, 2026": d(2026, 4, 15), "Sept 2026": d(2026, 9, 30), "Feb'28": d(2028, 2, 29),
-                 "March 2026 (revised to 30.06.2026)": d(2026, 6, 30), "15-Apr-2026": d(2026, 4, 15)}
+                 "March 2026 (revised to 30.06.2026)": d(2026, 6, 30), "15-Apr-2026": d(2026, 4, 15),
+                 "30 Septemebr 2026": d(2026, 9, 30), "Septemebr 2026": d(2026, 9, 30), "Augst'26": d(2026, 8, 31),
+                 "Decmber 15, 2026": d(2026, 12, 15)}
         for text, want in cases.items():
             self.assertEqual(rw._first_date(text), want, text)
-        for text in ("Immediate", "Q1 FY27", "", "31.02.2026"):
+        for text in ("Immediate", "Q1 FY27", "", "31.02.2026", "RMP"):
             self.assertIsNone(rw._first_date(text), text)
 
     def test_check_reports_unread_deadlines(self):
