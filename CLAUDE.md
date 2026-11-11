@@ -10,7 +10,7 @@ web page for the weekly status meeting ("This week in risk"). The user runs it o
 ```bash
 pip install -r requirements.txt
 python risk_week.py --ai --open        # Gemini free tier; --open opens the web page
-python -m unittest test_risk_week      # 73 tests, no network or key needed
+python -m unittest test_risk_week      # 74 tests, no network or key needed
 ```
 
 Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
@@ -128,6 +128,11 @@ Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
    The news page was then moved to a dedicated empty page "This week in Risk". With the
    department filter: 28 risk rows, 5 compliant, 23 open, 10 overdue; 7 deadlines unread
    (typos like "Septemebr", now read by month prefix; "RMP" is not a date).
+   **RMP** (user, 11 Nov 2026): "RMP" in the deadline = risk mitigation plan, the most severe
+   items, each with its own deadline kept elsewhere. `ComplianceItem.rmp` (`_RMP` matches "RMP"
+   or "risk mitigation plan"); never overdue, not counted as an unread deadline; `severe`
+   (RMP or overdue) is shown in red. Order (user's choice): **RMP first, then overdue**, then
+   by deadline. Counts via `_ise_counts`: "23 open, 3 on RMP, 10 overdue".
 
 ## Decisions the user made
 

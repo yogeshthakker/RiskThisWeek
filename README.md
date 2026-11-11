@@ -229,8 +229,11 @@ Confluence page, each with a link to the source page.
   another department, or `ISE_DEPARTMENT = ""` for all. Counts cover the filtered rows.
 - **Pending** means the status is not exactly "Compliant" (so "Non-Compliant" and blanks are
   open). Change this with `COMPLIANCE_DONE = ["Compliant", "Closed"]`.
+- **RMP** in the deadline column means the item is on a risk mitigation plan: the most severe
+  items, with their own deadlines kept in the plan. They are shown first, in red, as "RMP:
+  deadline per mitigation plan", and counted separately ("23 open, 3 on RMP, 10 overdue").
 - **Overdue** means the official deadline (e.g. `15.04.2026`) has passed and the item is open:
-  shown first, in red.
+  shown next, in red.
 - These items are never sent to the AI. `--confluence-check` also reports how many it found.
 
 **Safety checks.** Publishing is refused, and nothing is sent, when a setting appears twice
