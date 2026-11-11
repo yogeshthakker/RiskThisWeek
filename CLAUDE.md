@@ -10,7 +10,7 @@ web page for the weekly status meeting ("This week in risk"). The user runs it o
 ```bash
 pip install -r requirements.txt
 python risk_week.py --ai --open        # Gemini free tier; --open opens the web page
-python -m unittest test_risk_week      # 76 tests, no network or key needed
+python -m unittest test_risk_week      # 79 tests, no network or key needed
 ```
 
 Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
@@ -134,6 +134,18 @@ Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
    (RMP or overdue) is shown in red. Order (user's choice): **RMP first, then overdue**, then
    by deadline. Counts via `_ise_counts`: "23 open, 3 on RMP, 10 overdue".
 
+10. **MCP server for GigaCode** (user's idea, 11 Nov 2026: GigaCode has no API key, but can add
+   MCP servers). `python risk_week.py --mcp` runs `McpServer` (stdlib JSON-RPC over stdio, one
+   message per line; stdout carries only protocol, tool code prints to stderr). Tools:
+   `risk_week_prepare` (`prepare_week()` + `ranking_prompt()`; returns the same system prompt
+   and candidates as the Gemini path, plus an answer example), `risk_week_publish`
+   (`parse_ranking()` on the client's JSON, then `finish_week()`, ISE / pending / CRO notes
+   added locally, `write()`, `confluence_step()`; replies with a short summary only, no pending,
+   notes or ISE content), `risk_week_check`. State (week, pool) lives in the server process; one
+   report per prepare. `run()` = `prepare_week()` + `explain()` + `finish_week()`; feeds are
+   fetched with 8 threads (~8 s live). Tested with a simulated client and a stdio subprocess;
+   not yet run inside GigaCode.
+
 ## Decisions the user made
 
 - Focus on **impact for a foreign bank**, not routine penalties, co-op banks, microfinance,
@@ -153,6 +165,8 @@ Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
 - No home-regulator feed: the user said not to add one.
 - **AI first, local fallback**: the AI does the ranking and impact judgement; the keyword
   ranking is the fallback. AI stays optional (no key = keyword ranking).
+- **GigaCode via MCP** is the in-house alternative to Gemini; the user asked that nothing
+  but news goes to an external API.
 - The free **Gemini** tier is the default because it costs nothing. Only public news plus
   `profile.bank` and `profile.guidance` from `sources.json` are sent; `cro_desk.txt` and
   `pending_items.txt` never are (`TestPrivacy` checks this).

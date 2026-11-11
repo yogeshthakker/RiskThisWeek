@@ -373,14 +373,23 @@ def collect(sources: dict, days: int, fetcher: Callable[[str], bytes] = fetch,
     g = sources.get("google_news") or {}
     for q in g.get("queries", []):
         jobs.append((f"Google News: {q}", google_news_url(q, days), float(g.get("weight", 1.0)), False, True))
-    for name, url, weight, primary, google in jobs:
+    def one(job):
+        name, url, weight, primary, google = job
         try:
-            got = parse_feed(fetcher(url), name, weight, primary, google)
+            return name, parse_feed(fetcher(url), name, weight, primary, google), None
+        except Exception as e:  # noqa: BLE001 — one bad feed must not stop the rest
+            return name, None, e
+
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=8) as pool:      # several feeds at once; results in list order
+        results = list(pool.map(one, jobs))
+    for name, got, err in results:
+        if err is None:
             items.extend(got)
             log(f"  {len(got):3d}  {name}")
-        except Exception as e:  # noqa: BLE001 — one bad feed must not stop the rest
-            errors.append(f"{name}: {type(e).__name__}: {e}"[:300])
-            log(f"  ERR  {name}: {type(e).__name__}")
+        else:
+            errors.append(f"{name}: {type(err).__name__}: {err}"[:300])
+            log(f"  ERR  {name}: {type(err).__name__}")
     return items, errors
 
 
@@ -809,15 +818,9 @@ def _candidates(stories: list[Story]) -> str:
     return "\n".join(lines)
 
 
-def explain(stories: list[Story], provider, per_block: int, bank: str = DEFAULT_PROFILE["bank"],
-            log: list | None = None, guidance: str = "",
-            topics: list[str] | None = None) -> "AiPick | None":
-    """The AI ranks the candidates: it rates impact, places each pick in a block, picks the items
-    for each block, 'also on the radar' and the story of the week.
-
-    Returns None (with the reason in `status`) when the call fails or the reply is not usable;
-    the keyword ranking is then used. Every reply is appended to `log` (when given).
-    """
+def ranking_prompt(stories: list[Story], per_block: int, bank: str = DEFAULT_PROFILE["bank"],
+                   topics: list[str] | None = None) -> str:
+    """The ranking request: what to judge and how to answer, then the numbered candidates."""
     user = (
         f"The report has six blocks: {', '.join(BLOCKS)}. Each candidate is a different story: the same "
         f"news from several outlets has already been merged, and 'N outlets' shows how widely it was "
@@ -840,17 +843,17 @@ def explain(stories: list[Story], provider, per_block: int, bank: str = DEFAULT_
         f"or risk team to do this week. Frame it so risk enables the business: where we can grow safely, "
         f"and what control or check makes that possible.\n\nCandidates:\n" + _candidates(stories)
     )
-    system = _system(bank, guidance)
-    try:
-        reply = provider.json_call(system, user, response_schema=AI_SCHEMA, max_output_tokens=16384)
-    except Exception as e:  # noqa: BLE001 — fall back to the keyword ranking
-        if log is not None:
-            log.append({"request": "rank", "error": f"{type(e).__name__}: {e}"[:500]})
-        return AiPick.failed(f"AI failed ({type(e).__name__}: {str(e)[:240]}); keyword ranking used")
-    name = (f"{getattr(provider, 'name', 'llm')} "
-            f"({getattr(provider, 'label', None) or getattr(provider, 'model', '')})")
-    if log is not None:
-        log.append({"request": "rank", "candidates": len(stories), "model": name, "reply": reply})
+    return user
+
+
+def parse_ranking(stories: list[Story], reply, per_block: int, name: str) -> "AiPick":
+    """Apply a ranking reply (the AI_SCHEMA shape) to the candidates. Stories change only
+    when the reply has at least one usable pick."""
+    if isinstance(reply, str):
+        try:
+            reply = json.loads(reply)
+        except ValueError:
+            reply = {}
     reply = reply if isinstance(reply, dict) else {}
 
     def story(raw) -> Story | None:
@@ -900,6 +903,31 @@ def explain(stories: list[Story], provider, per_block: int, bank: str = DEFAULT_
         focus = CroFocus(max(shown, key=lambda s: s.impact or 0), "")
     return AiPick(blocks=blocks, radar=radar[:6], focus=focus,
                   status=f"AI · {name}, {len(stories)} candidates")
+
+
+
+def explain(stories: list[Story], provider, per_block: int, bank: str = DEFAULT_PROFILE["bank"],
+            log: list | None = None, guidance: str = "",
+            topics: list[str] | None = None) -> "AiPick | None":
+    """The AI ranks the candidates: it rates impact, places each pick in a block, picks the items
+    for each block, 'also on the radar' and the story of the week.
+
+    Returns None (with the reason in `status`) when the call fails or the reply is not usable;
+    the keyword ranking is then used. Every reply is appended to `log` (when given).
+    """
+    user = ranking_prompt(stories, per_block, bank, topics)
+    system = _system(bank, guidance)
+    try:
+        reply = provider.json_call(system, user, response_schema=AI_SCHEMA, max_output_tokens=16384)
+    except Exception as e:  # noqa: BLE001 — fall back to the keyword ranking
+        if log is not None:
+            log.append({"request": "rank", "error": f"{type(e).__name__}: {e}"[:500]})
+        return AiPick.failed(f"AI failed ({type(e).__name__}: {str(e)[:240]}); keyword ranking used")
+    name = (f"{getattr(provider, 'name', 'llm')} "
+            f"({getattr(provider, 'label', None) or getattr(provider, 'model', '')})")
+    if log is not None:
+        log.append({"request": "rank", "candidates": len(stories), "model": name, "reply": reply})
+    return parse_ranking(stories, reply, per_block, name)
 
 
 @dataclass
@@ -1109,15 +1137,28 @@ INDIA = re.compile(r"\bindia|\brbi\b|reserve bank|\bsebi\b|rupee|₹|\bnse\b|\bb
 AI_POOL = 150      # stories sent to the AI, at most (the keyword score only trims the list)
 
 
-def run(days: int = 7, top: int = 3, provider=None, sources: dict | None = None,
-        fetcher: Callable[[str], bytes] = fetch, now: datetime | None = None,
-        log: Callable[[str], None] = lambda s: None, cro_notes: list[str] | None = None,
-        pending: list["Pending"] | None = None) -> Result:
-    """Collect, filter and rank. `top` is the number of items per block.
+@dataclass
+class Week:
+    """The week's stories after collecting, filtering and grouping, before ranking."""
+    start: datetime
+    end: datetime
+    profile: "Profile"
+    stories: list[Story]
+    routine: list[Item]
+    collected: int
+    kept: int
+    errors: list[str]
 
-    With a provider the AI ranks (impact, blocks, picks, radar, story of the week); the keyword
-    ranking is the fallback, and is used on its own when there is no provider.
-    """
+    def pool(self) -> list[Story]:
+        """The stories an AI ranks: the best AI_POOL by keyword score, shown newest first."""
+        pool = self.stories[:AI_POOL]
+        never = datetime.min.replace(tzinfo=IST)
+        return sorted(pool, key=lambda s: s.lead.published or never, reverse=True)
+
+
+def prepare_week(days: int = 7, sources: dict | None = None, fetcher: Callable[[str], bytes] = fetch,
+                 now: datetime | None = None, log: Callable[[str], None] = lambda s: None) -> Week:
+    """Collect, filter, set aside routine enforcement, score and group (all on this computer)."""
     end = now or datetime.now(IST)
     start = end - timedelta(days=days)
     sources = sources or load_sources()
@@ -1129,21 +1170,15 @@ def run(days: int = 7, top: int = 3, provider=None, sources: dict | None = None,
     for i in ranked:
         score_item(i, start, end, profile)
     stories = merge_same_story(group(ranked))   # each story once, however many outlets carry it
-    routine = _dedupe_routine(routine)
+    return Week(start=start, end=end, profile=profile, stories=stories, routine=_dedupe_routine(routine),
+                collected=len(raw), kept=len(kept), errors=errors)
 
-    ai_log: list = []
-    ai = "keywords (AI off)"
-    picked = None
-    if provider is not None and stories:
-        pool = stories[:AI_POOL]
-        never = datetime.min.replace(tzinfo=IST)
-        pool.sort(key=lambda s: s.lead.published or never, reverse=True)   # newest first, no scores shown
-        picked = explain(pool, provider, top, profile.bank, ai_log, profile.guidance, list(profile.topics))
-        ai = picked.status
-        if picked.ok:
-            missing = [s for s in flatten(picked.blocks) if not s.why]
-            if missing:
-                fill_why(missing, provider, profile.bank, ai_log, profile.guidance)
+
+def finish_week(week: Week, top: int = 3, picked: "AiPick | None" = None, ai: str = "keywords (AI off)",
+                ai_log: list | None = None, cro_notes: list[str] | None = None,
+                pending: list["Pending"] | None = None) -> Result:
+    """The report: the AI's ranking when it is usable, otherwise the keyword ranking."""
+    stories, profile = week.stories, week.profile
     if picked is not None and picked.ok:
         blocks, focus = picked.blocks, picked.focus
         radar = picked.radar or radar_of(blocks, stories)
@@ -1156,11 +1191,34 @@ def run(days: int = 7, top: int = 3, provider=None, sources: dict | None = None,
         # preferring one that is about India.
         india = [s for s in shown if INDIA.search(f"{s.lead.title} {s.lead.summary}")]
         focus = CroFocus(max(india or shown, key=lambda s: s.score), "") if shown else None
-    return Result(start=start, end=end, top=flatten(blocks), radar=radar, collected=len(raw),
-                  kept=len(kept), errors=errors, ai=ai, routine=routine,
-                  cro_notes=list(cro_notes or []), cro_focus=focus, ai_log=ai_log,
+    return Result(start=week.start, end=week.end, top=flatten(blocks), radar=radar, collected=week.collected,
+                  kept=week.kept, errors=week.errors, ai=ai, routine=week.routine,
+                  cro_notes=list(cro_notes or []), cro_focus=focus, ai_log=list(ai_log or []),
                   pending=list(pending or []), blocks=blocks)
 
+
+def run(days: int = 7, top: int = 3, provider=None, sources: dict | None = None,
+        fetcher: Callable[[str], bytes] = fetch, now: datetime | None = None,
+        log: Callable[[str], None] = lambda s: None, cro_notes: list[str] | None = None,
+        pending: list["Pending"] | None = None) -> Result:
+    """Collect, filter and rank. `top` is the number of items per block.
+
+    With a provider the AI ranks (impact, blocks, picks, radar, story of the week); the keyword
+    ranking is the fallback, and is used on its own when there is no provider.
+    """
+    week = prepare_week(days, sources, fetcher, now, log)
+    ai_log: list = []
+    ai = "keywords (AI off)"
+    picked = None
+    if provider is not None and week.stories:
+        picked = explain(week.pool(), provider, top, week.profile.bank, ai_log, week.profile.guidance,
+                         list(week.profile.topics))
+        ai = picked.status
+        if picked.ok:
+            missing = [s for s in flatten(picked.blocks) if not s.why]
+            if missing:
+                fill_why(missing, provider, week.profile.bank, ai_log, week.profile.guidance)
+    return finish_week(week, top, picked, ai, ai_log, cro_notes, pending)
 
 def load_cro_notes(path: Path) -> list[str]:
     """One note per line ('- ' bullets allowed); blank lines and '#' comments skipped."""
@@ -2580,6 +2638,172 @@ def confluence_step(res: Result, a, files: dict) -> str:
         return f"Confluence: not published ({type(e).__name__}: {e})"[:600]
 
 
+# ---------------------------------------------------------------------------
+# MCP server: GigaCode (or any MCP client) ranks the news with its own model
+# ---------------------------------------------------------------------------
+
+MCP_VERSION = "2025-06-18"
+MCP_TOOLS = [
+    {"name": "risk_week_prepare",
+     "description": "Step 1 of the weekly 'This Week in Risk' report. Collects, filters and groups this "
+                    "week's Indian banking risk news on the user's computer and returns numbered candidate "
+                    "stories with ranking instructions. Rank them as instructed, then call "
+                    "risk_week_publish with the ranking.",
+     "inputSchema": {"type": "object", "properties": {
+         "days": {"type": "integer", "description": "Period in days (default 7)"},
+         "per_block": {"type": "integer", "description": "Items per block (default 3)"}}}},
+    {"name": "risk_week_publish",
+     "description": "Step 2. Builds the report from your ranking of the candidates returned by "
+                    "risk_week_prepare: writes the slides, web page and Markdown, adds the user's pending "
+                    "items, CRO notes and RBI compliance (ISE) items locally, and publishes the week to "
+                    "Confluence. Returns where the files are and the Confluence link.",
+     "inputSchema": {"type": "object", "required": ["ranking"], "properties": {
+         "ranking": {"description": "Your ranking as a JSON object (or a JSON string) with keys items, "
+                                    "radar and cro_focus, exactly as described by risk_week_prepare.",
+                     "type": ["object", "string"]},
+         "publish": {"type": "boolean", "description": "Publish to Confluence (default true)"}}}},
+    {"name": "risk_week_check",
+     "description": "Checks the Confluence settings without changing anything: the news page it publishes "
+                    "to, whether publishing is allowed, and the RBI compliance (ISE) page counts.",
+     "inputSchema": {"type": "object", "properties": {}}},
+]
+_EXAMPLE_REPLY = {
+    "items": [{"id": 12, "category": "Credit risk", "impact": 8, "headline": "Twelve words at most",
+               "why_it_matters": "One or two sentences on what it means for us."}],
+    "radar": [3, 41],
+    "cro_focus": {"id": 12, "message": "The action point for the CRO, at most 35 words."},
+}
+
+
+class McpServer:
+    """A minimal MCP server over stdio (JSON-RPC, one message per line), standard library only.
+
+    The client's model does the ranking; collecting, grouping, the report files, the ISE page,
+    pending items, CRO notes and Confluence all stay on this computer. Only the candidate news
+    and the ranking instructions (the profile's bank description and guidance) go to the client.
+    """
+
+    def __init__(self, fetcher: Callable[[str], bytes] = fetch, sources: dict | None = None,
+                 now: datetime | None = None, out_dir: Path | str | None = None,
+                 base_dir: Path | None = None):
+        self.fetcher, self.sources, self.now = fetcher, sources, now
+        self.out_dir = out_dir
+        self.base = base_dir or Path(__file__).resolve().parent
+        self.week: Week | None = None
+        self.pool: list[Story] = []
+        self.top = 3
+
+    # --- protocol ---------------------------------------------------------
+    def handle(self, msg: dict) -> dict | None:
+        if not isinstance(msg, dict) or "method" not in msg:
+            return None
+        if "id" not in msg:                   # a notification, e.g. notifications/initialized
+            return None
+        mid, method, params = msg["id"], msg["method"], msg.get("params") or {}
+        if method == "initialize":
+            return self._ok(mid, {"protocolVersion": params.get("protocolVersion") or MCP_VERSION,
+                                  "capabilities": {"tools": {}},
+                                  "serverInfo": {"name": "risk-week", "version": "1.0"},
+                                  "instructions": "Call risk_week_prepare, rank the candidates as it "
+                                                  "says, then call risk_week_publish with the ranking."})
+        if method == "ping":
+            return self._ok(mid, {})
+        if method == "tools/list":
+            return self._ok(mid, {"tools": MCP_TOOLS})
+        if method == "tools/call":
+            name, args = params.get("name"), params.get("arguments") or {}
+            tool = {"risk_week_prepare": self.prepare, "risk_week_publish": self.publish,
+                    "risk_week_check": self.check}.get(name)
+            if tool is None:
+                return {"jsonrpc": "2.0", "id": mid, "error": {"code": -32602, "message": f"unknown tool {name}"}}
+            real_stdout = sys.stdout
+            sys.stdout = sys.stderr           # nothing may print to stdout: it carries the protocol
+            try:
+                text, error = tool(args), False
+            except Exception as e:  # noqa: BLE001 — report to the client instead of dying
+                text, error = f"{type(e).__name__}: {e}", True
+            finally:
+                sys.stdout = real_stdout
+            if isinstance(text, tuple):
+                text, error = text
+            return self._ok(mid, {"content": [{"type": "text", "text": text}], "isError": error})
+        return {"jsonrpc": "2.0", "id": mid, "error": {"code": -32601, "message": f"method not found: {method}"}}
+
+    @staticmethod
+    def _ok(mid, result: dict) -> dict:
+        return {"jsonrpc": "2.0", "id": mid, "result": result}
+
+    def serve(self, stdin=None, stdout=None) -> None:
+        stdin = stdin or sys.stdin.buffer
+        stdout = stdout or sys.stdout.buffer
+        for raw in stdin:
+            line = raw.decode("utf-8", "replace").strip() if isinstance(raw, bytes) else raw.strip()
+            if not line:
+                continue
+            try:
+                msg = json.loads(line)
+            except ValueError:
+                reply = {"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "parse error"}}
+            else:
+                reply = self.handle(msg)
+            if reply is not None:
+                stdout.write((json.dumps(reply, ensure_ascii=False) + "\n").encode("utf-8"))
+                stdout.flush()
+
+    # --- tools ------------------------------------------------------------
+    def prepare(self, args: dict) -> str:
+        days = int(args.get("days") or 7)
+        self.top = max(1, int(args.get("per_block") or 3))
+        self.week = prepare_week(days, self.sources, self.fetcher, self.now,
+                                 lambda m: print(m, file=sys.stderr))
+        self.pool = self.week.pool()
+        if not self.pool:
+            return "No candidate stories this week (all feeds empty or unreachable).", True
+        prof = self.week.profile
+        return ("Rank this week's candidates, then call risk_week_publish with your ranking as the "
+                "`ranking` argument.\n\n## Instructions\n" + _system(prof.bank, prof.guidance)
+                + "\n\n" + ranking_prompt(self.pool, self.top, prof.bank, list(prof.topics))
+                + "\n\n## Answer format for `ranking` (JSON; ids are the numbers in brackets)\n"
+                + json.dumps(_EXAMPLE_REPLY, ensure_ascii=False, indent=1))
+
+    def publish(self, args: dict) -> str:
+        if self.week is None or not self.pool:
+            return "Call risk_week_prepare first: there are no candidates to rank yet.", True
+        picked = parse_ranking(self.pool, args.get("ranking"), self.top,
+                               f"GigaCode via MCP, {len(self.pool)} candidates")
+        if not picked.ok:
+            return (f"The ranking could not be used ({picked.status}). Send it again as an object with "
+                    f"items (id, category, impact, headline, why_it_matters), radar and cro_focus, using "
+                    f"the ids in brackets from risk_week_prepare.", True)
+        picked.status = f"AI · GigaCode via MCP ({len(self.pool)} candidates)"
+        a = type("Args", (), {"confluence_config": str(self.base / CONFLUENCE_FILE),
+                              "confluence_dry_run": False, "confluence_replace": False})()
+        cfg, _ = _find_confluence_config(a)
+        compliance, comp_info = load_compliance(cfg)
+        res = finish_week(self.week, self.top, picked, picked.status,
+                          [{"request": "rank", "via": "MCP", "candidates": len(self.pool),
+                            "reply": args.get("ranking")}],
+                          load_cro_notes(self.base / "cro_desk.txt"),
+                          load_pending(self.base / "pending_items.txt"))
+        res.compliance, res.compliance_info = compliance, comp_info
+        files = write(res, self.out_dir)
+        published = (confluence_step(res, a, files) if args.get("publish", True)
+                     else "Confluence: not published (publish = false)")
+        self.week, self.pool = None, []       # one report per prepare
+        # Only a short confirmation goes back to the client: no pending items, CRO notes or ISE rows.
+        shown = sum(len(v) for v in res.blocks.values())
+        story = res.cro_focus.story.as_dict()["headline"] if res.cro_focus else "none"
+        lines = [f"Report written: {_title(res)}", f"Ranked by: {res.ai}",
+                 f"Items shown: {shown} in {len(BLOCKS)} blocks; story of the week: {story}",
+                 f"Pending items: {len(res.pending)}; RBI compliance (ISE) open items: {len(res.compliance)}",
+                 "Files:"] + [f"  {k}: {v}" for k, v in files.items() if k != "ai_reply"] + [published]
+        return "\n".join(lines)
+
+    def check(self, args: dict) -> str:
+        a = type("Args", (), {"confluence_config": str(self.base / CONFLUENCE_FILE)})()
+        return confluence_check(a)
+
+
 def safe_console(*streams) -> None:
     """Never crash on a character the console cannot show (e.g. '₹' in a Windows console set
     to a Russian or Western code page): print '?' for it instead."""
@@ -2622,6 +2846,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--confluence-replace", action="store_true",
                    help="allow publishing to a page that has content not written by this tool (it is "
                         "replaced; the old version stays in the page history)")
+    p.add_argument("--mcp", action="store_true",
+                   help="run as an MCP server over stdio (for GigaCode): the client's model ranks the news")
     p.add_argument("--confluence-check", action="store_true",
                    help="only check the Confluence settings (reads the page title; changes nothing) and stop")
     p.add_argument("--confluence-dry-run", action="store_true",
@@ -2630,6 +2856,11 @@ def main(argv: list[str] | None = None) -> int:
                    help="do not ask for pending-item updates at the start (also skipped when not run "
                         "from a terminal)")
     a = p.parse_args(argv)
+    if a.mcp:
+        load_dotenv(Path(__file__).resolve().parent / ".env")
+        McpServer(out_dir=a.out_dir if a.out_dir != str(DEFAULT_OUT) else
+                  Path(__file__).resolve().parent / DEFAULT_OUT).serve()
+        return 0
     if a.confluence_check:
         print(confluence_check(a))
         return 0

@@ -676,6 +676,78 @@ class TestConsole(unittest.TestCase):
         stream.flush()
 
 
+class TestMcp(unittest.TestCase):
+    """GigaCode (an MCP client) ranks the news; everything else stays on this computer."""
+
+    def server(self, d):
+        base = pathlib.Path(d)
+        (base / "cro_desk.txt").write_text("SECRET-CRO-NOTE\n", encoding="utf-8")
+        (base / "pending_items.txt").write_text("SECRET-PENDING | Risk | 30 Nov 2026 | Open\n", encoding="utf-8")
+        return rw.McpServer(fetcher=fetcher, sources=SOURCES, now=NOW, out_dir=base / "out", base_dir=base)
+
+    def call(self, srv, name, args=None, mid=1):
+        r = srv.handle({"jsonrpc": "2.0", "id": mid, "method": "tools/call",
+                        "params": {"name": name, "arguments": args or {}}})
+        return r["result"]["content"][0]["text"], r["result"]["isError"]
+
+    def test_protocol_basics(self):
+        srv = rw.McpServer()
+        init = srv.handle({"jsonrpc": "2.0", "id": 0, "method": "initialize",
+                           "params": {"protocolVersion": "2025-03-26", "capabilities": {}}})
+        self.assertEqual(init["result"]["protocolVersion"], "2025-03-26")
+        self.assertIn("tools", init["result"]["capabilities"])
+        self.assertIsNone(srv.handle({"jsonrpc": "2.0", "method": "notifications/initialized"}))
+        names = [t["name"] for t in srv.handle({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})["result"]["tools"]]
+        self.assertEqual(names, ["risk_week_prepare", "risk_week_publish", "risk_week_check"])
+        self.assertEqual(srv.handle({"jsonrpc": "2.0", "id": 2, "method": "nope"})["error"]["code"], -32601)
+
+    def test_prepare_rank_publish(self):
+        with tempfile.TemporaryDirectory() as d:
+            srv = self.server(d)
+            text, err = self.call(srv, "risk_week_publish", {"ranking": {}})
+            self.assertTrue(err)                                  # prepare first
+            self.assertIn("risk_week_prepare first", text)
+            text, err = self.call(srv, "risk_week_prepare")
+            self.assertFalse(err)
+            self.assertIn("The India test", text)                 # the same instructions as for Gemini
+            self.assertIn("Answer format for `ranking`", text)
+            for secret in ("SECRET-CRO-NOTE", "SECRET-PENDING"):
+                self.assertNotIn(secret, text)                    # local notes never go to the client
+            lines = {int(l[1:l.index("]")]): l for l in text.split("Candidates:\n")[1].splitlines() if l.startswith("[")}
+            ecl = next(k for k, v in lines.items() if "expected credit loss" in v)
+            bad, err = self.call(srv, "risk_week_publish", {"ranking": {"items": [{"id": 999}]}})
+            self.assertTrue(err)
+            self.assertIn("could not be used", bad)
+            ranking = {"items": [{"id": ecl, "category": "Credit risk", "impact": 9, "headline": "ECL draft",
+                                  "why_it_matters": "Provisioning changes for us."}],
+                       "radar": [], "cro_focus": {"id": ecl, "message": "Ask Finance to size the ECL impact."}}
+            text, err = self.call(srv, "risk_week_publish", {"ranking": json.dumps(ranking), "publish": False})
+            self.assertFalse(err)
+            self.assertIn("Ranked by: AI · GigaCode via MCP", text)
+            self.assertIn("story of the week: ECL draft", text)
+            self.assertIn("not published (publish = false)", text)
+            for secret in ("SECRET-CRO-NOTE", "SECRET-PENDING"):
+                self.assertNotIn(secret, text)                    # nor in the reply to the client
+            out = pathlib.Path(d) / "out"
+            md = next(out.glob("*.md")).read_text(encoding="utf-8")
+            self.assertIn("Ask Finance to size the ECL impact.", md)
+            self.assertIn("SECRET-CRO-NOTE", md)                  # notes and pending items are in the report
+            self.assertIn("SECRET-PENDING", md)
+            self.assertTrue(self.call(srv, "risk_week_publish", {"ranking": ranking})[1])   # one report per prepare
+
+    def test_stdout_carries_only_protocol(self):
+        import subprocess
+        msgs = [{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18"}},
+                {"jsonrpc": "2.0", "method": "notifications/initialized"},
+                {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
+                {"jsonrpc": "2.0", "id": 3, "method": "ping"}]
+        p = subprocess.run([sys.executable, str(pathlib.Path(rw.__file__)), "--mcp"],
+                           input="".join(json.dumps(m) + "\n" for m in msgs).encode(),
+                           capture_output=True, timeout=60)
+        lines = p.stdout.decode("utf-8").splitlines()
+        self.assertEqual([json.loads(l)["id"] for l in lines], [1, 2, 3])
+
+
 class TestPrivacy(unittest.TestCase):
     def test_notes_and_pending_never_sent_to_ai(self):
         sent = []
