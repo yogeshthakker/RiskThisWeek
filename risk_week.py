@@ -2400,8 +2400,9 @@ _MONTHS = {m: i for i, names in enumerate(
     [("jan", "january"), ("feb", "february"), ("mar", "march"), ("apr", "april"), ("may",), ("jun", "june"),
      ("jul", "july"), ("aug", "august"), ("sep", "sept", "september"), ("oct", "october"),
      ("nov", "november"), ("dec", "december")], 1) for m in names}
-_MON = r"(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sept?(?:ember)?|" \
-       r"oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\.?"
+# A month is any word starting with its first three letters, so typos such as "Septemebr" or
+# "Augst" still read as September and August.
+_MON = r"(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?"
 
 
 def _ymd(y: str, m: int, d: int | None) -> date | None:
@@ -2431,13 +2432,13 @@ def _first_date(text: str) -> date | None:
             return d
     m = re.search(rf"\b(\d{{1,2}})[ -]{_MON}[ -]+(\d{{4}}|\d{{2}})\b", t)
     if m:
-        return _ymd(m.group(3), _MONTHS[m.group(2)], int(m.group(1)))
+        return _ymd(m.group(3), _MONTHS[m.group(2)[:3]], int(m.group(1)))
     m = re.search(rf"\b{_MON}[ -]+(\d{{1,2}})[ -]+(\d{{4}})\b", t)
     if m:
-        return _ymd(m.group(3), _MONTHS[m.group(1)], int(m.group(2)))
+        return _ymd(m.group(3), _MONTHS[m.group(1)[:3]], int(m.group(2)))
     m = re.search(rf"\b{_MON}[ -]+(\d{{4}}|\d{{2}})\b", t)
     if m:
-        return _ymd(m.group(2), _MONTHS[m.group(1)], None)
+        return _ymd(m.group(2), _MONTHS[m.group(1)[:3]], None)
     return None
 
 
