@@ -240,6 +240,8 @@ class Result:
     cro_notes: list[str] = field(default_factory=list)  # from the CRO's desk (cro_desk.txt / --cro)
     cro_focus: "CroFocus | None" = None                 # the one item to act on first
     pending: list["Pending"] = field(default_factory=list)  # from pending_items.txt, for the status meeting
+    compliance: list["ComplianceItem"] = field(default_factory=list)  # open items from the RBI compliance page
+    compliance_info: dict = field(default_factory=dict)  # source page link, counts, or why it was not read
     blocks: dict[str, list[Story]] = field(default_factory=dict)  # block name -> its items, in BLOCKS order
     ai_log: list = field(default_factory=list)          # raw AI replies, saved next to the output
 
@@ -1185,7 +1187,8 @@ class Pending:
     overdue: bool = False
 
 
-_DUE_FORMATS = ("%d %b %Y", "%d %B %Y", "%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y", "%d-%b-%Y", "%d %b %y", "%d-%b-%y")
+_DUE_FORMATS = ("%d %b %Y", "%d %B %Y", "%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y", "%d-%b-%Y", "%d %b %y", "%d-%b-%y",
+                "%d.%m.%Y", "%d.%m.%y", "%d %B, %Y", "%B %d %Y", "%b %d %Y")
 _DONE = re.compile(r"^\s*(done|closed|complete[d]?)\b", re.I)
 
 
@@ -1403,6 +1406,23 @@ def _blocks(res: Result) -> list[tuple[str, list[Story]]]:
 EMPTY_BLOCK = "Nothing significant this week."
 
 
+def _compliance_markdown(res: Result) -> list[str]:
+    info = res.compliance_info
+    if info.get("error") and not res.compliance:
+        return ["## Pending RBI compliance items", "", f"_Not read: {info['error']}_", ""]
+    late = sum(i.overdue for i in res.compliance)
+    out = ["## Pending RBI compliance items", "",
+           f"_{len(res.compliance)} open" + (f", {late} overdue" if late else "") + f", of {info.get('total', 0)}"
+           + (f" · [source page]({info['url']})" if info.get("url") else "") + "_", ""]
+    if res.compliance:
+        out += ["| Sub-section | Observation | Department | Deadline | Status |", "|---|---|---|---|---|"]
+        cell = lambda t: t.replace("|", "/")  # noqa: E731
+        out += [f"| {cell(i.subsection)} | {cell(i.observation)} | {cell(i.owner)} | {cell(i.deadline)} | "
+                f"{'**' + i.shown_status + '**' if i.overdue else i.shown_status} |" for i in res.compliance]
+        out.append("")
+    return out
+
+
 def _when(item: Item) -> str:
     return item.published.astimezone(IST).strftime("%d %b") if item.published else ""
 
@@ -1429,6 +1449,8 @@ def to_markdown(res: Result) -> str:
         out += [f"| {p.item} | {p.owner} | {p.due} | {'**' + _status(p) + '**' if p.overdue else _status(p)} |"
                 for p in res.pending]
         out.append("")
+    if res.compliance or res.compliance_info:
+        out += _compliance_markdown(res)
     for block, stories in _blocks(res):
         out += [f"## {block}", ""]
         if not stories:
@@ -1474,6 +1496,19 @@ def to_console(res: Result, files: dict) -> str:
         out += [f"  • {p.item}" + "".join(f" · {x}" for x in (p.owner, p.due) if x) + f" · {_status(p)}"
                 for p in res.pending]
         out.append("")
+    info = res.compliance_info
+    if info:
+        if info.get("error") and not res.compliance:
+            out += [f"PENDING RBI COMPLIANCE: not read ({info['error']})", ""]
+        else:
+            late = sum(i.overdue for i in res.compliance)
+            out.append(f"PENDING RBI COMPLIANCE ({len(res.compliance)} open" + (f", {late} overdue" if late else "")
+                       + f", of {info.get('total', 0)})")
+            out += [f"  • {_clean(i.observation, 110)}" + "".join(f" · {x}" for x in (i.department, i.deadline) if x)
+                    + f" · {i.shown_status}" for i in res.compliance[:12]]
+            if len(res.compliance) > 12:
+                out.append(f"  … {len(res.compliance) - 12} more in the page")
+            out += [f"  {info.get('url', '')}", ""]
     for block, stories in _blocks(res):
         out += [block.upper()] + ([f"   {EMPTY_BLOCK}", ""] if not stories else [])
         for n, s in enumerate(stories, 1):
@@ -1541,11 +1576,30 @@ def to_html(res: Result) -> str:
                        for p in res.pending)
         pending = (f'<section class="panel pending"><h2>Pending items <span class="meta">{len(res.pending)}'
                    + (f" · {late} overdue" if late else "") + f'</span></h2><ul>{rows}</ul></section>')
+    comp = ""
+    info = res.compliance_info
+    if info:
+        late = sum(i.overdue for i in res.compliance)
+        late_cls = ' class="late"'
+        rows = "".join(
+            f'<li{late_cls if i.overdue else ""} title="{e(("Comments: " + i.comments) if i.comments else i.observation)}">'
+            f'<span class="it">{e(i.observation)}</span><span class="pm">'
+            + " · ".join(e(x) for x in (i.subsection, i.department, i.deadline) if x)
+            + f'{" · " if (i.subsection or i.department or i.deadline) else ""}<b>{e(i.shown_status)}</b></span></li>'
+            for i in res.compliance)
+        if info.get("error") and not res.compliance:
+            body = f'<p class="meta">Not read: {e(info["error"])}</p>'
+        else:
+            body = (f'<ul>{rows}</ul>' if rows else '<p class="meta">No open items.</p>')
+        src = f'<p class="meta">{link(info["url"], "Open the Confluence page ↗")}</p>' if info.get("url") else ""
+        comp = (f'<section class="panel pending comp"><h2>Pending RBI compliance <span class="meta">'
+                f'{len(res.compliance)} open' + (f" · {late} overdue" if late else "")
+                + (f" · of {info['total']}" if info.get("total") else "") + f'</span></h2>{body}{src}</section>')
     radar = "".join(f'<li>{link(s.lead.link, s.as_dict()["headline"], "", s.as_dict()["headline"])} '
                     f'<span class="meta">{e(s.category)}</span></li>' for s in res.radar)
     routine = "".join(f'<li>{link(i.link, i.title)} <span class="meta">{e(i.publisher or i.source)}, {e(_when(i))}</span></li>'
                       for i in res.routine)
-    side = (cro + pending
+    side = (cro + pending + comp
             + (f'<section class="panel radar"><h2>Also on the radar</h2><ul>{radar}</ul></section>' if radar else "")
             + (f'<section class="panel"><details><summary>Routine enforcement, not ranked ({len(res.routine)})</summary>'
                f'<p class="meta">Fines and directions aimed at a single bank, below the threshold set in '
@@ -1574,6 +1628,7 @@ h2{{font-size:1.05rem;margin:0 0 6px}}
 .pending ul,.radar ul{{list-style:none;margin:0;padding:0}} .pending li{{padding:5px 0;border-top:1px solid var(--line)}}
 .pending li:first-child{{border-top:0}} .pending .it{{display:block}} .pending .pm{{color:var(--muted);font-size:.8rem}}
 .pending .pm b{{font-weight:600;color:var(--fg)}} .pending li.late .pm b{{color:var(--late)}}
+.comp .it{{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden}}
 .radar li{{padding:2px 0}}
 .blocks{{display:grid;gap:14px;grid-template-columns:repeat(3,minmax(0,1fr))}}
 .block h2{{color:var(--accent);border-bottom:2px solid var(--tint);padding-bottom:5px}}
@@ -1699,6 +1754,9 @@ def to_pptx(res: Result, path: Path) -> bool:
             x = 0.5 + cro_w + 0.3 if box else 0.5
             _pending_table(s1, res.pending, x, 1.4, 13.333 - 0.5 - x, navy, grey, red, white)
 
+    if res.compliance or res.compliance_info.get("total"):
+        _compliance_slide(prs, blank, header, res, period, navy, grey, red, white)
+
     # Slide 2: the six blocks, three across
     s2 = prs.slides.add_slide(blank)
     header(s2, f"This week in risk · {period}",
@@ -1747,6 +1805,55 @@ def to_pptx(res: Result, path: Path) -> bool:
             note.paragraphs[0].runs[0].font.color.rgb = grey
     prs.save(str(path))
     return True
+
+
+def _compliance_slide(prs, layout, header, res: Result, period: str, navy, grey, red, white) -> None:
+    """Open RBI compliance items as a table; overdue status in red; a link to the source page."""
+    from pptx.dml.color import RGBColor
+    from pptx.util import Inches, Pt
+    items, info = res.compliance, res.compliance_info
+    late = sum(i.overdue for i in items)
+    slide = prs.slides.add_slide(layout)
+    header(slide, "Pending RBI compliance items",
+           f"{len(items)} open" + (f" · {late} overdue" if late else "") + f" · of {info.get('total', 0)} "
+           f"on '{info.get('title', 'the Confluence page')}' · {period}")
+    shown = items[:10]
+    widths = [1.8, 6.0, 1.9, 1.3, 1.3]
+    rows = len(shown) + 1
+    row_h = min(0.5, 5.3 / rows)
+    tbl = slide.shapes.add_table(rows, 5, Inches(0.5), Inches(1.4), Inches(sum(widths)),
+                                 Inches(row_h * rows)).table
+    for c, cw in enumerate(widths):
+        tbl.columns[c].width = Inches(cw)
+    size = 11 if len(shown) <= 6 else 9.5
+    for c, head in enumerate(("Sub-section", "Observation", "Department", "Deadline", "Status")):
+        cell = tbl.cell(0, c)
+        cell.text = head
+        cell.fill.solid()
+        cell.fill.fore_color.rgb = navy
+        run = cell.text_frame.paragraphs[0].runs[0]
+        run.font.size, run.font.bold, run.font.color.rgb = Pt(size), True, white
+    for r, it in enumerate(shown, 1):
+        for c, text in enumerate((it.subsection, _clean(it.observation, 170), it.department, it.deadline,
+                                  it.shown_status)):
+            cell = tbl.cell(r, c)
+            cell.text = text
+            cell.fill.solid()
+            cell.fill.fore_color.rgb = white if r % 2 else RGBColor(0xF1, 0xF4, 0xF8)
+            for para in cell.text_frame.paragraphs:
+                for run in para.runs:
+                    run.font.size = Pt(size)
+                    run.font.color.rgb = red if it.overdue and c == 4 else navy
+                    run.font.bold = it.overdue and c == 4
+    note = slide.shapes.add_textbox(Inches(0.5), Inches(6.95), Inches(12.3), Inches(0.35)).text_frame
+    note.word_wrap = True               # a fixed-width box, so the text sits on the left
+    p = note.paragraphs[0]
+    r = p.add_run()
+    r.text = ((f"{len(items) - len(shown)} more open item(s) on the page. " if len(items) > len(shown) else "")
+              + ("Open the Confluence page ↗" if info.get("url") else info.get("error", "")))
+    r.font.size, r.font.color.rgb = Pt(10), grey
+    if info.get("url"):
+        r.hyperlink.address = info["url"]
 
 
 def _pending_table(slide, items: list[Pending], x: float, y: float, w: float, navy, grey, red, white) -> None:
@@ -1904,6 +2011,20 @@ def to_confluence(res: Result) -> str:
                         f"<td>{_status_macro(_status(p), colour)}</td></tr>")
         out.append("<h3>Pending items</h3><table><tbody><tr><th>Item</th><th>Owner</th><th>Due</th>"
                    "<th>Status</th></tr>" + "".join(rows) + "</tbody></table>")
+    info = res.compliance_info
+    if res.compliance or info.get("total"):
+        rows = []
+        for i in res.compliance:
+            colour = "Red" if i.overdue else "Yellow" if re.search(r"non", i.status, re.I) else "Grey"
+            rows.append(f"<tr><td>{e(i.subsection)}</td><td>{e(i.observation)}</td><td>{e(i.owner)}</td>"
+                        f"<td>{e(i.deadline)}</td><td>{_status_macro(i.shown_status, colour)}</td>"
+                        f"<td>{e(i.comments)}</td></tr>")
+        src = f' <a href="{e(info["url"])}">(source page)</a>' if info.get("url") else ""
+        out.append(f"<h3>Pending RBI compliance items{src}</h3>"
+                   f"<p><em>{len(res.compliance)} open of {info.get('total', 0)}</em></p>"
+                   + ("<table><tbody><tr><th>Sub-section</th><th>Observation</th><th>Department</th>"
+                      "<th>Deadline</th><th>Status</th><th>Comments</th></tr>" + "".join(rows) + "</tbody></table>"
+                      if rows else ""))
 
     def cell(block: str, stories: list[Story]) -> str:
         if not stories:
@@ -2009,8 +2130,11 @@ class ConfluenceClient:
                     404: "page not found: check PAGE_ID", 409: "the page changed meanwhile"}.get(e.code, "")
             raise RuntimeError(f"Confluence HTTP {e.code}{': ' + hint if hint else ''} {detail}") from e
 
-    def get_page(self) -> dict:
-        return self._call("GET", f"/rest/api/content/{self.page_id}?expand=body.storage,version")
+    def get_page(self, page_id: str | None = None) -> dict:
+        return self._call("GET", f"/rest/api/content/{page_id or self.page_id}?expand=body.storage,version")
+
+    def page_url(self, page_id: str | None = None) -> str:
+        return f"{self.base}/pages/viewpage.action?pageId={page_id or self.page_id}"
 
     def update_page(self, title: str, body: str, version: int, message: str) -> dict:
         return self._call("PUT", f"/rest/api/content/{self.page_id}", {
@@ -2074,8 +2198,225 @@ def confluence_check(a) -> str:
         return f"Confluence: check failed ({type(e).__name__}: {e})"[:600]
     weeks = len(_weeks_on_page(((page.get("body") or {}).get("storage") or {}).get("value", "")))
     ssl_note = " (TLS certificate check is off: VERIFY_SSL = False)" if cfg.get("VERIFY_SSL") is False else ""
-    return (f"Confluence: OK. Page '{page.get('title')}' (id {cfg['PAGE_ID']}), version "
-            f"{(page.get('version') or {}).get('number')}, {weeks} week(s) from this tool on it{ssl_note}")
+    out = (f"Confluence: OK. Page '{page.get('title')}' (id {cfg['PAGE_ID']}), version "
+           f"{(page.get('version') or {}).get('number')}, {weeks} week(s) from this tool on it{ssl_note}")
+    if str(cfg.get("COMPLIANCE_PAGE_ID") or "").strip():
+        items, info = load_compliance(cfg)
+        if info.get("error"):
+            out += f"\nRBI compliance page: {info['error']}"
+        else:
+            out += (f"\nRBI compliance page: OK. '{info['title']}': {info['total']} observation(s), "
+                    f"{info['closed']} compliant, {len(items)} open, {info['overdue']} overdue")
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Pending RBI compliance items, read from a Confluence page (never edited, never sent to the AI)
+# ---------------------------------------------------------------------------
+
+COMPLIANCE_DONE = ("compliant", "closed", "complied")    # status values that mean the item is done
+
+
+@dataclass
+class ComplianceItem:
+    observation: str
+    subsection: str = ""
+    cbs: str = ""
+    department: str = ""
+    head: str = ""
+    comments: str = ""
+    deadline: str = ""
+    status: str = ""
+    due_date: date | None = None
+    overdue: bool = False
+    done: bool = False
+
+    @property
+    def owner(self) -> str:
+        return self.department + (f" ({self.head})" if self.head and self.department else self.head)
+
+    @property
+    def shown_status(self) -> str:
+        if self.overdue:
+            return "Overdue" + (f" ({self.status})" if self.status else "")
+        return self.status or "Open"
+
+
+class _TableReader(__import__("html.parser").parser.HTMLParser):
+    """Rows of every table in a Confluence storage-format page, with merged cells filled in.
+
+    Inside Confluence macros only a status label's title is kept as text (not its colour).
+    """
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.tables: list[list[list[tuple[str, int, int]]]] = []
+        self.depth = 0
+        self.row: list | None = None
+        self.cell: list[str] | None = None
+        self.span = (1, 1)
+        self.skip = 0
+
+    def handle_starttag(self, tag, attrs):
+        a = dict(attrs)
+        if tag == "table":
+            self.depth += 1
+            if self.depth == 1:
+                self.tables.append([])
+        elif self.depth != 1:
+            if tag in ("br", "p", "li") and self.cell is not None:
+                self.cell.append(" ")
+        elif tag == "tr":
+            self.row = []
+        elif tag in ("td", "th") and self.row is not None:
+            def num(k):
+                try:
+                    return max(1, int(a.get(k) or 1))
+                except ValueError:
+                    return 1
+            self.cell, self.span = [], (num("rowspan"), num("colspan"))
+        elif tag == "ac:parameter" and a.get("ac:name") != "title":
+            self.skip += 1
+        elif tag in ("br", "p", "li", "div") and self.cell is not None:
+            self.cell.append(" ")
+
+    def handle_endtag(self, tag):
+        if tag == "table":
+            self.depth -= 1
+        elif self.depth != 1:
+            return
+        elif tag == "ac:parameter" and self.skip:
+            self.skip -= 1
+        elif tag in ("td", "th") and self.cell is not None and self.row is not None:
+            self.row.append((re.sub(r"\s+", " ", "".join(self.cell)).strip(), *self.span))
+            self.cell = None
+        elif tag == "tr" and self.row is not None:
+            self.tables[-1].append(self.row)
+            self.row = None
+
+    def handle_data(self, data):
+        if self.cell is not None and not self.skip:
+            self.cell.append(data)
+
+    def grids(self) -> list[list[list[str]]]:
+        out = []
+        for rows in self.tables:
+            grid: list[list[str]] = []
+            carry: dict[int, tuple[str, int]] = {}         # column -> (text, rows still to fill)
+            for row in rows:
+                line: list[str] = []
+                cells = list(row)
+                col = 0
+                while cells or col in carry:
+                    if col in carry:
+                        text, left = carry[col]
+                        line.append(text)
+                        if left > 1:
+                            carry[col] = (text, left - 1)
+                        else:
+                            del carry[col]
+                        col += 1
+                        continue
+                    text, rs, cs = cells.pop(0)
+                    for _ in range(cs):
+                        line.append(text)
+                        if rs > 1:
+                            carry[col] = (text, rs - 1)
+                        col += 1
+                grid.append(line)
+            out.append(grid)
+        return out
+
+
+def _first_date(text: str) -> date | None:
+    d = _parse_due(text) if text else None
+    if d or not text:
+        return d
+    for m in re.finditer(r"\d{1,2}[./-]\d{1,2}[./-]\d{2,4}|\d{1,2}[ -][A-Za-z]{3,9},?[ -]\d{2,4}|\d{4}-\d{2}-\d{2}", text):
+        d = _parse_due(m.group(0).replace("-", " ") if re.search("[A-Za-z]", m.group(0)) else m.group(0))
+        if d:
+            return d
+    return None
+
+
+def _column_map(header: list[str]) -> dict[str, int]:
+    cols: dict[str, int] = {}
+    for i, h in enumerate(header):
+        h = re.sub(r"[^a-z/ ]", " ", h.lower())
+        h = re.sub(r"\s+", " ", h).strip()
+        key = ("observation" if "observation" in h else
+               "subsection" if "sub" in h and "section" in h else
+               "head" if "head of" in h or h.startswith("hod") else
+               "comments" if "comment" in h else
+               "deadline" if "deadline" in h or "due" in h.split() or "target date" in h else
+               "status" if "compliant" in h or h == "status" else
+               "cbs" if "cbs" in h else
+               "department" if "department" in h or h in ("dept", "owner") else None)
+        if key and key not in cols:
+            cols[key] = i
+    return cols
+
+
+def parse_compliance(storage: str, today: date | None = None,
+                     done_values: tuple[str, ...] = COMPLIANCE_DONE) -> list[ComplianceItem]:
+    """Every observation row from the tables that have an 'Observation' column and a deadline or
+    status column. An item is done when its status is exactly one of `done_values` (so
+    'Non-Compliant' stays open); an open item past its deadline is overdue."""
+    today = today or datetime.now(IST).date()
+    reader = _TableReader()
+    reader.feed(storage or "")
+    reader.close()
+    done_set = {re.sub(r"\s+", " ", v.lower()).strip() for v in done_values}
+    items: list[ComplianceItem] = []
+    for grid in reader.grids():
+        if not grid:
+            continue
+        cols = _column_map(grid[0])
+        if "observation" not in cols or not ({"deadline", "status"} & set(cols)):
+            continue
+        for row in grid[1:]:
+            get = lambda k: row[cols[k]] if k in cols and cols[k] < len(row) else ""  # noqa: E731
+            if not get("observation"):
+                continue
+            it = ComplianceItem(observation=get("observation"), subsection=get("subsection"), cbs=get("cbs"),
+                                department=get("department"), head=get("head"), comments=get("comments"),
+                                deadline=get("deadline"), status=get("status"))
+            it.done = re.sub(r"\s+", " ", it.status.lower()).strip() in done_set
+            it.due_date = _first_date(it.deadline)
+            it.overdue = bool(it.due_date and it.due_date < today and not it.done)
+            items.append(it)
+    return items
+
+
+def open_compliance(items: list[ComplianceItem]) -> list[ComplianceItem]:
+    """Open items, overdue first, then by deadline (items without a date last)."""
+    return sorted((i for i in items if not i.done), key=lambda i: (not i.overdue, i.due_date or date.max))
+
+
+def load_compliance(cfg: dict | None, client: "ConfluenceClient | None" = None,
+                    today: date | None = None) -> tuple[list[ComplianceItem], dict]:
+    """Read the RBI compliance page named by COMPLIANCE_PAGE_ID. Never raises: problems are
+    reported in the returned info dict."""
+    page_id = str((cfg or {}).get("COMPLIANCE_PAGE_ID") or "").strip()
+    if not page_id:
+        return [], {}
+    if not str(cfg.get("PAT") or "").strip() or not str(cfg.get("CONFLUENCE_BASE_URL") or "").strip():
+        return [], {"error": "CONFLUENCE_BASE_URL or PAT missing"}
+    done = cfg.get("COMPLIANCE_DONE") or COMPLIANCE_DONE
+    done = tuple([done] if isinstance(done, str) else done)
+    try:
+        client = client or ConfluenceClient(cfg)
+        page = client.get_page(page_id)
+        storage = ((page.get("body") or {}).get("storage") or {}).get("value", "")
+        items = parse_compliance(storage, today, done)
+    except Exception as e:  # noqa: BLE001 — the report goes ahead without this section
+        return [], {"error": f"{type(e).__name__}: {e}"[:300]}
+    info = {"title": page.get("title") or "RBI compliance", "url": client.page_url(page_id),
+            "total": len(items), "closed": sum(i.done for i in items),
+            "overdue": sum(i.overdue for i in items)}
+    if not items:
+        info["error"] = "no table with 'Observation' and 'Official deadline' / status columns found"
+    return open_compliance(items), info
 
 
 def confluence_step(res: Result, a, files: dict) -> str:
@@ -2142,11 +2483,18 @@ def main(argv: list[str] | None = None) -> int:
             provider = GeminiProvider(a.model) if a.provider == "gemini" else ClaudeProvider(a.model)
         except Exception as e:  # noqa: BLE001 — missing package or key: keep going without AI
             print(f"[risk-week] AI unavailable ({type(e).__name__}: {e}); using keyword ranking", file=sys.stderr)
+    compliance, comp_info = [], {}
+    if not a.no_confluence:
+        cfg, _ = _find_confluence_config(a)
+        compliance, comp_info = load_compliance(cfg)
+        if comp_info.get("error"):
+            print(f"[risk-week] RBI compliance page not read: {comp_info['error']}", file=sys.stderr)
     print("Reading sources:", file=sys.stderr)
     notes = load_cro_notes(Path(a.cro_file)) + a.cro
     res = run(days=a.days, top=a.top, provider=provider, sources=load_sources(a.sources),
               log=lambda m: print(m, file=sys.stderr), cro_notes=notes,
               pending=pending)
+    res.compliance, res.compliance_info = compliance, comp_info
     files = write(res, a.out_dir)
     print(to_console(res, files))
     if not a.no_confluence:

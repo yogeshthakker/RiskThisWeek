@@ -10,7 +10,7 @@ web page for the weekly status meeting ("This week in risk"). The user runs it o
 ```bash
 pip install -r requirements.txt
 python risk_week.py --ai --open        # Gemini free tier; --open opens the web page
-python -m unittest test_risk_week      # 63 tests, no network or key needed
+python -m unittest test_risk_week      # 66 tests, no network or key needed
 ```
 
 Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
@@ -100,6 +100,19 @@ Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
    409 is retried once. Errors never stop the run. `--confluence-check` (read-only),
    `--no-confluence`, `--confluence-dry-run`. Tested only against a fake server: the user's
    Confluence (internal host) is not reachable from the cloud sandbox.
+
+9. **Pending RBI compliance items** (user's request, 11 Nov 2026). If `Confluence PAT.txt` has
+   `COMPLIANCE_PAGE_ID`, `load_compliance()` GETs that page at the start (read only, never sent
+   to the AI) and `parse_compliance()` reads every table with an "Observation" column plus a
+   deadline or "Compliant/Non-Compliant" column (`_TableReader`: stdlib HTMLParser, rowspan /
+   colspan filled, only a status macro's title kept; `_column_map` matches headings loosely).
+   The user's headings: Sub-section, Observation, CBS / Non-CBS, Department, Head of
+   Department, Comments received from departments, Official deadline, Compliant/Non-Compliant
+   submitted to RBI (15.04.2026). Done = status exactly in `COMPLIANCE_DONE` ("compliant",
+   "closed", "complied"); overdue = open and past the deadline (`dd.mm.yyyy` parsed). Shown
+   as `Result.compliance` (open items, overdue first) in the sidebar, a slide after slide 1,
+   Markdown, console and the weekly Confluence page. Any problem is reported, never fatal.
+   Tested only on a sample table: the real page's layout has not been seen.
 
 ## Decisions the user made
 

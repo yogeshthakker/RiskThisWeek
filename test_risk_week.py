@@ -474,6 +474,91 @@ class TestConfluence(unittest.TestCase):
         self.assertNotIn("sekret-pat", str(c.exception))
 
 
+COMPLIANCE_PAGE = (
+    '<p>Status of RBI observations</p>'
+    '<table><tbody>'
+    '<tr><th>Sub-section</th><th>Observation</th><th>CBS / Non-CBS</th><th>Department</th>'
+    '<th>Head of Department</th><th>Comments received from departments</th><th>Official deadline</th>'
+    '<th><p>Compliant/Non-Compliant&nbsp; submitted to RBI (15.04.2026)</p></th></tr>'
+    '<tr><td rowspan="2"><p>KYC</p></td><td><p>Periodic KYC update overdue for 120 accounts</p></td><td>CBS</td>'
+    '<td>Operations</td><td>A. Sharma</td><td>Remediation in progress</td><td>30.10.2026</td>'
+    '<td><ac:structured-macro ac:name="status"><ac:parameter ac:name="colour">Red</ac:parameter>'
+    '<ac:parameter ac:name="title">Non-Compliant</ac:parameter></ac:structured-macro></td></tr>'
+    '<tr><td>Beneficial owner &amp; UBO records incomplete</td><td>Non-CBS</td><td>Compliance</td><td>B. Rao</td>'
+    '<td></td><td>15.12.2026</td><td></td></tr>'
+    '<tr><td>Outsourcing</td><td>Vendor risk assessments not refreshed</td><td>Non-CBS</td><td>IT</td>'
+    '<td>C. Iyer</td><td>Done</td><td>15.04.2026</td><td>Compliant</td></tr>'
+    '</tbody></table>'
+    '<table><tbody><tr><th>Unrelated</th><th>Table</th></tr><tr><td>x</td><td>y</td></tr></tbody></table>'
+)
+
+
+class TestCompliance(unittest.TestCase):
+    TODAY = datetime(2026, 11, 11).date()
+
+    def test_reads_the_rbi_compliance_table(self):
+        items = rw.parse_compliance(COMPLIANCE_PAGE, self.TODAY)
+        self.assertEqual(len(items), 3)                            # the unrelated table is ignored
+        kyc, ubo, vendor = items
+        self.assertEqual(kyc.subsection, "KYC")
+        self.assertEqual(ubo.subsection, "KYC")                    # merged cell filled down
+        self.assertEqual(ubo.observation, "Beneficial owner & UBO records incomplete")
+        self.assertEqual(kyc.status, "Non-Compliant")              # the label's title, not its colour
+        self.assertEqual(kyc.owner, "Operations (A. Sharma)")
+        self.assertEqual(kyc.cbs, "CBS")
+        self.assertEqual(kyc.comments, "Remediation in progress")
+        self.assertEqual(kyc.due_date, datetime(2026, 10, 30).date())
+        self.assertTrue(kyc.overdue and not kyc.done)              # 'Non-Compliant' is not done
+        self.assertFalse(ubo.overdue or ubo.done)
+        self.assertTrue(vendor.done and not vendor.overdue)
+        self.assertEqual([i.observation[:8] for i in rw.open_compliance(items)], ["Periodic", "Benefici"])
+        self.assertEqual(kyc.shown_status, "Overdue (Non-Compliant)")
+        self.assertEqual(ubo.shown_status, "Open")
+
+    def test_load_reads_the_page_and_reports_problems(self):
+        fake = FakeConfluence(body=COMPLIANCE_PAGE)
+        cfg = dict(TestConfluence.CFG, COMPLIANCE_PAGE_ID="999")
+        items, info = rw.load_compliance(cfg, client=rw.ConfluenceClient(cfg, opener=fake), today=self.TODAY)
+        self.assertIn("/rest/api/content/999?", fake.calls[0][1])
+        self.assertEqual([c[0] for c in fake.calls], ["GET"])      # read only
+        self.assertEqual((len(items), info["total"], info["closed"], info["overdue"]), (2, 3, 1, 1))
+        self.assertTrue(info["url"].endswith("pageId=999"))
+        self.assertEqual(rw.load_compliance({}, today=self.TODAY), ([], {}))      # not configured: nothing
+        def down(method, url, body, headers):
+            raise urllib.error.HTTPError(url, 404, "Not Found", {}, io.BytesIO(b""))
+        items, info = rw.load_compliance(cfg, client=rw.ConfluenceClient(cfg, opener=down))
+        self.assertEqual(items, [])
+        self.assertIn("HTTP 404", info["error"])
+        items, info = rw.load_compliance(cfg, client=rw.ConfluenceClient(cfg, opener=FakeConfluence(body="<p>x</p>")))
+        self.assertIn("no table", info["error"])
+
+    def test_shown_in_every_format(self):
+        res = rw.run(top=3, sources=SOURCES, fetcher=fetcher, now=NOW)
+        cfg = dict(TestConfluence.CFG, COMPLIANCE_PAGE_ID="999")
+        res.compliance, res.compliance_info = rw.load_compliance(
+            cfg, client=rw.ConfluenceClient(cfg, opener=FakeConfluence(body=COMPLIANCE_PAGE)), today=self.TODAY)
+        self.assertIn("## Pending RBI compliance items", rw.to_markdown(res))
+        self.assertIn("**Overdue (Non-Compliant)**", rw.to_markdown(res))
+        page = rw.to_html(res)
+        self.assertIn("Pending RBI compliance", page)
+        self.assertIn('title="Comments: Remediation in progress"', page)
+        self.assertIn("pageId=999", page)
+        self.assertIn("PENDING RBI COMPLIANCE (2 open, 1 overdue, of 3)", rw.to_console(res, {}))
+        week = rw.to_confluence(res)
+        self.assertIn("Pending RBI compliance items", week)
+        import xml.etree.ElementTree as ET
+        ET.fromstring('<r xmlns:ac="a" xmlns:ri="b">' + week + "</r>")
+        try:
+            from pptx import Presentation
+        except ImportError:
+            return
+        with tempfile.TemporaryDirectory() as d:
+            files = rw.write(res, d)
+            titles = [[sh.text_frame.text for sh in sl.shapes if sh.has_text_frame][0]
+                      for sl in Presentation(files["pptx"]).slides]
+        self.assertIn("Pending RBI compliance items", "\n".join(titles))
+
+
 class TestPrivacy(unittest.TestCase):
     def test_notes_and_pending_never_sent_to_ai(self):
         sent = []

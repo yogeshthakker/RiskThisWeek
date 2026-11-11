@@ -8,3 +8,7 @@ VERIFY_SSL = True             # False only for development (skips the TLS certif
 # CA_BUNDLE = "C:/certs/bank-root-ca.pem"   # better than VERIFY_SSL = False for an internal CA
 CONFLUENCE_TIMEOUT = 60
 KEEP_WEEKS = 26               # weeks kept on the page; older ones stay in Confluence's page history
+# Optional: a page with the pending RBI compliance table (read only; shown as its own section).
+# Its table needs an "Observation" column and an "Official deadline" or "Compliant/Non-Compliant" column.
+COMPLIANCE_PAGE_ID = ""
+# COMPLIANCE_DONE = ["Compliant", "Closed"]   # status values that mean an item is done
