@@ -718,7 +718,13 @@ AI_SYSTEM = (
     "cross-border and FX rules, sanctions, and developments at other foreign banks in India. Pass over "
     "routine items: a small fine on one bank, co-operative banks, microfinance, retail product news, "
     "local crime, single-bank quarterly results. Prefer variety across categories. Use only facts "
-    "stated in the candidate text: never add figures, names or dates that are not there.{guidance}"
+    "stated in the candidate text: never add figures, names or dates that are not there.\n\n"
+    "The India test: impact means a direct effect on this bank's India operations: a rule or regulator "
+    "it answers to in India, an Indian market it trades in, Indian clients or counterparties, or a "
+    "payment or trade corridor to or from India. A story about enforcement, court cases, arrests or "
+    "detentions abroad, or about another country's own banks and markets, has low impact (4 or below) "
+    "unless the candidate text itself shows that direct effect on India. Such a story is never the "
+    "story of the week.{guidance}"
 )
 
 
@@ -825,7 +831,8 @@ def explain(stories: list[Story], provider, per_block: int, bank: str = DEFAULT_
            f"{', '.join(topics)}.\n" if topics else "") +
         f"3. radar: the ids of up to 6 further items worth a mention, highest impact first.\n"
         f"4. cro_focus: the story of the week for the Chief Risk Officer: the id of the single item "
-        f"(from your picks) with the most impact for us, the one that gives the CRO the most visibility "
+        f"(from your picks, and passing the India test) with the most impact for us, the one that gives "
+        f"the CRO the most visibility "
         f"inside the bank or creates a clear action point for the branch or the business. message: the "
         f"action point, at most 35 words: what the CRO should raise in the bank or ask the branch, business "
         f"or risk team to do this week. Frame it so risk enables the business: where we can grow safely, "
@@ -1095,6 +1102,8 @@ def _strict(schema):
 # Run
 # ---------------------------------------------------------------------------
 
+INDIA = re.compile(r"\bindia|\brbi\b|reserve bank|\bsebi\b|rupee|₹|\bnse\b|\bbse\b|\bccil\b|"
+                   r"\bifsca\b|gift city|mumbai|delhi|\bnpci\b|\bupi\b|\bfema\b", re.I)
 AI_POOL = 150      # stories sent to the AI, at most (the keyword score only trims the list)
 
 
@@ -1141,8 +1150,10 @@ def run(days: int = 7, top: int = 3, provider=None, sources: dict | None = None,
         blocks = reserve(blocks, stories, profile, top)
         radar = radar_of(blocks, stories)
         shown = flatten(blocks)
-        # The story of the week is the highest-scoring story shown (CRO priorities score higher).
-        focus = CroFocus(max(shown, key=lambda s: s.score), "") if shown else None
+        # The story of the week is the highest-scoring story shown (CRO priorities score higher),
+        # preferring one that is about India.
+        india = [s for s in shown if INDIA.search(f"{s.lead.title} {s.lead.summary}")]
+        focus = CroFocus(max(india or shown, key=lambda s: s.score), "") if shown else None
     return Result(start=start, end=end, top=flatten(blocks), radar=radar, collected=len(raw),
                   kept=len(kept), errors=errors, ai=ai, routine=routine,
                   cro_notes=list(cro_notes or []), cro_focus=focus, ai_log=ai_log,

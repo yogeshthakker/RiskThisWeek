@@ -10,7 +10,7 @@ web page for the weekly status meeting ("This week in risk"). The user runs it o
 ```bash
 pip install -r requirements.txt
 python risk_week.py --ai --open        # Gemini free tier; --open opens the web page
-python -m unittest test_risk_week      # 61 tests, no network or key needed
+python -m unittest test_risk_week      # 63 tests, no network or key needed
 ```
 
 Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
@@ -126,6 +126,13 @@ Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
 - Links must be clickable in every format.
 - The report (with CRO notes and pending items) is published to the user's Confluence page
   with weekly history; the PAT stays in `Confluence PAT.txt` on their machine.
+- **The India test** (11 Nov 2026, after a UK detention/sanctions story became the story of
+  the week, which the user said is not worthy of the CRO's attention): `AI_SYSTEM` says impact
+  means a direct effect on the bank's India operations; enforcement, court cases, arrests or
+  detentions abroad and other countries' own banking news rate 4 or below unless the text
+  shows a direct India effect, and are never the story of the week. The keyword fallback
+  prefers a story matching `INDIA` for the story of the week. `cro_desk.txt` is not the place
+  for such steering: it is never sent to the AI.
 - The "foreign banks in India as a group" guidance line was added and then rolled back at
   the user's request (6 Nov 2026); `profile.guidance` is as before.
 

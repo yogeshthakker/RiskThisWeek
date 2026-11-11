@@ -289,6 +289,21 @@ class TestAiFirst(unittest.TestCase):
                              [(s.lead.link, s.headline, s.impact) for s in plain.top])
         self.assertTrue(ai)
 
+    def test_india_test_in_prompt(self):
+        ai = FakeAI({"items": []})
+        rw.run(top=3, sources=SOURCES, fetcher=fetcher, now=NOW, provider=ai)
+        self.assertIn("The India test", ai.system)
+        self.assertIn("detentions abroad", ai.system)
+        self.assertIn("passing the India test", ai.prompt)
+
+    def test_fallback_story_of_week_prefers_india(self):
+        news = rss(("UK court upholds detention of banker in sanctions case, warns banks", "https://g/uk", "",
+                    "Wed, 04 Nov 2026 08:00:00 GMT", "FT"),
+                   ("Indian banks see MSME loan demand rise", "https://g/in", "", "Tue, 03 Nov 2026 08:00:00 GMT", "M"))
+        src = {"feeds": [], "google_news": {"queries": ["x"]}}
+        res = rw.run(top=3, sources=src, fetcher=lambda u: news, now=NOW)
+        self.assertEqual(res.cro_focus.story.lead.link, "https://g/in")
+
     def test_no_ai_says_keywords(self):
         res = rw.run(top=3, sources=SOURCES, fetcher=fetcher, now=NOW)
         self.assertEqual(res.ai, "keywords (AI off)")
