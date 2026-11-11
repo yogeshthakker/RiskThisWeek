@@ -654,6 +654,28 @@ class TestCompliance(unittest.TestCase):
         self.assertIn("Pending RBI compliance items", "\n".join(titles))
 
 
+class TestConsole(unittest.TestCase):
+    def test_rupee_sign_in_a_russian_or_western_console(self):
+        for codepage in ("cp866", "cp1251", "cp1252"):
+            raw = io.BytesIO()
+            stream = io.TextIOWrapper(raw, encoding=codepage)
+            with self.assertRaises(UnicodeEncodeError):
+                stream.write("₹10 crore – ‘ok’")
+                stream.flush()
+            stream = io.TextIOWrapper(io.BytesIO(), encoding=codepage)
+            rw.safe_console(stream)
+            stream.write("SBI projects ₹19,500 crore impact – RBI’s view\n")   # no error now
+            stream.flush()
+            self.assertIn(b"19,500 crore", stream.buffer.getvalue())
+
+    def test_whole_console_summary_prints_in_cp866(self):
+        res = rw.run(top=3, sources=SOURCES, fetcher=fetcher, now=NOW, cro_notes=["Board ₹ paper – draft"])
+        stream = io.TextIOWrapper(io.BytesIO(), encoding="cp866")
+        rw.safe_console(stream)
+        stream.write(rw.to_console(res, {"html": "/tmp/x.html"}))
+        stream.flush()
+
+
 class TestPrivacy(unittest.TestCase):
     def test_notes_and_pending_never_sent_to_ai(self):
         sent = []

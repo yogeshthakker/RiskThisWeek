@@ -10,7 +10,7 @@ web page for the weekly status meeting ("This week in risk"). The user runs it o
 ```bash
 pip install -r requirements.txt
 python risk_week.py --ai --open        # Gemini free tier; --open opens the web page
-python -m unittest test_risk_week      # 74 tests, no network or key needed
+python -m unittest test_risk_week      # 76 tests, no network or key needed
 ```
 
 Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
@@ -188,6 +188,11 @@ Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
   Ruled out: GitHub Models (retired), Mistral (no free API), Cerebras (trial only), DeepSeek,
   Hugging Face. 3.8 Flash has not yet been run for real: check the first `--ai` run's
   `ai-reply.json` (`model` and `finishReason`).
+
+- **Console encoding** (11 Nov 2026): the user's Windows console uses a non-UTF-8 code page
+  (likely cp866, Russian locale), and printing "₹" raised UnicodeEncodeError, which also
+  stopped Confluence publishing (it ran after the console print). `safe_console()` sets
+  `errors="replace"` on stdout/stderr, and `main()` now publishes before printing.
 
 ## History
 

@@ -2580,7 +2580,20 @@ def confluence_step(res: Result, a, files: dict) -> str:
         return f"Confluence: not published ({type(e).__name__}: {e})"[:600]
 
 
+def safe_console(*streams) -> None:
+    """Never crash on a character the console cannot show (e.g. '₹' in a Windows console set
+    to a Russian or Western code page): print '?' for it instead."""
+    for stream in streams or (sys.stdout, sys.stderr):
+        enc = (getattr(stream, "encoding", "") or "").lower().replace("-", "")
+        if enc != "utf8" and hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(errors="replace")
+            except (ValueError, OSError):
+                pass
+
+
 def main(argv: list[str] | None = None) -> int:
+    safe_console()
     import argparse
     p = argparse.ArgumentParser(description="This Week in Risk: top items in Indian banking risk management")
     p.add_argument("--days", type=int, default=7, help="period in days (default 7)")
@@ -2646,9 +2659,11 @@ def main(argv: list[str] | None = None) -> int:
               pending=pending)
     res.compliance, res.compliance_info = compliance, comp_info
     files = write(res, a.out_dir)
+    # Publish before printing, so a console problem can never stop the Confluence update.
+    published = confluence_step(res, a, files) if not a.no_confluence else ""
     print(to_console(res, files))
-    if not a.no_confluence:
-        print(confluence_step(res, a, files))
+    if published:
+        print(published)
     if a.json:
         print(json.dumps([s.as_dict() for s in res.top], indent=2, ensure_ascii=False))
     if a.open:
