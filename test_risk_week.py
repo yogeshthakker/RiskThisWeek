@@ -704,10 +704,11 @@ class TestMcp(unittest.TestCase):
     def test_prepare_rank_publish(self):
         with tempfile.TemporaryDirectory() as d:
             srv = self.server(d)
-            text, err = self.call(srv, "risk_week_publish", {"ranking": {}})
+            text, err = self.call(srv, "risk_week_publish", {"batch": "x", "ranking": {}})
             self.assertTrue(err)                                  # prepare first
-            self.assertIn("risk_week_prepare first", text)
+            self.assertIn("not the current candidate list", text)
             text, err = self.call(srv, "risk_week_prepare")
+            batch = text.split("Batch: ")[1].split("\n")[0]
             self.assertFalse(err)
             self.assertIn("The India test", text)                 # the same instructions as for Gemini
             self.assertIn("Answer format for `ranking`", text)
@@ -715,13 +716,18 @@ class TestMcp(unittest.TestCase):
                 self.assertNotIn(secret, text)                    # local notes never go to the client
             lines = {int(l[1:l.index("]")]): l for l in text.split("Candidates:\n")[1].splitlines() if l.startswith("[")}
             ecl = next(k for k, v in lines.items() if "expected credit loss" in v)
-            bad, err = self.call(srv, "risk_week_publish", {"ranking": {"items": [{"id": 999}]}})
+            bad, err = self.call(srv, "risk_week_publish", {"batch": batch, "ranking": {"items": [{"id": 999}]}})
             self.assertTrue(err)
             self.assertIn("could not be used", bad)
             ranking = {"items": [{"id": ecl, "category": "Credit risk", "impact": 9, "headline": "ECL draft",
                                   "why_it_matters": "Provisioning changes for us."}],
                        "radar": [], "cro_focus": {"id": ecl, "message": "Ask Finance to size the ECL impact."}}
-            text, err = self.call(srv, "risk_week_publish", {"ranking": json.dumps(ranking), "publish": False})
+            self.assertIn("Pass `batch`", self.call(srv, "risk_week_publish", {"ranking": ranking})[0])
+            # a new server process (as when a script restarts it) still publishes the saved batch
+            srv = rw.McpServer(fetcher=fetcher, sources=SOURCES, now=NOW, out_dir=pathlib.Path(d) / "out",
+                               base_dir=pathlib.Path(d))
+            text, err = self.call(srv, "risk_week_publish", {"batch": batch, "ranking": json.dumps(ranking),
+                                                             "publish": False})
             self.assertFalse(err)
             self.assertIn("Ranked by: AI · GigaCode via MCP", text)
             self.assertIn("story of the week: ECL draft", text)
@@ -733,7 +739,30 @@ class TestMcp(unittest.TestCase):
             self.assertIn("Ask Finance to size the ECL impact.", md)
             self.assertIn("SECRET-CRO-NOTE", md)                  # notes and pending items are in the report
             self.assertIn("SECRET-PENDING", md)
-            self.assertTrue(self.call(srv, "risk_week_publish", {"ranking": ranking})[1])   # one report per prepare
+            self.assertTrue(self.call(srv, "risk_week_publish", {"batch": batch, "ranking": ranking})[1])  # once
+
+    def test_shifted_ids_are_refused(self):
+        with tempfile.TemporaryDirectory() as d:
+            srv = self.server(d)
+            text, _ = self.call(srv, "risk_week_prepare")
+            batch = text.split("Batch: ")[1].split("\n")[0]
+            lines = {int(l[1:l.index("]")]): l.split(") ", 1)[1] for l in text.split("Candidates:\n")[1].splitlines()
+                     if l.startswith("[")}
+            n = len(lines)
+            # every headline is right, but each id points one story further on
+            shifted = {"items": [{"id": k % n + 1, "category": "Credit risk", "impact": 7,
+                                  "headline": lines[k][:60], "why_it_matters": "x"} for k in lines],
+                       "radar": [], "cro_focus": {"id": 1, "message": "m"}}
+            text, err = self.call(srv, "risk_week_publish", {"batch": batch, "ranking": shifted})
+            self.assertTrue(err)
+            self.assertIn("do not match the candidates", text)
+            right = dict(shifted, items=[dict(i, id=k) for k, i in zip(lines, shifted["items"])])
+            self.assertEqual(rw.ranking_mismatches(srv.pool, right), [])
+            # a second prepare replaces the batch: the old code is refused
+            self.call(srv, "risk_week_prepare")
+            srv2 = rw.McpServer(out_dir=pathlib.Path(d) / "out", base_dir=pathlib.Path(d))
+            self.assertIn("not the current candidate list",
+                          self.call(srv2, "risk_week_publish", {"batch": "deadbeef", "ranking": right})[0])
 
     def test_stdout_carries_only_protocol(self):
         import subprocess

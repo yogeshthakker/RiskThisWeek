@@ -10,7 +10,7 @@ web page for the weekly status meeting ("This week in risk"). The user runs it o
 ```bash
 pip install -r requirements.txt
 python risk_week.py --ai --open        # Gemini free tier; --open opens the web page
-python -m unittest test_risk_week      # 79 tests, no network or key needed
+python -m unittest test_risk_week      # 80 tests, no network or key needed
 ```
 
 Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
@@ -143,8 +143,15 @@ Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
    added locally, `write()`, `confluence_step()`; replies with a short summary only, no pending,
    notes or ISE content), `risk_week_check`. State (week, pool) lives in the server process; one
    report per prepare. `run()` = `prepare_week()` + `explain()` + `finish_week()`; feeds are
-   fetched with 8 threads (~8 s live). Tested with a simulated client and a stdio subprocess;
-   not yet run inside GigaCode.
+   fetched with 8 threads (~8 s live). **Batch codes** (11 Nov 2026, after the user's local
+   assistant drove the tools from a temp script that restarted the server per call, so prepare
+   ran twice and the numbering shifted by up to 2 between the ranked list and the published
+   one): prepare returns `Batch: <8 hex>` (sha1 of the pool's links) and pickles the week to
+   `output/.risk-week-mcp-batch.pickle`; publish requires `batch`, loads the saved pool if the
+   process is new, refuses an unknown or replaced batch, and refuses when `ranking_mismatches()`
+   finds > 1/4 of picks whose headline shares no non-common word with the story their id names.
+   The first GigaCode-driven ranking (11 Nov) put a co-op bank supersession in Non-financial
+   risk and the UK sailor detention (Russian oil) at 9 in Compliance risk.
 
 ## Decisions the user made
 
