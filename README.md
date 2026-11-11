@@ -191,6 +191,29 @@ To use Claude instead: set `ANTHROPIC_API_KEY`, `pip install anthropic`, and run
 `python risk_week.py --ai --provider claude` (default model `claude-opus-5-5`).
 Change either model with `--model` or `RISK_WEEK_MODEL`.
 
+## Using GigaCode instead of Gemini (MCP)
+
+GigaCode can rank the news with its own model, so no Google key is needed and the news stays
+with an in-house model. The script runs as an MCP server that GigaCode calls:
+
+1. In GigaCode: **MCP → Add server**. Name `risk-week`, Transport **STDIO**, command `python`,
+   arguments `C:\path\to\risk_week.py --mcp` (the full path to your copy).
+2. Ask GigaCode: *"Prepare this week's risk report: call risk_week_prepare, rank the candidates
+   as it instructs, then call risk_week_publish with your ranking."*
+
+The tools:
+
+| Tool | What it does |
+|---|---|
+| `risk_week_prepare` | Collects, filters and groups the news on your computer (about 10 seconds) and returns up to 150 numbered stories with the ranking instructions |
+| `risk_week_publish` | Takes GigaCode's ranking, writes the slides, page and Markdown to `output/` next to the script, adds pending items, CRO notes and ISE items locally, and publishes to Confluence |
+| `risk_week_check` | The read-only Confluence check |
+
+GigaCode receives only the news candidates and the ranking instructions (which include the
+profile's `bank` description and `guidance`). Pending items, CRO notes and the ISE page stay
+on your computer; `risk_week_publish` replies with file paths, counts and the Confluence link
+only. `--no-prompt` is implied: pending items are read from `pending_items.txt` as they are.
+
 ## Publishing to Confluence
 
 Each run can put the report on a Confluence page (Server / Data Center, with a personal
