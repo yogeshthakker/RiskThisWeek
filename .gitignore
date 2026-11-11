@@ -7,3 +7,7 @@ pending_items.txt
 Confluence PAT.txt
 confluence*.txt
 !confluence.example.txt
+# Anything that may hold the Confluence token (e.g. a stray "PA.txt" from a split file name)
+*PAT*.txt
+*pat*.txt
+PA.txt
