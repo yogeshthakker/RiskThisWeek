@@ -10,7 +10,7 @@ web page for the weekly status meeting ("This week in risk"). The user runs it o
 ```bash
 pip install -r requirements.txt
 python risk_week.py --ai --open        # Gemini free tier; --open opens the web page
-python -m unittest test_risk_week      # 99 tests, no network or key needed
+python -m unittest test_risk_week      # 100 tests, no network or key needed
 ```
 
 Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
@@ -163,6 +163,11 @@ Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
    `output/.risk-week-mcp-batch.pickle`; publish requires `batch`, loads the saved pool if the
    process is new, refuses an unknown or replaced batch, and refuses when `ranking_mismatches()`
    finds > 1/4 of picks whose headline shares no non-common word with the story their id names.
+   **Paging** (13 Nov 2026, after GigaCode showed a 33,000-character prepare reply with items 3–51
+   missing): prepare returns the instructions plus page 1 (`MCP_PAGE` = 25 candidates, `page_size`
+   arg); `risk_week_candidates(batch, page)` returns the rest (~5k chars each, same ids). Each page
+   says "Page n of N · ids a–b of T" at the top and what to call next at the end, so a cut reply
+   still shows where it is. Live: prepare 10.4k chars, pages 2–6 about 4.5k each.
    The first GigaCode-driven ranking (11 Nov) put a co-op bank supersession in Non-financial
    risk and the UK sailor detention (Russian oil) at 9 in Compliance risk.
 
