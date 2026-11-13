@@ -424,24 +424,41 @@ class TestConfluence(unittest.TestCase):
         self.assertEqual(data["version"]["number"], 8)
         self.assertEqual(data["title"], "This Week in Risk")
         self.assertNotIn("sekret-pat", msg)
-        self.assertIn("2026-W45", msg)
-        # next week: last week moves under "Previous weeks"; the same week again is replaced
+        self.assertIn("Report of 05 Nov 2026, 18:00, 1 report(s)", msg)
+        # every run is its own entry, even later the same day; the same minute again replaces it
+        later = rw.run(top=3, sources=SOURCES, fetcher=fetcher, now=NOW + rw.timedelta(hours=2))
+        rw.publish_confluence(later, self.CFG, client=self.client(fake))
+        rw.publish_confluence(later, self.CFG, client=self.client(fake))
+        entries = rw._weeks_on_page(fake.body)
+        self.assertEqual(sorted(entries), ["20261105T1800", "20261105T2000"])
+        self.assertLess(fake.body.index("rtw-week-20261105T2000"), fake.body.index("<h2>Previous reports</h2>"))
+        self.assertIn('<ac:parameter ac:name="title">Report of 05 Nov 2026, 18:00</ac:parameter>', fake.body)
+        self.assertEqual(fake.version, 10)
+        self.assertEqual(rw.foreign_content(fake.body), "")       # still all ours: publishing allowed
+
+    def test_old_weekly_entry_is_kept_below_new_runs(self):
+        old_res = rw.run(top=3, sources=SOURCES, fetcher=fetcher, now=NOW - rw.timedelta(days=1))
+        old = rw.to_confluence(old_res).replace(rw._week_key(old_res), "2026-W45")    # as written before
+        body = rw.build_confluence_body("", old, "2026-W45")
+        body = body.replace("Updated by risk_week.py on every run. The latest report is first; earlier reports "
+                            "are below, newest first.", "Updated each week by risk_week.py. The latest week is "
+                            "first; earlier weeks are below, newest first.")
+        self.assertEqual(rw.foreign_content(body), "")           # the old intro is recognised as ours
+        fake = FakeConfluence(body=body)
+        rw.publish_confluence(self.res, self.CFG, client=self.client(fake))
         later = rw.run(top=3, sources=SOURCES, fetcher=fetcher, now=NOW + rw.timedelta(days=7))
         rw.publish_confluence(later, self.CFG, client=self.client(fake))
-        rw.publish_confluence(later, self.CFG, client=self.client(fake))
-        weeks = rw._weeks_on_page(fake.body)
-        self.assertEqual(sorted(weeks), ["2026-W45", "2026-W46"])
-        self.assertLess(fake.body.index("rtw-week-2026-W46"), fake.body.index("<h2>Previous weeks</h2>"))
-        self.assertIn('<ac:parameter ac:name="title">This Week in Risk — week ending 05 Nov 2026</ac:parameter>',
-                      fake.body)
-        self.assertEqual(fake.version, 10)
+        order = [k for k in sorted(rw._weeks_on_page(fake.body), key=rw._entry_order, reverse=True)]
+        self.assertEqual(order, ["20261112T1800", "20261105T1800", "2026-W45"])
+        self.assertTrue(fake.body.index("rtw-week-20261112T1800") < fake.body.index("rtw-week-20261105T1800")
+                        < fake.body.index("rtw-week-2026-W45"))
 
     def test_keep_limits_weeks_on_page(self):
         body = ""
         for n in range(5):
             res = rw.run(top=3, sources=SOURCES, fetcher=fetcher, now=NOW + rw.timedelta(days=7 * n))
             body = rw.build_confluence_body(body, rw.to_confluence(res), rw._week_key(res), keep=3)
-        self.assertEqual(sorted(rw._weeks_on_page(body)), ["2026-W47", "2026-W48", "2026-W49"])
+        self.assertEqual(sorted(rw._weeks_on_page(body)), ["20261119T1800", "20261126T1800", "20261203T1800"])
 
     def test_conflict_is_retried_once(self):
         fake = FakeConfluence(conflicts=1)
@@ -454,7 +471,7 @@ class TestConfluence(unittest.TestCase):
             f = pathlib.Path(d) / "page.xml"
             msg = rw.publish_confluence(self.res, {}, dry_run_file=f)
             self.assertIn("nothing uploaded", msg)
-            self.assertIn("rtw-week-2026-W45", f.read_text(encoding="utf-8"))
+            self.assertIn("rtw-week-20261105T1800", f.read_text(encoding="utf-8"))
 
     def test_check_reads_only(self):
         with tempfile.TemporaryDirectory() as d:

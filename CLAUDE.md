@@ -10,7 +10,7 @@ web page for the weekly status meeting ("This week in risk"). The user runs it o
 ```bash
 pip install -r requirements.txt
 python risk_week.py --ai --open        # Gemini free tier; --open opens the web page
-python -m unittest test_risk_week      # 84 tests, no network or key needed
+python -m unittest test_risk_week      # 85 tests, no network or key needed
 ```
 
 Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
@@ -94,9 +94,13 @@ Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
    PAT.txt` has a PAT, `publish_confluence()` GETs the page (`/rest/api/content/{id}?expand=
    body.storage,version`, `Authorization: Bearer <PAT>`) and PUTs a new version. The body is
    storage-format XHTML from `to_confluence()` (info panel, status macros, a 2 × 3 table of
-   blocks, expand for routine enforcement). Each week sits between anchor macros
-   `rtw-week-<ISO week>` / `rtw-end-<ISO week>`; `build_confluence_body()` keeps the latest week
-   on top and earlier weeks in expand macros, replaces a repeated week, keeps `KEEP_WEEKS` (26).
+   blocks, expand for routine enforcement). **One entry per run** (user's choice, 13 Nov 2026;
+   before that one per ISO week): each sits between anchor macros `rtw-week-<key>` /
+   `rtw-end-<key>`, key = run time `YYYYMMDDTHHMM` (old entries `YYYY-Www` are still read and
+   sort as that week's Monday 00:00, below its runs). The h2 is "Report of 13 Nov 2026, 15:32";
+   `build_confluence_body()` keeps the latest run on top and the rest under "Previous reports"
+   in expand macros titled from their h2, replaces only a run in the same minute, and keeps
+   `KEEP_REPORTS` / `KEEP_WEEKS` (52).
    409 is retried once. Errors never stop the run. **Guards** (`publish_problems`, added
    11 Nov 2026 after the user's settings file had two `PAGE_ID` lines and the second was the
    ISE compliance page): refuse when a key is duplicated with different values (`_DUPLICATES`),
@@ -190,7 +194,7 @@ Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
   `pending_items.txt` never are (`TestPrivacy` checks this).
 - Links must be clickable in every format.
 - The report (with CRO notes and pending items) is published to the user's Confluence page
-  with weekly history; the PAT stays in `Confluence PAT.txt` on their machine.
+  with history, one dated entry per run; the PAT stays in `Confluence PAT.txt` on their machine.
 - **The India test** (11 Nov 2026, after a UK detention/sanctions story became the story of
   the week, which the user said is not worthy of the CRO's attention): `AI_SYSTEM` says impact
   means a direct effect on the bank's India operations; enforcement, court cases, arrests or

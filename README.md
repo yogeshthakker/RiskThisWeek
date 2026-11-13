@@ -242,16 +242,18 @@ only. `--no-prompt` is implied: pending items are read from `pending_items.txt` 
 Each run can put the report on a Confluence page (Server / Data Center, with a personal
 access token). The page shows **this week in full at the top**: the "For CRO's desk" panel,
 pending items with coloured status labels, the six risk blocks as a table, the radar, and the
-routine enforcement. Below it, under **Previous weeks**, each earlier week sits in a
-collapsible section, newest first. Running again in the same week replaces that week. The
-page keeps the last 26 weeks (`KEEP_WEEKS`); older weeks stay in Confluence's page history,
-as every run saves a new page version.
+routine enforcement. Below it, under **Previous reports**, every earlier run sits in its own
+collapsible section titled with its date and time ("Report of 13 Nov 2026, 15:32"), newest
+first, so two runs in the same week, or the same day, are both kept. The page keeps the last 52
+reports (`KEEP_REPORTS`); older ones stay in Confluence's page history, as every run also saves
+a new page version. Entries from before this change (one per week, e.g. 2026-W46) are kept
+below the newer runs.
 
 Set it up once:
 
 1. Put the settings in **`Confluence PAT.txt`** next to `risk_week.py` (`confluence.example.txt`
    shows the format: `CONFLUENCE_BASE_URL`, `PAGE_ID`, `PAT`, `VERIFY_SSL`, `CONFLUENCE_TIMEOUT`,
-   optional `CA_BUNDLE` and `KEEP_WEEKS`). The file is git-ignored; never commit the token.
+   optional `CA_BUNDLE` and `KEEP_REPORTS`). The file is git-ignored; never commit the token.
 2. Check the settings without changing the page: `python risk_week.py --confluence-check`.
 3. Run as usual. When the file has a PAT, the report is published at the end of the run and
    the console prints the page link. A Confluence problem never stops the run: the local

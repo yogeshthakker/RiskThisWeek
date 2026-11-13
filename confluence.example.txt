@@ -10,7 +10,7 @@ PAT = ""                      # your Confluence personal access token
 VERIFY_SSL = True             # False only for development (skips the TLS certificate check)
 # CA_BUNDLE = "C:/certs/bank-root-ca.pem"   # better than VERIFY_SSL = False for an internal CA
 CONFLUENCE_TIMEOUT = 60
-KEEP_WEEKS = 26               # weeks kept on the news page; older ones stay in Confluence's page history
+KEEP_REPORTS = 52             # reports (one per run) kept on the news page; older ones stay in page history
 # The ISE table needs an "Observation" column and an "Official deadline" or "Compliant/Non-Compliant" column.
 # COMPLIANCE_DONE = ["Compliant", "Closed"]   # status values that mean an ISE item is done
 # ISE_DEPARTMENT = "risk"   # only ISE rows whose Department contains this word (default "risk"; "" = all)
