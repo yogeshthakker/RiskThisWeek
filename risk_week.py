@@ -2060,7 +2060,7 @@ def write(res: Result, out_dir: Path | str | None = None) -> dict:
 # ---------------------------------------------------------------------------
 
 CONFLUENCE_FILE = "Confluence PAT.txt"     # KEY = value lines; never committed (see .gitignore)
-CONFLUENCE_KEEP_WEEKS = 26
+CONFLUENCE_KEEP_WEEKS = 52     # reports kept on the page (one per run); older ones stay in page history
 _ANCHOR = (r'<ac:structured-macro[^>]*ac:name="anchor"[^>]*>\s*<ac:parameter ac:name="">'
            r'rtw-{kind}-{key}</ac:parameter>\s*</ac:structured-macro>')
 
@@ -2068,14 +2068,15 @@ _ANCHOR = (r'<ac:structured-macro[^>]*ac:name="anchor"[^>]*>\s*<ac:parameter ac:
 # Clearer names for the two pages: NEWS_PAGE_ID is where the report is published, ISE_PAGE_ID is
 # the RBI compliance (ISE) page that is only read.
 CONFIG_ALIASES = {"NEWS_PAGE_ID": "PAGE_ID", "REPORT_PAGE_ID": "PAGE_ID",
-                  "ISE_PAGE_ID": "COMPLIANCE_PAGE_ID", "COMPLIANCE_DEPARTMENT": "ISE_DEPARTMENT"}
+                  "ISE_PAGE_ID": "COMPLIANCE_PAGE_ID", "COMPLIANCE_DEPARTMENT": "ISE_DEPARTMENT",
+                  "KEEP_REPORTS": "KEEP_WEEKS"}
 
 
 def load_confluence_config(path: Path) -> dict | None:
     """Settings from a file of KEY = value lines (Python-style values, '#' comments).
 
     Keys: CONFLUENCE_BASE_URL, PAGE_ID, PAT, VERIFY_SSL (default True), CA_BUNDLE (optional),
-    CONFLUENCE_TIMEOUT (default 60), KEEP_WEEKS (default 26). CONFLUENCE_PAT in the environment
+    CONFLUENCE_TIMEOUT (default 60), KEEP_REPORTS / KEEP_WEEKS (default 52). CONFLUENCE_PAT in the environment
     overrides PAT. Returns None when the file does not exist.
     """
     import ast
@@ -2105,8 +2106,26 @@ def load_confluence_config(path: Path) -> dict | None:
 
 
 def _week_key(res: Result) -> str:
-    y, w, _ = res.end.isocalendar()
-    return f"{y}-W{w:02d}"
+    """One entry per run on the Confluence page: the run's date and time, e.g. 20261113T1532.
+    (Pages written before 13 Nov 2026 have one entry per ISO week, e.g. 2026-W46; both are read.)"""
+    return res.end.astimezone(IST).strftime("%Y%m%dT%H%M")
+
+
+def _run_label(res: Result) -> str:
+    t = res.end.astimezone(IST)
+    return f"Report of {t.strftime('%d %b %Y')}, {t.strftime('%H:%M')}"
+
+
+def _entry_order(key: str) -> str:
+    """Sort key for page entries: an old week entry (2026-W46) counts as that week's Monday 00:00,
+    so it sits below the runs of the same week."""
+    m = re.fullmatch(r"(\d{4})-W(\d{2})", key)
+    if m:
+        try:
+            return date.fromisocalendar(int(m.group(1)), int(m.group(2)), 1).strftime("%Y%m%dT0000")
+        except ValueError:
+            return key
+    return key
 
 
 def _status_macro(text: str, colour: str) -> str:
@@ -2132,8 +2151,8 @@ def to_confluence(res: Result) -> str:
         return f'<a href="{e(url)}">{e(text)}</a>' if url else e(text)
 
     key = _week_key(res)
-    out = [_anchor("week", key), f"<h2>{e(_title(res))}</h2>",
-           f"<p><em>Indian banking risk management, {res.start.strftime('%d %b')} – "
+    out = [_anchor("week", key), f"<h2>{e(_run_label(res))}</h2>",
+           f"<p><em>{e(_title(res))} · Indian banking risk management, {res.start.strftime('%d %b')} – "
            f"{res.end.strftime('%d %b %Y')} · {res.collected} items read, {res.kept} relevant · "
            f"ranked by: {e(res.ai)}</em></p>"]
     box = cro_box(res)
@@ -2210,7 +2229,7 @@ def to_confluence(res: Result) -> str:
 def _weeks_on_page(body: str) -> dict[str, str]:
     """Each week this tool wrote on the page: key -> its content, from start to end anchor."""
     weeks = {}
-    for m in re.finditer(_ANCHOR.format(kind="week", key=r"(\d{4}-W\d{2})"), body or ""):
+    for m in re.finditer(_ANCHOR.format(kind="week", key=r"(\d{4}-W\d{2}|\d{8}T\d{4})"), body or ""):
         key = m.group(1)
         end = re.search(_ANCHOR.format(kind="end", key=re.escape(key)), body[m.start():])
         if end:
@@ -2219,19 +2238,20 @@ def _weeks_on_page(body: str) -> dict[str, str]:
 
 
 def build_confluence_body(existing: str, week_html: str, key: str, keep: int = CONFLUENCE_KEEP_WEEKS) -> str:
-    """The new page: this week in full, then earlier weeks (newest first) in expand sections.
+    """The new page: this run's report in full, then earlier reports (newest first) in expand
+    sections titled with their date and time ("Report of 13 Nov 2026, 15:32").
 
-    A week already on the page is replaced, not repeated. At most `keep` weeks stay on the page;
-    older ones remain in Confluence's page history.
+    Every run is kept as its own entry (only a run in the same minute replaces one). At most
+    `keep` reports stay on the page; older ones remain in Confluence's page history.
     """
     weeks = _weeks_on_page(existing)
     weeks[key] = week_html
-    order = sorted(weeks, reverse=True)[:max(1, keep)]
+    order = sorted(weeks, key=_entry_order, reverse=True)[:max(1, keep)]
     latest, older = order[0], order[1:]
-    out = ["<p><em>Updated each week by risk_week.py. The latest week is first; earlier weeks are "
-           "below, newest first.</em></p>", weeks[latest]]
+    out = ["<p><em>Updated by risk_week.py on every run. The latest report is first; earlier reports "
+           "are below, newest first.</em></p>", weeks[latest]]
     if older:
-        out.append("<h2>Previous weeks</h2>")
+        out.append("<h2>Previous reports</h2>")
         for k in older:
             t = re.search(r"<h2>(.*?)</h2>", weeks[k], re.S)
             title = html.unescape(re.sub(r"<[^>]+>", "", t.group(1))) if t else k
@@ -2290,7 +2310,8 @@ class ConfluenceClient:
         })
 
 
-_INTRO = re.compile(r"<p><em>Updated each week by risk_week\.py\..*?</em></p>|<h2>Previous weeks</h2>", re.S)
+_INTRO = re.compile(r"<p><em>Updated (?:each week|by risk_week\.py on every run)[^<]*?</em></p>|"
+                    r"<p><em>Updated each week by risk_week\.py\..*?</em></p>|<h2>Previous (?:weeks|reports)</h2>", re.S)
 
 
 def foreign_content(body: str) -> str:
@@ -2359,7 +2380,8 @@ def publish_confluence(res: Result, cfg: dict, client: ConfluenceClient | None =
                 continue
             raise
         url = f"{client.base}/pages/viewpage.action?pageId={client.page_id}"
-        return f"published to Confluence ({key}, {len(_weeks_on_page(body))} week(s) on the page): {url}"
+        return (f"published to Confluence ({_run_label(res)}, {len(_weeks_on_page(body))} report(s) on the "
+                f"page): {url}")
     return "not published"
 
 
@@ -2389,7 +2411,7 @@ def confluence_check(a) -> str:
     weeks = len(_weeks_on_page(existing))
     ssl_note = " (TLS certificate check is off: VERIFY_SSL = False)" if cfg.get("VERIFY_SSL") is False else ""
     out = (f"Confluence: OK. News page (published to): '{page.get('title')}' (id {cfg['PAGE_ID']}), version "
-           f"{(page.get('version') or {}).get('number')}, {weeks} week(s) from this tool on it{ssl_note}")
+           f"{(page.get('version') or {}).get('number')}, {weeks} report(s) from this tool on it{ssl_note}")
     problems = publish_problems(cfg, existing)
     out += "".join(f"\nWARNING: publishing would be refused: {p_}" for p_ in problems)
     if not problems:
