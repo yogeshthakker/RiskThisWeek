@@ -1199,6 +1199,9 @@ def _foreign_detention(s: Story) -> bool:
     return bool(DETENTION.search(t) and FOREIGN.search(t) and not INDIA_COURT.search(t))
 
 
+MAX_DROPPED_IMPACT = 4     # AI picks rated this or lower are not shown (user, 13 Nov 2026)
+
+
 def apply_rules(picked: "AiPick", week: Week, top: int) -> tuple["AiPick", list[str]]:
     """The safety net after any AI ranking: enforce the rules the user has set, whatever the
     model decided.
@@ -1207,8 +1210,11 @@ def apply_rules(picked: "AiPick", week: Week, top: int) -> tuple["AiPick", list[
       microfinance, results, share prices...) is removed;
     - a detention, arrest or court story abroad is removed from the blocks (it may stay on the
       radar);
+    - a pick the AI itself rated `MAX_DROPPED_IMPACT` (4) or lower is removed and NOT replaced:
+      a block may show fewer than three items rather than a weak one;
     - the story of the week is never a detention, arrest or court story, and prefers India.
-    Removed picks are replaced by the best keyword-ranked story of the same block.
+    Picks removed for the first two reasons are replaced by the best keyword-ranked story of the
+    same block.
     """
     notes: list[str] = []
     excl = week.profile.exclude
@@ -1226,6 +1232,10 @@ def apply_rules(picked: "AiPick", week: Week, top: int) -> tuple["AiPick", list[
     removed: dict[str, int] = {}
     for b, stories in blocks.items():
         for s in list(stories):
+            if s.impact is not None and s.impact <= MAX_DROPPED_IMPACT:
+                stories.remove(s)               # low impact: dropped, not replaced
+                notes.append(f"dropped '{_clean(s.as_dict()['headline'], 60)}' (impact {s.impact}/10)")
+                continue
             why = banned(s)
             if why:
                 stories.remove(s)

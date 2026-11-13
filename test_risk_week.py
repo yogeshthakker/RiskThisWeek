@@ -264,7 +264,7 @@ class TestAiFirst(unittest.TestCase):
         cyber = next(k for k, v in ids.items() if "cyber" in v.lower())
         dhfl = next(k for k, v in ids.items() if "DHFL" in v)
         ai = FakeAI({"items": [
-            {"id": npa, "category": "Credit risk", "impact": 4, "headline": "NPA", "why_it_matters": "a"},
+            {"id": npa, "category": "Credit risk", "impact": 6, "headline": "NPA", "why_it_matters": "a"},
             {"id": ecl, "category": "Credit risk", "impact": 9, "headline": "ECL", "why_it_matters": "b"},
         ], "radar": [cyber, ecl, 999], "cro_focus": {"id": ecl, "message": "Act."}})
         res = rw.run(top=3, sources=SOURCES, fetcher=fetcher, now=NOW, provider=ai)
@@ -921,6 +921,25 @@ class TestSafetyNet(unittest.TestCase):
         out, notes = rw.apply_rules(pick, week, 3)
         self.assertEqual(notes, [])
         self.assertEqual(out.blocks["Compliance risk"], [st])
+
+    def test_low_impact_dropped_not_replaced(self):
+        def reply(user):
+            ids = {l.split(") ", 1)[1][:12]: int(l[1:l.index("]")]) for l in user.split("Candidates:\n")[1].splitlines()
+                   if l.startswith("[")}
+            i = lambda prefix: next(v for k, v in ids.items() if k.startswith(prefix))  # noqa: E731
+            return {"items": [{"id": i("RBI extends "), "category": "Credit risk", "impact": 8, "headline": "Mudra",
+                               "why_it_matters": "w"},
+                              {"id": i("RBI tightens"), "category": "Cyber security risk", "impact": 4,
+                               "headline": "Cyber", "why_it_matters": "w"},
+                              {"id": i("Russian fint"), "category": "Compliance risk", "impact": 5,
+                               "headline": "A7", "why_it_matters": "w"}],
+                    "radar": [], "cro_focus": {"id": i("RBI tightens"), "message": "m"}}
+        res = self.run_with(reply)
+        self.assertEqual([s.headline for s in res.top], ["Mudra", "A7"])         # 4/10 gone, 5/10 kept
+        self.assertEqual(res.blocks["Cyber security risk"], [])                # and not refilled
+        self.assertEqual(res.cro_focus.story.headline, "Mudra")                 # focus moved off it
+        notes = next(e["safety_net"] for e in res.ai_log if "safety_net" in e)
+        self.assertTrue(any("impact 4/10" in n for n in notes))
 
     def test_patterns(self):
         excl = rw.Profile.from_sources(self.SRC).exclude
