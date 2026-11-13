@@ -10,7 +10,7 @@ web page for the weekly status meeting ("This week in risk"). The user runs it o
 ```bash
 pip install -r requirements.txt
 python risk_week.py --ai --open        # Gemini free tier; --open opens the web page
-python -m unittest test_risk_week      # 86 tests, no network or key needed
+python -m unittest test_risk_week      # 87 tests, no network or key needed
 ```
 
 Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
@@ -70,7 +70,10 @@ Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
    newest first, with source, date, outlet count and summary but **no keyword block or score**
    (~7k tokens). `explain()` returns an `AiPick`: the AI rates impact 1–10 (`Story.impact`,
    shown "Impact n/10"), assigns blocks, picks `top` per block (ordered by impact; a block it
-   leaves empty stays empty), the radar (`radar` ids) and the **story of the week** (`cro_focus`: the
+   leaves empty stays empty), a **"why it matters" of two or three sentences, at most `WHY_WORDS`
+   (55) words: what happened, what it means for us, what to check or act on** (user, 13 Nov 2026;
+   was 30 words; kept up to `WHY_CHARS` (450) characters in Confluence, Markdown and console; the
+   page clamps it, the slide shortens it), the radar (`radar` ids) and the **story of the week** (`cro_focus`: the
    single highest-impact item, giving the CRO visibility in the bank or an action point for
    the branch) with an action point. Stories are changed only once the reply is accepted (at
    least one valid pick). Shown items missing a "why" get one `fill_why` request. Any failure

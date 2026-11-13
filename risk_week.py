@@ -789,6 +789,8 @@ WHY_SCHEMA = {
     "required": ["items"],
 }
 
+WHY_WORDS = 55        # the AI's "why it matters" per story: two or three sentences
+WHY_CHARS = 450       # kept in full up to this length (Confluence, Markdown, console, page hover)
 _WHY_KEYS = ("why_it_matters", "whyItMatters", "why it matters", "why", "summary")
 
 
@@ -796,7 +798,7 @@ def _why(r: dict) -> str:
     """The 'why it matters' text, whichever key the model used."""
     for k in _WHY_KEYS:
         if str(r.get(k) or "").strip():
-            return _clean(str(r[k]), 320)
+            return _clean(str(r[k]), WHY_CHARS)
     return ""
 
 
@@ -832,8 +834,9 @@ def ranking_prompt(stories: list[Story], per_block: int, bank: str = DEFAULT_PRO
         f"2. For each block, pick the {per_block} items with the highest impact that belong in it (fewer "
         f"only if fewer are worth showing). For each pick give: id (the number in brackets), category: "
         f"the block (one of: {', '.join(BLOCKS)}), impact: your 1-10 rating, a headline of at most 12 "
-        f"words, and why_it_matters: one or two sentences (at most 30 words) on what it means for us: the "
-        f"risk, the opportunity, or what to check or prepare. Every pick must have a why_it_matters.\n"
+        f"words, and why_it_matters: two or three sentences (at most {WHY_WORDS} words): what happened, "
+        f"what it means for us (the risk or the opportunity), and what to check, prepare or act on. Use "
+        f"only facts in the candidate text. Every pick must have a why_it_matters.\n"
         + (f"   Include at least one item on each of these priority topics when a candidate fits: "
            f"{', '.join(topics)}.\n" if topics else "") +
         f"3. radar: the ids of up to 6 further items worth a mention, highest impact first.\n"
@@ -947,8 +950,9 @@ class AiPick:
 
 def fill_why(stories: list[Story], provider, bank: str, log: list | None = None, guidance: str = "") -> None:
     """One more request for items that came back without a 'why it matters' line."""
-    user = (f"For each item give id (the number in brackets) and why_it_matters: one or two sentences "
-            f"(at most 30 words) on what it means for us, {bank}.\n\nItems:\n" + _candidates(stories))
+    user = (f"For each item give id (the number in brackets) and why_it_matters: two or three sentences "
+            f"(at most {WHY_WORDS} words) on what happened, what it means for us, {bank}, and what to check, "
+            f"prepare or act on.\n\nItems:\n" + _candidates(stories))
     try:
         reply = provider.json_call(_system(bank, guidance), user, response_schema=WHY_SCHEMA,
                                    max_output_tokens=1200)
@@ -1680,7 +1684,7 @@ def to_html(res: Result) -> str:
         for n, st in enumerate(stories, 1):
             d = st.as_dict()
             more = f" · +{d['also_reported_by']} more" if d["also_reported_by"] else ""
-            why = _clean(d["why_it_matters"], 240)
+            why = _clean(d["why_it_matters"], WHY_CHARS)       # the page clamps it; hover shows all
             items.append(
                 f'<li><span class="n">{n}</span><div>'
                 f'<h3>{link(d["link"], d["headline"], "", d["headline"])}</h3><p class="meta">'
@@ -2179,7 +2183,7 @@ def to_confluence(res: Result) -> str:
             meta = (f"Impact {d['impact']}/10 · " if d["impact"] else "") + f"{d['source']} · {d['date']}"
             items.append(f"<li><p><strong>{star}{a(d['link'], d['headline'])}</strong><br/>"
                          f"<em>{e(meta)}</em></p>"
-                         + (f"<p>{e(_clean(d['why_it_matters'], 300))}</p>" if d["why_it_matters"] else "")
+                         + (f"<p>{e(_clean(d['why_it_matters'], WHY_CHARS))}</p>" if d["why_it_matters"] else "")
                          + "</li>")
         return f"<td><ol>{''.join(items)}</ol></td>"
 
