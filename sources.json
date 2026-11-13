@@ -187,6 +187,21 @@
         "blood bank"
       ]
     },
+    "exclude": {
+      "_comment": "The safety net: a story whose headline matches is never shown, whatever the AI picks. Edit freely.",
+      "terms": [
+        "co-?op(erative)? bank|urban (co-?op(erative)? )?bank|\\bucb\\b",
+        "microfinance|\\bmfi\\b",
+        "regional rural bank|\\brrb\\b",
+        "small finance bank",
+        "gold loan",
+        "farmer|\\bkisan\\b|crop loan",
+        "quarterly (profit|results)|\\bq[1-4]\\b (results|profit|net)|net profit",
+        "share price|shares? (rise|fall|jump|surge|slump)|target price|stock price",
+        "fd rates|fixed deposit rates|credit card (offer|reward)|personal loan offer|savings account rate",
+        "festive offer|dhanteras|diwali offer"
+      ]
+    },
     "foreign_banks": [
       "Citi",
       "Citibank",
