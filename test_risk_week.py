@@ -735,8 +735,34 @@ class TestMcp(unittest.TestCase):
         self.assertIn("tools", init["result"]["capabilities"])
         self.assertIsNone(srv.handle({"jsonrpc": "2.0", "method": "notifications/initialized"}))
         names = [t["name"] for t in srv.handle({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})["result"]["tools"]]
-        self.assertEqual(names, ["risk_week_prepare", "risk_week_publish", "risk_week_run", "risk_week_check"])
+        self.assertEqual(names, ["risk_week_prepare", "risk_week_candidates", "risk_week_publish", "risk_week_run",
+                                 "risk_week_check"])
         self.assertEqual(srv.handle({"jsonrpc": "2.0", "id": 2, "method": "nope"})["error"]["code"], -32601)
+
+    def test_candidates_come_in_pages(self):
+        with tempfile.TemporaryDirectory() as d:
+            srv = self.server(d)
+            text, err = self.call(srv, "risk_week_prepare", {"page_size": 2})
+            batch = text.split("Batch: ")[1].split("\n")[0]
+            total = len(srv.pool)
+            pages = -(-total // 2)
+            self.assertGreater(pages, 1)
+            self.assertIn(f"come in {pages} pages", text)
+            self.assertIn(f"Page 1 of {pages} · ids 1–2 of {total}", text)
+            self.assertTrue(text.rstrip().endswith(f"page 2.)"))      # the end says what to do next
+            self.assertNotIn("[3]", text)
+            p2, err = self.call(srv, "risk_week_candidates", {"batch": batch, "page": 2})
+            self.assertFalse(err)
+            self.assertIn("[3]", p2)
+            self.assertNotIn("[2]", p2)
+            last, _ = self.call(srv, "risk_week_candidates", {"batch": batch, "page": pages})
+            self.assertIn("that was the last page", last)
+            self.assertTrue(self.call(srv, "risk_week_candidates", {"batch": batch, "page": pages + 1})[1])
+            self.assertTrue(self.call(srv, "risk_week_candidates", {"batch": "nope", "page": 2})[1])
+            # a new server process still serves the saved pages
+            srv2 = rw.McpServer(fetcher=fetcher, sources=SOURCES, now=NOW, out_dir=pathlib.Path(d) / "out",
+                                base_dir=pathlib.Path(d))
+            self.assertEqual(self.call(srv2, "risk_week_candidates", {"batch": batch, "page": 2})[0], p2)
 
     def test_prepare_rank_publish(self):
         with tempfile.TemporaryDirectory() as d:

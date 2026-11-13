@@ -3564,6 +3564,7 @@ def confluence_step(res: Result, a, files: dict) -> str:
 # ---------------------------------------------------------------------------
 
 MCP_VERSION = "2025-06-18"
+MCP_PAGE = 25      # candidates per MCP reply: GigaCode cut a 33,000-character reply (13 Nov 2026)
 MCP_TOOLS = [
     {"name": "risk_week_prepare",
      "description": "Step 1 of the weekly 'This Week in Risk' report. Collects, filters and groups this "
@@ -3572,7 +3573,15 @@ MCP_TOOLS = [
                     "risk_week_publish with the ranking.",
      "inputSchema": {"type": "object", "properties": {
          "days": {"type": "integer", "description": "Period in days (default 7)"},
-         "per_block": {"type": "integer", "description": "Items per block (default 3)"}}}},
+         "per_block": {"type": "integer", "description": "Items per block (default 3)"},
+         "page_size": {"type": "integer", "description": f"Candidates per page (default {MCP_PAGE})"}}}},
+    {"name": "risk_week_candidates",
+     "description": "Step 1b. Returns one more page of the candidates from risk_week_prepare (the list is "
+                    "split into pages so no reply is too long to read). Call it for every page that "
+                    "risk_week_prepare announces, before ranking. The ids stay the same across pages.",
+     "inputSchema": {"type": "object", "required": ["batch", "page"], "properties": {
+         "batch": {"type": "string", "description": "The batch code risk_week_prepare returned"},
+         "page": {"type": "integer", "description": "Page number, 2 or more"}}}},
     {"name": "risk_week_publish",
      "description": "Step 2. Builds the report from your ranking of the candidates returned by "
                     "risk_week_prepare: writes the slides, web page and Markdown, adds the user's pending "
@@ -3660,6 +3669,7 @@ class McpServer:
         self.week: Week | None = None
         self.pool: list[Story] = []
         self.top = 3
+        self.page = MCP_PAGE
         self.gemini: Callable[[], object] = lambda: GeminiProvider()
 
     # --- protocol ---------------------------------------------------------
@@ -3673,8 +3683,9 @@ class McpServer:
             return self._ok(mid, {"protocolVersion": params.get("protocolVersion") or MCP_VERSION,
                                   "capabilities": {"tools": {}},
                                   "serverInfo": {"name": "risk-week", "version": "1.0"},
-                                  "instructions": "To rank the news yourself: call risk_week_prepare, rank "
-                                                  "the candidates as it says, then call risk_week_publish "
+                                  "instructions": "To rank the news yourself: call risk_week_prepare, then "
+                                                  "risk_week_candidates for each further page it announces, "
+                                                  "rank all candidates as it says, then call risk_week_publish "
                                                   "with the batch code and your ranking. If the user asks "
                                                   "for Gemini or for no AI, call risk_week_run instead."})
         if method == "ping":
@@ -3683,7 +3694,8 @@ class McpServer:
             return self._ok(mid, {"tools": MCP_TOOLS})
         if method == "tools/call":
             name, args = params.get("name"), params.get("arguments") or {}
-            tool = {"risk_week_prepare": self.prepare, "risk_week_publish": self.publish,
+            tool = {"risk_week_prepare": self.prepare, "risk_week_candidates": self.candidates,
+                    "risk_week_publish": self.publish,
                     "risk_week_run": self.run_local, "risk_week_check": self.check}.get(name)
             if tool is None:
                 return {"jsonrpc": "2.0", "id": mid, "error": {"code": -32602, "message": f"unknown tool {name}"}}
@@ -3725,6 +3737,7 @@ class McpServer:
     def prepare(self, args: dict) -> str:
         days = int(args.get("days") or 7)
         self.top = max(1, int(args.get("per_block") or 3))
+        self.page = max(2, int(args.get("page_size") or MCP_PAGE))
         self.week = prepare_week(days, self.sources, self.fetcher, self.now,
                                  lambda m: print(m, file=sys.stderr))
         self.pool = self.week.pool()
@@ -3735,16 +3748,56 @@ class McpServer:
                                   .encode("utf-8")).hexdigest()[:8]
         self._save()
         prof = self.week.profile
-        return (f"Batch: {self.batch}\n"
+        intro = ranking_prompt(self.pool, self.top, prof.bank, list(prof.topics)).split("\n\nCandidates:\n")[0]
+        pages = self._pages()
+        more = (f"The {len(self.pool)} candidates come in {len(pages)} pages of up to {self.page} (this reply "
+                f"has page 1). Before ranking, call risk_week_candidates with batch \"{self.batch}\" and "
+                f"page 2" + (f" to {len(pages)}" if len(pages) > 2 else "") + ", and rank across all pages.\n"
+                if len(pages) > 1 else "")
+        return (f"Batch: {self.batch}\n" + more +
                 "Rank this week's candidates, then call risk_week_publish with batch "
                 f"\"{self.batch}\" and your ranking as the `ranking` argument. Do not call "
                 "risk_week_prepare again before publishing: a new call makes a new list with new "
                 "numbers.\n\n## Instructions\n" + _system(prof.bank, prof.guidance)
-                + "\n\n" + ranking_prompt(self.pool, self.top, prof.bank, list(prof.topics))
+                + "\n\n" + intro
                 + "\n\n## Answer format for `ranking` (JSON; ids are the numbers in brackets)\n"
                 + json.dumps(_EXAMPLE_REPLY, ensure_ascii=False, indent=1)
                 + (("\n\n" + portfolio_prompt(self.week.portfolio) + "\nExample: \"portfolio\": "
-                    + json.dumps(_EXAMPLE_PORTFOLIO, ensure_ascii=False)) if portfolio_order(self.week.portfolio) else ""))
+                    + json.dumps(_EXAMPLE_PORTFOLIO, ensure_ascii=False)) if portfolio_order(self.week.portfolio) else "")
+                + "\n\n" + self._page_text(1))
+
+    def _pages(self) -> list[list[str]]:
+        lines = _candidates(self.pool).splitlines()
+        size = max(1, int(getattr(self, "page", MCP_PAGE) or MCP_PAGE))
+        return [lines[i:i + size] for i in range(0, len(lines), size)] or [[]]
+
+    def _page_text(self, n: int) -> str:
+        """One page of candidates, announced at both ends so a cut reply still shows where it is."""
+        pages = self._pages()
+        rows = pages[n - 1]
+        first = sum(len(p) for p in pages[:n - 1]) + 1
+        where = f"Page {n} of {len(pages)} · ids {first}–{first + len(rows) - 1} of {len(self.pool)}"
+        if n < len(pages):
+            tail = (f"(End of page {n} of {len(pages)}. Next: risk_week_candidates with batch \"{self.batch}\" "
+                    f"and page {n + 1}.)")
+        else:
+            tail = (f"(End of page {n} of {len(pages)}: that was the last page. Now rank all {len(self.pool)} "
+                    f"candidates and call risk_week_publish with batch \"{self.batch}\".)")
+        return f"{where}\nCandidates:\n" + "\n".join(rows) + "\n" + tail
+
+    def candidates(self, args: dict) -> str:
+        batch = str(args.get("batch") or "").strip()
+        if getattr(self, "batch", None) != batch and not self._load(batch):
+            return (f"Batch {batch or '(none)'} is not the current candidate list: call risk_week_prepare once "
+                    f"and use the batch code it returns.", True)
+        try:
+            n = int(args.get("page") or 0)
+        except (TypeError, ValueError):
+            n = 0
+        total = len(self._pages())
+        if not 1 <= n <= total:
+            return f"page must be between 1 and {total}.", True
+        return f"Batch: {self.batch}\n" + self._page_text(n)
 
     def _state_file(self) -> Path:
         return Path(self.out_dir or DEFAULT_OUT) / ".risk-week-mcp-batch.pickle"
@@ -3755,7 +3808,7 @@ class McpServer:
             f = self._state_file()
             f.parent.mkdir(parents=True, exist_ok=True)
             f.write_bytes(pickle.dumps({"batch": self.batch, "week": self.week, "pool": self.pool,
-                                        "top": self.top}))
+                                        "top": self.top, "page": self.page}))
         except Exception as e:  # noqa: BLE001 — publishing in the same session still works
             print(f"[risk-week] could not save the batch: {e}", file=sys.stderr)
 
@@ -3769,6 +3822,7 @@ class McpServer:
         if state.get("batch") != batch:
             return False
         self.batch, self.week, self.pool, self.top = state["batch"], state["week"], state["pool"], state["top"]
+        self.page = state.get("page", MCP_PAGE)
         return True
 
     def publish(self, args: dict) -> str:
