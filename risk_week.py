@@ -248,6 +248,8 @@ class Result:
     events: list["Event"] = field(default_factory=list)            # Events & reports: upcoming
     consultations: list["Consultation"] = field(default_factory=list)  # Events & reports: comments due
     portfolio: list["Company"] = field(default_factory=list)          # credit portfolio watch (top 20.txt)
+    events_max: int = 10                # upcoming events shown; all of them on <stem>-events.html
+    events_window: int = 60
     ai_log: list = field(default_factory=list)          # raw AI replies, saved next to the output
 
 
@@ -1309,7 +1311,7 @@ def gather_events(cfg: dict, fetcher: Callable[[str], bytes], today: date) -> tu
         except Exception as e:  # noqa: BLE001
             errors.append(f"RBI drafts: {type(e).__name__}: {e}"[:300])
     consultations.sort(key=lambda c: c.deadline or date.max)
-    return upcoming[:max(1, int(cfg.get("max") or 10))], consultations, errors
+    return upcoming, consultations, errors
 
 
 def pick_reports(items: list[Item], start: datetime, end: datetime, profile: "Profile", n: int = 5) -> list[Story]:
@@ -1594,6 +1596,8 @@ class Week:
     events: list["Event"] = field(default_factory=list)
     consultations: list["Consultation"] = field(default_factory=list)
     portfolio: list["Company"] = field(default_factory=list)    # credit portfolio watch (never sent to Gemini)
+    events_max: int = 10                # upcoming events shown; the rest are on the events page
+    events_window: int = 60
 
     def pool(self) -> list[Story]:
         """The stories an AI ranks: the best AI_POOL by keyword score, shown newest first."""
@@ -1624,6 +1628,8 @@ def prepare_week(days: int = 7, sources: dict | None = None, fetcher: Callable[[
     cfg = sources.get("events") or {}
     if cfg:
         week.events, week.consultations, more = gather_events(cfg, fetcher, end.date())
+        week.events_max = max(1, int(cfg.get("max") or 10))
+        week.events_window = int(cfg.get("window_days") or 60)
         week.errors.extend(more)
     pf = sources.get("portfolio") or {}
     if pf.get("file"):
@@ -1752,7 +1758,8 @@ def finish_week(week: Week, top: int = 3, picked: "AiPick | None" = None, ai: st
                   kept=week.kept, errors=week.errors, ai=ai, routine=week.routine,
                   cro_notes=list(cro_notes or []), cro_focus=focus, ai_log=ai_log,
                   pending=list(pending or []), blocks=blocks, reports=week.reports, events=week.events,
-                  consultations=week.consultations, portfolio=week.portfolio)
+                  consultations=week.consultations, portfolio=week.portfolio,
+                  events_max=week.events_max, events_window=week.events_window)
 
 
 def run(days: int = 7, top: int = 3, provider=None, sources: dict | None = None,
@@ -2056,6 +2063,23 @@ def _due(c: "Consultation", today: date) -> str:
 PF_TITLE = "Credit portfolio watch"
 
 
+def _file_stem(res: Result) -> str:
+    return f"risk-week-{res.end.strftime('%Y-%m-%d')}"
+
+
+def _events_file(res: Result) -> str:
+    """The page with every upcoming event in the window (written next to the report)."""
+    return f"{_file_stem(res)}-events.html"
+
+
+def _shown_events(res: Result) -> list["Event"]:
+    return res.events[:res.events_max]
+
+
+def _all_events_label(res: Result) -> str:
+    return f"All {len(res.events)} events in the next {res.events_window} days"
+
+
 def _has_events(res: Result) -> bool:
     return bool(res.events or res.consultations or res.reports)
 
@@ -2128,7 +2152,10 @@ def to_markdown(res: Result) -> str:
                                                 for c in res.consultations] + [""]
         if res.events:
             out += ["**Upcoming**", ""] + [f"- [{ev.name}]({ev.url}) — {ev.when}"
-                                            + (f", {_place(ev.place)}" if ev.place else "") for ev in res.events] + [""]
+                                            + (f", {_place(ev.place)}" if ev.place else "") for ev in _shown_events(res)]
+            if len(res.events) > res.events_max:
+                out.append(f"- [{_all_events_label(res)}]({_events_file(res)})")
+            out.append("")
         if res.reports:
             out += ["**New reports**", ""] + [f"- [{st.lead.title}]({st.lead.link}) — {st.lead.publisher or st.lead.source}, "
                                                f"{_when(st.lead)}" for st in res.reports] + [""]
@@ -2197,7 +2224,9 @@ def to_console(res: Result, files: dict) -> str:
         today = res.end.date()
         out.append("EVENTS & REPORTS")
         out += [f"  Comments due: {c.title[:90]} ({_due(c, today)})" for c in res.consultations]
-        out += [f"  Upcoming: {ev.when} · {ev.name[:90]}" for ev in res.events]
+        out += [f"  Upcoming: {ev.when} · {ev.name[:90]}" for ev in _shown_events(res)]
+        if len(res.events) > res.events_max and files.get("events"):
+            out.append(f"  {_all_events_label(res)}: {Path(files['events']).resolve().as_uri()}")
         out += [f"  Report: {st.lead.title[:100]}" for st in res.reports]
         out.append("")
     if res.routine:
@@ -2312,7 +2341,9 @@ def to_html(res: Result) -> str:
         if res.events:
             parts.append("<h3>Upcoming</h3><ul>" + "".join(
                 f'<li>{link(ev.url, ev.name, "", ev.name)} <span class="meta">{e(ev.when)}'
-                + (f" · {e(_place(ev.place))}" if ev.place else "") + "</span></li>" for ev in res.events) + "</ul>")
+                + (f" · {e(_place(ev.place))}" if ev.place else "") + "</span></li>" for ev in _shown_events(res))
+                + "</ul>" + (f'<p class="more">{link(_events_file(res), _all_events_label(res) + " ↗")}</p>'
+                             if len(res.events) > res.events_max else ""))
         if res.reports:
             parts.append("<h3>New reports</h3><ul>" + "".join(
                 f'<li>{link(st.lead.link, st.lead.title, "", st.lead.title)} <span class="meta">'
@@ -2355,7 +2386,7 @@ h2{{font-size:1.05rem;margin:0 0 6px}}
 .pf li.red .sig{{color:var(--late)}} .pf li.amber .sig{{color:var(--amber)}} .pf li.green .sig{{color:var(--ok)}}
 .pf .pfn{{font-size:.85rem}} .pf .pfn .pm{{white-space:nowrap}}
 .evr h3{{font-size:.78rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:10px 0 2px}}
-.evr li.late .meta{{color:var(--late);font-weight:600}}
+.evr li.late .meta{{color:var(--late);font-weight:600}} .evr .more{{font-size:.85rem;font-weight:600;margin-top:4px}}
 .blocks{{display:grid;gap:14px;grid-template-columns:repeat(3,minmax(0,1fr))}}
 .block h2{{color:var(--accent);border-bottom:2px solid var(--tint);padding-bottom:5px}}
 .block ol{{list-style:none;padding:0;margin:0}} .block li{{display:flex;gap:9px;padding:8px 0;border-top:1px solid var(--line)}}
@@ -2546,7 +2577,7 @@ def _events_slide(prs, layout, header, res: Result, navy, grey, accent) -> None:
     header(slide, "Events & reports", "Open consultations, upcoming events and new reports")
     cols = [("Comments due", [(c.title, c.url, f"{c.source} · {_due(c, today)}") for c in res.consultations]),
             ("Upcoming", [(ev.name, ev.url, ev.when + (f" · {_place(ev.place)}" if ev.place else ""))
-                          for ev in res.events]),
+                          for ev in _shown_events(res)]),
             ("New reports", [(st.lead.title, st.lead.link, f"{st.lead.publisher or st.lead.source} · {_when(st.lead)}")
                              for st in res.reports])]
     w = 3.95
@@ -2574,6 +2605,41 @@ def _events_slide(prs, layout, header, res: Result, navy, grey, accent) -> None:
             m.text = meta
             m.runs[0].font.size, m.runs[0].font.color.rgb = Pt(11), grey
             m.space_after = Pt(8)
+        if title == "Upcoming" and len(res.events) > 7:
+            q = tf.add_paragraph()
+            r = q.add_run()
+            r.text = _all_events_label(res) + " ↗"
+            r.font.size, r.font.color.rgb = Pt(11), accent
+            r.hyperlink.address = _events_file(res)        # the page next to the slides
+
+
+def to_events_html(res: Result) -> str:
+    """Every upcoming event in the window, as a table: kept one click away from the report."""
+    e = html.escape
+    rows = "".join(
+        f'<tr><td class="w">{e(ev.when)}</td><td><a href="{e(ev.url)}" target="_blank" rel="noopener">'
+        f'{e(ev.name)}</a></td><td>{e(_place(ev.place))}</td><td>{e(ev.organiser)}</td>'
+        f'<td class="t">{e(ev.topics)}</td></tr>' for ev in res.events)
+    return f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>Upcoming risk events</title>
+<style>
+:root{{--bg:#f4f6f9;--card:#fff;--fg:#1b1f24;--muted:#5b6470;--accent:#0b5cad;--line:#e3e6ea}}
+@media (prefers-color-scheme:dark){{:root{{--bg:#0f1215;--card:#181c21;--fg:#e8eaed;--muted:#9aa3ad;--accent:#7fb3f0;--line:#2a2f36}}}}
+body{{background:var(--bg);color:var(--fg);font:15px/1.45 system-ui,sans-serif;margin:0;padding:20px 16px}}
+main{{max-width:1200px;margin:auto}} h1{{font-size:1.5rem;margin:0}} .sub{{color:var(--muted);margin:2px 0 14px}}
+a{{color:var(--accent);text-decoration:none}} a:hover{{text-decoration:underline}}
+.wrap{{background:var(--card);border:1px solid var(--line);border-radius:10px;overflow-x:auto}}
+table{{border-collapse:collapse;width:100%}} th,td{{text-align:left;padding:8px 12px;border-top:1px solid var(--line);vertical-align:top}}
+th{{border-top:0;font-size:.8rem;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}}
+.w{{white-space:nowrap}} .t{{color:var(--muted);font-size:.85rem}}
+</style></head><body><main>
+<h1>Upcoming risk events</h1>
+<p class="sub">{len(res.events)} events from {res.end.strftime('%d %b %Y')} to
+{(res.end + timedelta(days=res.events_window)).strftime('%d %b %Y')} · from events.json and CAFRAL ·
+the report shows the nearest {res.events_max}</p>
+<div class="wrap"><table><thead><tr><th>When</th><th>Event</th><th>Place</th><th>Organiser</th><th>Topics</th></tr></thead>
+<tbody>{rows}</tbody></table></div>
+</main></body></html>"""
 
 
 def _portfolio_slide(prs, layout, header, res: Result, period: str, navy, grey, red, white) -> None:
@@ -2738,10 +2804,13 @@ def _pending_table(slide, items: list[Pending], x: float, y: float, w: float, na
 def write(res: Result, out_dir: Path | str | None = None) -> dict:
     d = Path(out_dir) if out_dir else DEFAULT_OUT
     d.mkdir(parents=True, exist_ok=True)
-    stem = f"risk-week-{res.end.strftime('%Y-%m-%d')}"
+    stem = _file_stem(res)
     files = {"markdown": d / f"{stem}.md", "html": d / f"{stem}.html"}
     files["markdown"].write_text(to_markdown(res), encoding="utf-8")
     files["html"].write_text(to_html(res), encoding="utf-8")
+    if res.events:
+        files["events"] = d / _events_file(res)
+        files["events"].write_text(to_events_html(res), encoding="utf-8")
     if res.ai_log:
         files["ai_reply"] = d / f"{stem}-ai-reply.json"
         files["ai_reply"].write_text(json.dumps(res.ai_log, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -2921,7 +2990,12 @@ def to_confluence(res: Result) -> str:
         if res.events:
             parts.append("<p><strong>Upcoming</strong></p><ul>" + "".join(
                 f"<li>{a(ev.url, ev.name)} · <em>{e(ev.when)}" + (f", {e(_place(ev.place))}" if ev.place else "")
-                + "</em></li>" for ev in res.events) + "</ul>")
+                + "</em></li>" for ev in _shown_events(res)) + "</ul>")
+            if len(res.events) > res.events_max:
+                parts.append(_macro("expand", "<ul>" + "".join(
+                    f"<li>{a(ev.url, ev.name)} · <em>{e(ev.when)}" + (f", {e(_place(ev.place))}" if ev.place else "")
+                    + (f" · {e(ev.organiser)}" if ev.organiser else "") + "</em></li>" for ev in res.events)
+                    + "</ul>", title=_all_events_label(res)))
         if res.reports:
             parts.append("<p><strong>New reports</strong></p><ul>" + "".join(
                 f"<li>{a(st.lead.link, st.lead.title)} · <em>{e(st.lead.publisher or st.lead.source)}, "

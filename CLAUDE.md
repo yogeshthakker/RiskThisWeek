@@ -14,7 +14,7 @@ python -m unittest test_risk_week      # 99 tests, no network or key needed
 ```
 
 Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
-`risk-week-<date>-ai-reply.json` (the raw AI replies, for checking).
+`risk-week-<date>-ai-reply.json` (the raw AI replies, for checking), `risk-week-<date>-events.html` (all upcoming events).
 
 ## Files
 
@@ -186,7 +186,10 @@ Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
    plus `read_cafral_events`: CAFRAL event pages' `atc_*` vars; within `events.window_days` (60),
    deduped by name) and **New reports** (`pick_reports`: `sources.json` `reports` feeds and
    queries, `Item.kind == "report"`, never in the six blocks; must match a risk block). Upcoming
-   is capped at `events.max` (10). events.json was filled from a research agent's validation of
+   shows the nearest `events.max` (10) of the 60-day window (user, 13 Nov 2026: "show top 10,
+   keep the 22 handy on a clickable link"): `write()` adds `<stem>-events.html`
+   (`to_events_html`, all events), linked from the page panel, the slide and Markdown; the
+   console prints its file link; Confluence gets an expand with all of them. events.json was filled from a research agent's validation of
    the user's list (13 Nov 2026): 33 dated events (NIBM, IIBF, IACPM, Risk Live, GARP, IOD,
    AIMA, Global Insight), 17 under `watch` (no 2027 date yet, or unverified). Any
    failure goes to the errors list, never fatal. Nothing here goes to the AI.

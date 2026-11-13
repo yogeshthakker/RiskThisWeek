@@ -125,7 +125,10 @@ Next to the news, the page, the last slide and Confluence show three short lists
   the press release ("comments due 26 Nov (13 days)"; red when 7 days or fewer are left).
 - **Upcoming**: conferences and programmes in the next 60 days, from `events.json` (edit it:
   one entry per event with `name`, `start`, optional `end`, `place`, `url`, `organiser`) and
-  from CAFRAL's events page. Put events without a date yet under `watch`.
+  from CAFRAL's events page. Put events without a date yet under `watch`. The report shows the
+  nearest 10 (`"max"` in `sources.json`). Every event in the window is on
+  `output/risk-week-<date>-events.html`, linked from the page, the slide and the Markdown.
+  Confluence has the full list in an expand.
 - **New reports**: the week's papers from `reports` in `sources.json` (BIS, SEBI and IFSCA
   consultation papers, Basel Committee, rating agencies, DSCI). They never enter the six blocks.
 

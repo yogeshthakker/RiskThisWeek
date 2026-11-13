@@ -1052,6 +1052,16 @@ class TestEventsAndReports(unittest.TestCase):
         import xml.etree.ElementTree as ET
         ET.fromstring('<r xmlns:ac="a" xmlns:ri="b">' + week + "</r>")
         self.assertLess(week.index("Events &amp; reports"), len(week))
+        res.events_max = 1                                    # show the nearest; the rest one click away
+        self.assertIn("[All 2 events in the next 60 days](risk-week-2026-11-13-events.html)", rw.to_markdown(res))
+        self.assertIn('href="risk-week-2026-11-13-events.html"', rw.to_html(res))
+        self.assertEqual(rw.to_html(res).count("Programme on KYC/AML"), 0)
+        self.assertIn('ac:parameter ac:name="title">All 2 events', rw.to_confluence(res))
+        with tempfile.TemporaryDirectory() as d:
+            files = rw.write(res, d)
+            allpage = pathlib.Path(files["events"]).read_text(encoding="utf-8")
+        self.assertIn("Programme on KYC/AML", allpage)
+        res.events_max = 10
         try:
             from pptx import Presentation
         except ImportError:
