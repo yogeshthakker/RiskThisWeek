@@ -1,0 +1,5 @@
+# Credit portfolio watch: copy to "top 20.txt" (next to risk_week.py) and list your companies.
+# One per line. Optional other names after "|" (short names, brand names, old names).
+# Lines starting with # are ignored. This file is never committed (see .gitignore).
+Example Steel Limited | Example Steel
+Example Power Ltd

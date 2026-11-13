@@ -183,7 +183,7 @@ class Item:
     publisher: str = ""
     category: str = ""
     score: float = 0.0
-    kind: str = "news"          # "news" (the six blocks) or "report" (Events & reports section)
+    kind: str = "news"          # "news" (the six blocks), "report" (Events & reports) or "portfolio"
 
     def tokens(self) -> set[str]:
         words = re.findall(r"[a-z0-9₹]+", self.title.lower())
@@ -247,6 +247,9 @@ class Result:
     reports: list[Story] = field(default_factory=list)            # Events & reports: new reports
     events: list["Event"] = field(default_factory=list)            # Events & reports: upcoming
     consultations: list["Consultation"] = field(default_factory=list)  # Events & reports: comments due
+    portfolio: list["Company"] = field(default_factory=list)          # credit portfolio watch (top 20.txt)
+    events_max: int = 10                # upcoming events shown; all of them on <stem>-events.html
+    events_window: int = 60
     ai_log: list = field(default_factory=list)          # raw AI replies, saved next to the output
 
 
@@ -1328,6 +1331,256 @@ def pick_reports(items: list[Item], start: datetime, end: datetime, profile: "Pr
     return stories[:max(0, n)]
 
 
+# ---------------------------------------------------------------------------
+# Credit portfolio watch: this week's news on the bank's own borrowers (top 20.txt)
+# ---------------------------------------------------------------------------
+
+PORTFOLIO_FILE = "top 20.txt"     # one company per line, "Name | alias | alias"; never committed
+PORTFOLIO_MAX = 3                 # news items shown per company
+LEVELS = {"red": 3, "amber": 2, "green": 1, "": 0}
+LEVEL_LABEL = {"red": "Red", "amber": "Amber", "green": "Positive", "": "News"}
+# Early-warning signals for a lender, most severe first. Matched on the headline and summary.
+EWS = [
+    ("Default / insolvency", "red", re.compile(
+        r"\bdefault|insolvenc|\bnclt\b|\bnclat\b|\bibc\b|\bcirp\b|bankrupt|liquidat|wilful defaulter|"
+        r"\bnpa\b|non[- ]performing|missed (?:interest|payment|coupon|repayment)|"
+        r"delay(?:s|ed)? in (?:interest|payment|repayment|servicing)|one[- ]time settlement|\bots\b|"
+        r"(?:debt|loan) restructur|moratorium|winding[- ]up|resolution plan|\bdrt\b|\bsarfaesi\b", re.I)),
+    ("Rating downgrade", "red", re.compile(
+        r"downgrad|rating watch (?:with )?negative|credit watch (?:with )?negative|"
+        r"outlook (?:revised |cut |lowered )?to negative|negative outlook|rating (?:suspended|withdrawn)|"
+        r"issuer not cooperating|\binc\b rating", re.I)),
+    ("Fraud / enforcement", "red", re.compile(
+        r"\bfraud|enforcement directorate|\bed\b (?:raid|search|attach|summon|probe)|\bcbi\b|\bsfio\b|"
+        r"\braid|search(?:es)? (?:and|&) seizure|money laundering|\bpmla\b|forensic audit|"
+        r"(?:tax|gst) evasion|\barrest|siphon|diversion of funds|fund diversion|"
+        r"sebi (?:bans|bars|order|penal)|show[- ]cause", re.I)),
+    ("Governance", "amber", re.compile(
+        r"auditors? (?:resign|quit|flag)|\bresign|steps? down|\bquits\b|pledge|qualified opinion|"
+        r"delay(?:s|ed)? (?:in )?(?:results|filing|board meeting)|related[- ]party|whistle[- ]?blower|"
+        r"promoter (?:exit|sells|offload)|management (?:exit|rejig)", re.I)),
+    ("Financial / operational stress", "amber", re.compile(
+        r"\bloss(?:es)?\b|loss[- ]making|(?:profit|revenue|sales|margin|ebitda)s? (?:fall|drop|decline|plunge|"
+        r"slump|tank|shrink|dip)|shut ?down|\bstrike\b|lockout|fire (?:at|breaks|broke)|\bblaze\b|layoff|"
+        r"job cuts|plant clos|halt(?:s|ed)? (?:production|operations|work)|(?:order|contract) cancel|"
+        r"penalt|litigation|lawsuit|(?:shares?|stock) (?:fall|plunge|crash|tumble|sink|slump|hit)|"
+        r"cash crunch|liquidity (?:crunch|stress)|debt (?:rises|surges|swells)|working capital stress|"
+        r"cut(?:s)? (?:guidance|forecast)|profit warning", re.I)),
+    ("Positive", "green", re.compile(
+        r"upgrad|outlook (?:revised |raised )?to (?:positive|stable)|positive outlook|"
+        r"\b(?:wins|bags|secures|bagged|won|gets|receives|lands)\b[^.;]{0,40}?\b(?:orders?|contracts?|deals?)\b|"
+        r"\border win|fund ?rais|"
+        r"raises? ₹|(?:profit|revenue|sales)s? (?:rise|jump|surge|climb|grow)|record (?:profit|revenue|sales)|"
+        r"deleverag|debt[- ]free|prepa(?:y|id)", re.I)),
+]
+# Market lists and stock tips that merely mention a company: not news about it.
+PF_NOISE = re.compile(
+    r"stocks? to (?:watch|buy|sell|track)|shares? in focus|stocks? in (?:focus|news)|seasonal returns|returns chart|"
+    r"muhurat|stop[- ]loss|\bdma\b|breakout|stocks? (?:fall|rise|gain|decline|surge|slip)s? today|top (?:gainers|losers)|"
+    r"market (?:live|wrap|highlights)|price target|technical (?:pick|view)|buy or sell|share price (?:today|live)|"
+    r"stock price (?:today|live)|multibagger|amfi (?:rejig|reshuffle)|large[- ]?cap upgrade|trade setup|"
+    r"stocks? recommendations?|f&o ban|bulk deals?|block deals?|\(\w+\.(?:bo|ns)\)", re.I)
+_SUFFIX = re.compile(r"[\s,.]+(?:limited|ltd|pvt|private|plc|inc|llp|corporation|corp|company|co)\.?\s*$", re.I)
+
+
+def ews_flags(text: str) -> list[tuple[str, str]]:
+    """The early-warning signals in a headline or summary, most severe first."""
+    return [(label, level) for label, level, pat in EWS if pat.search(text or "")]
+
+
+def _story_signal(st: Story) -> tuple[str, str]:
+    """The worst signal across a story's items: (label, level); ("", "") for plain news."""
+    flags = ews_flags(f"{st.lead.title} {st.lead.summary}")     # what the reader sees explains the flag
+    return max(flags, key=lambda f: LEVELS[f[1]], default=("", ""))
+
+
+def _short_name(name: str) -> str:
+    """'Tata Steel Limited' -> 'Tata Steel' (the form headlines use)."""
+    s = name.strip()
+    while True:
+        t = _SUFFIX.sub("", s).strip()
+        if t == s or not t:
+            return s
+        s = t
+
+
+@dataclass
+class Company:
+    name: str
+    aliases: list[str] = field(default_factory=list)
+    stories: list[Story] = field(default_factory=list)   # this week's news on it, worst signal first
+    note: str = ""                                       # GigaCode's view (MCP), optional
+    ai_level: str = ""                                   # GigaCode's signal ("red/amber/green/none"), overrides
+
+    @property
+    def names(self) -> list[str]:
+        out: list[str] = []
+        for n in [self.name, *self.aliases]:
+            for v in (n.strip(), _short_name(n)):
+                if len(v) >= 2 and v.lower() not in [o.lower() for o in out]:
+                    out.append(v)
+        return out
+
+    @property
+    def pattern(self) -> re.Pattern:
+        # Short names ("Vi", "BPL", "L&T") must match their exact case: "Vi" is not "GTA VI".
+        parts = [f"(?-i:{re.escape(n)})" if len(n) <= 4 else re.escape(n) for n in self.names]
+        return re.compile(r"(?<!\w)(?:" + "|".join(parts) + r")(?!\w)", re.I)
+
+    @property
+    def query(self) -> str:
+        """The Google News search: the short names in quotes, nothing else."""
+        short = []
+        for n in [self.name, *self.aliases]:
+            s = _short_name(n)
+            if s and s.lower() not in [x.lower() for x in short]:
+                short.append(s)
+        return " OR ".join(f'"{s}"' for s in short)
+
+    @property
+    def signal(self) -> tuple[str, str]:
+        """(label, level) for the company: GigaCode's level if given, else the worst local flag."""
+        worst = max((_story_signal(s) for s in self.stories), key=lambda f: LEVELS[f[1]], default=("", ""))
+        if self.ai_level == "none":                     # GigaCode: not about the company / not credit-relevant
+            return ("", "")
+        if self.ai_level in ("red", "amber", "green"):
+            return (worst[0] if worst[1] == self.ai_level else "", self.ai_level)
+        return worst
+
+
+def load_portfolio(path: Path | str) -> list[Company]:
+    """One company per line: 'Name' or 'Name | alias | alias'. '#' comments and numbering allowed."""
+    p = Path(path)
+    data = p.read_bytes()
+    try:
+        text = data.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        text = data.decode("cp1252", "replace")      # saved by Notepad in the Windows code page
+    out: list[Company] = []
+    seen: set[str] = set()
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        line = re.sub(r"^\s*(?:\d+\s*[.)\-:]|[-*•])\s*", "", line)
+        parts = [x.strip() for x in re.split(r"\s*\|\s*|\t", line) if x.strip()]
+        if not parts or parts[0].lower() in seen:
+            continue
+        seen.add(parts[0].lower())
+        out.append(Company(parts[0], parts[1:]))
+    return out
+
+
+def scan_portfolio(companies: list[Company], items: list[Item], start: datetime, end: datetime, days: int,
+                   fetcher: Callable[[str], bytes], per_company: int = PORTFOLIO_MAX,
+                   search: bool = True) -> list[str]:
+    """Fill each company's `stories`: one Google News search per company (its names only, in quotes)
+    plus the week's collected news, kept when the headline names the company. Returns errors."""
+    errors: list[str] = []
+
+    def one(c: Company):
+        if not search:
+            return c, [], None
+        try:
+            return c, parse_feed(fetcher(google_news_url(c.query, days)), "Google News", 1.0, False, True), None
+        except Exception as e:  # noqa: BLE001 — one failed search must not stop the rest
+            return c, [], e
+
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        found = list(pool.map(one, companies))
+    for c, got, err in found:
+        if err is not None:
+            errors.append(f"Portfolio search ({c.name}): {type(err).__name__}: {err}"[:300])
+        pat, links, mine = c.pattern, set(), []
+        for it in [*got, *items]:
+            if (it.link in links or not it.published or not (start <= it.published <= end + timedelta(hours=12))
+                    or not pat.search(it.title) or PF_NOISE.search(it.title)):
+                continue
+            links.add(it.link)
+            new = Item(it.title, it.link, it.source, it.published, it.summary, it.weight, it.primary,
+                       it.publisher, kind="portfolio")
+            new.score = it.published.timestamp() / 1e9      # newest first within a signal level
+            mine.append(new)
+        stories = group(mine)
+        stories.sort(key=lambda s: (-LEVELS[_story_signal(s)[1]], -max(i.published.timestamp() for i in s.items)))
+        for s in stories:
+            s.category = "Credit portfolio"
+        c.stories = stories[:max(1, per_company)]
+    return errors
+
+
+def portfolio_order(companies: list[Company]) -> list[Company]:
+    """Companies with news, worst signal first (then more news first, then the file's order)."""
+    with_news = [c for c in companies if c.stories]
+    return sorted(with_news, key=lambda c: (-LEVELS[c.signal[1]], -len(c.stories), companies.index(c)))
+
+
+def _pf_counts(companies: list[Company]) -> str:
+    n = {lv: sum(c.signal[1] == lv for c in companies if c.stories) for lv in ("red", "amber", "green")}
+    parts = [f"{len(companies)} names", f"{sum(bool(c.stories) for c in companies)} with news"]
+    parts += [f"{n['red']} red"] if n["red"] else []
+    parts += [f"{n['amber']} amber"] if n["amber"] else []
+    parts += [f"{n['green']} positive"] if n["green"] else []
+    return " · ".join(parts)
+
+
+def _pf_quiet(companies: list[Company]) -> list[str]:
+    return [c.name for c in companies if not c.stories]
+
+
+def _sig_text(c: Company) -> str:
+    label, level = c.signal
+    return LEVEL_LABEL[level] + (f" · {label}" if label and label != LEVEL_LABEL[level] else "")
+
+
+def apply_portfolio_notes(companies: list[Company], ranking) -> int:
+    """GigaCode's optional 'portfolio' answer: [{company, signal, note}]. Returns how many were used."""
+    if isinstance(ranking, str):
+        try:
+            ranking = json.loads(ranking)
+        except ValueError:
+            return 0
+    rows = ranking.get("portfolio") if isinstance(ranking, dict) else None
+    if not isinstance(rows, list):
+        return 0
+    by_name = {c.name.lower(): c for c in companies}
+    by_name.update({_short_name(c.name).lower(): c for c in companies})
+    used = 0
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        c = by_name.get(str(r.get("company", "")).strip().lower())
+        if c is None or not c.stories:
+            continue
+        sig = str(r.get("signal", "")).strip().lower()
+        sig = {"none": "", "positive": "green", "yellow": "amber"}.get(sig, sig)
+        if sig in LEVELS:
+            c.ai_level = sig or "none"
+        c.note = _clean(str(r.get("note") or ""), 300)
+        used += 1
+    return used
+
+
+def portfolio_prompt(companies: list[Company]) -> str:
+    """The extra task for GigaCode (in-house only; never sent to Gemini)."""
+    rows = portfolio_order(companies)
+    if not rows:
+        return ""
+    out = ["## Credit portfolio watch (optional, the bank's own borrowers)",
+           "For each company below, judge whether this week's news is an early-warning signal for a "
+           "lender to it. Add to your ranking a key \"portfolio\": a list of {\"company\": name exactly as "
+           "written, \"signal\": \"red\" (default, insolvency, downgrade, fraud), \"amber\" (stress worth a "
+           "call), \"green\" (positive) or \"none\" (not about the company or not credit-relevant), "
+           "\"note\": at most 25 words: what happened and what the credit team should check}.", ""]
+    for c in rows:
+        label, level = c.signal
+        out.append(f"- {c.name} (local flag: {LEVEL_LABEL[level]}{' · ' + label if label else ''})")
+        for s in c.stories:
+            out.append(f"  · {s.lead.title} — {s.lead.publisher or s.lead.source}, {_when(s.lead)}")
+    return "\n".join(out)
+
+
 @dataclass
 class Week:
     """The week's stories after collecting, filtering and grouping, before ranking."""
@@ -1342,6 +1595,9 @@ class Week:
     reports: list[Story] = field(default_factory=list)
     events: list["Event"] = field(default_factory=list)
     consultations: list["Consultation"] = field(default_factory=list)
+    portfolio: list["Company"] = field(default_factory=list)    # credit portfolio watch (never sent to Gemini)
+    events_max: int = 10                # upcoming events shown; the rest are on the events page
+    events_window: int = 60
 
     def pool(self) -> list[Story]:
         """The stories an AI ranks: the best AI_POOL by keyword score, shown newest first."""
@@ -1372,7 +1628,22 @@ def prepare_week(days: int = 7, sources: dict | None = None, fetcher: Callable[[
     cfg = sources.get("events") or {}
     if cfg:
         week.events, week.consultations, more = gather_events(cfg, fetcher, end.date())
+        week.events_max = max(1, int(cfg.get("max") or 10))
+        week.events_window = int(cfg.get("window_days") or 60)
         week.errors.extend(more)
+    pf = sources.get("portfolio") or {}
+    if pf.get("file"):
+        path = Path(pf["file"])
+        path = path if path.is_absolute() else Path(__file__).resolve().parent / path
+        if path.exists():
+            try:
+                week.portfolio = load_portfolio(path)
+            except OSError as e:
+                week.errors.append(f"Portfolio file: {e}"[:300])
+            log(f"  Portfolio: {len(week.portfolio)} names from {path.name}")
+            week.errors.extend(scan_portfolio(week.portfolio, raw, start, end, days, fetcher,
+                                              int(pf.get("per_company", PORTFOLIO_MAX)),
+                                              bool(pf.get("search", True))))
     return week
 
 
@@ -1487,7 +1758,8 @@ def finish_week(week: Week, top: int = 3, picked: "AiPick | None" = None, ai: st
                   kept=week.kept, errors=week.errors, ai=ai, routine=week.routine,
                   cro_notes=list(cro_notes or []), cro_focus=focus, ai_log=ai_log,
                   pending=list(pending or []), blocks=blocks, reports=week.reports, events=week.events,
-                  consultations=week.consultations)
+                  consultations=week.consultations, portfolio=week.portfolio,
+                  events_max=week.events_max, events_window=week.events_window)
 
 
 def run(days: int = 7, top: int = 3, provider=None, sources: dict | None = None,
@@ -1788,6 +2060,26 @@ def _due(c: "Consultation", today: date) -> str:
     return f"comments due {c.deadline.strftime('%d %b').lstrip('0')} ({'today' if n == 0 else f'{n} day' + ('s' if n != 1 else '')})"
 
 
+PF_TITLE = "Credit portfolio watch"
+
+
+def _file_stem(res: Result) -> str:
+    return f"risk-week-{res.end.strftime('%Y-%m-%d')}"
+
+
+def _events_file(res: Result) -> str:
+    """The page with every upcoming event in the window (written next to the report)."""
+    return f"{_file_stem(res)}-events.html"
+
+
+def _shown_events(res: Result) -> list["Event"]:
+    return res.events[:res.events_max]
+
+
+def _all_events_label(res: Result) -> str:
+    return f"All {len(res.events)} events in the next {res.events_window} days"
+
+
 def _has_events(res: Result) -> bool:
     return bool(res.events or res.consultations or res.reports)
 
@@ -1818,6 +2110,23 @@ def to_markdown(res: Result) -> str:
         out += [f"| {p.item} | {p.owner} | {p.due} | {'**' + _status(p) + '**' if p.overdue else _status(p)} |"
                 for p in res.pending]
         out.append("")
+    if res.portfolio:
+        out += [f"## {PF_TITLE}", "", f"_{_pf_counts(res.portfolio)}. Early-warning flags are keyword-based; "
+                f"check each story._", ""]
+        rows = portfolio_order(res.portfolio)
+        if rows:
+            out += ["| Company | Signal | This week |", "|---|---|---|"]
+            for c in rows:
+                news = "<br>".join(f"[{s.lead.title.replace('|', '/')}]({s.lead.link}) "
+                                   f"({s.lead.publisher or s.lead.source}, {_when(s.lead)})" for s in c.stories)
+                if c.note:
+                    news += f"<br>_GigaCode: {c.note.replace('|', '/')}_"
+                sig = _sig_text(c)
+                out.append(f"| {c.name} | {'**' + sig + '**' if c.signal[1] == 'red' else sig} | {news} |")
+            out.append("")
+        quiet = _pf_quiet(res.portfolio)
+        if quiet:
+            out += [f"_No news this week: {', '.join(quiet)}._", ""]
     if res.compliance or res.compliance_info:
         out += _compliance_markdown(res)
     for block, stories in _blocks(res):
@@ -1843,7 +2152,10 @@ def to_markdown(res: Result) -> str:
                                                 for c in res.consultations] + [""]
         if res.events:
             out += ["**Upcoming**", ""] + [f"- [{ev.name}]({ev.url}) — {ev.when}"
-                                            + (f", {_place(ev.place)}" if ev.place else "") for ev in res.events] + [""]
+                                            + (f", {_place(ev.place)}" if ev.place else "") for ev in _shown_events(res)]
+            if len(res.events) > res.events_max:
+                out.append(f"- [{_all_events_label(res)}]({_events_file(res)})")
+            out.append("")
         if res.reports:
             out += ["**New reports**", ""] + [f"- [{st.lead.title}]({st.lead.link}) — {st.lead.publisher or st.lead.source}, "
                                                f"{_when(st.lead)}" for st in res.reports] + [""]
@@ -1877,6 +2189,16 @@ def to_console(res: Result, files: dict) -> str:
         out += [f"  • {p.item}" + "".join(f" · {x}" for x in (p.owner, p.due) if x) + f" · {_status(p)}"
                 for p in res.pending]
         out.append("")
+    if res.portfolio:
+        out.append(f"{PF_TITLE.upper()} ({_pf_counts(res.portfolio)})")
+        for c in portfolio_order(res.portfolio):
+            out.append(f"  • {c.name}: {_sig_text(c)}")
+            out += [f"      {s.lead.title[:110]} ({s.lead.publisher or s.lead.source}, {_when(s.lead)})"
+                    for s in c.stories]
+            out += [f"      GigaCode: {c.note}"] if c.note else []
+        quiet = _pf_quiet(res.portfolio)
+        out += [f"  No news: {', '.join(quiet)}"] if quiet else []
+        out.append("")
     info = res.compliance_info
     if info:
         if info.get("error") and not res.compliance:
@@ -1902,7 +2224,9 @@ def to_console(res: Result, files: dict) -> str:
         today = res.end.date()
         out.append("EVENTS & REPORTS")
         out += [f"  Comments due: {c.title[:90]} ({_due(c, today)})" for c in res.consultations]
-        out += [f"  Upcoming: {ev.when} · {ev.name[:90]}" for ev in res.events]
+        out += [f"  Upcoming: {ev.when} · {ev.name[:90]}" for ev in _shown_events(res)]
+        if len(res.events) > res.events_max and files.get("events"):
+            out.append(f"  {_all_events_label(res)}: {Path(files['events']).resolve().as_uri()}")
         out += [f"  Report: {st.lead.title[:100]}" for st in res.reports]
         out.append("")
     if res.routine:
@@ -1963,6 +2287,25 @@ def to_html(res: Result) -> str:
                        for p in res.pending)
         pending = (f'<section class="panel pending"><h2>Pending items <span class="meta">{len(res.pending)}'
                    + (f" · {late} overdue" if late else "") + f'</span></h2><ul>{rows}</ul></section>')
+    pf = ""
+    if res.portfolio:
+        rows = []
+        for c in portfolio_order(res.portfolio):
+            lv = c.signal[1]
+            show = c.stories[:2 if lv in ("red", "amber") else 1]     # the page is one screen; files keep all
+            rest = [x.lead.title for x in c.stories[len(show):]]
+            news = "".join(f'<p class="pfn">{link(s.lead.link, s.lead.title, "", s.lead.title)} <span class="pm">'
+                           f'{e(s.lead.publisher or s.lead.source)} · {e(_when(s.lead))}</span></p>' for s in show)
+            if rest:
+                news += f'<p class="pm" title="{e(" | ".join(rest))}">+{len(rest)} more</p>'
+            rows.append(f'<li class="{lv or "news"}"><span class="it"><b>{e(c.name)}</b> '
+                        f'<span class="sig">{e(_sig_text(c))}</span></span>{news}'
+                        + (f'<p class="pm">GigaCode: {e(c.note)}</p>' if c.note else "") + "</li>")
+        quiet = _pf_quiet(res.portfolio)
+        pf = (f'<section class="panel pending pf"><h2>{e(PF_TITLE)} <span class="meta">'
+              f'{e(_pf_counts(res.portfolio))}</span></h2>'
+              + (f'<ul>{"".join(rows)}</ul>' if rows else "")
+              + (f'<p class="meta">No news this week: {e(", ".join(quiet))}</p>' if quiet else "") + "</section>")
     comp = ""
     info = res.compliance_info
     if info:
@@ -1998,14 +2341,16 @@ def to_html(res: Result) -> str:
         if res.events:
             parts.append("<h3>Upcoming</h3><ul>" + "".join(
                 f'<li>{link(ev.url, ev.name, "", ev.name)} <span class="meta">{e(ev.when)}'
-                + (f" · {e(_place(ev.place))}" if ev.place else "") + "</span></li>" for ev in res.events) + "</ul>")
+                + (f" · {e(_place(ev.place))}" if ev.place else "") + "</span></li>" for ev in _shown_events(res))
+                + "</ul>" + (f'<p class="more">{link(_events_file(res), _all_events_label(res) + " ↗")}</p>'
+                             if len(res.events) > res.events_max else ""))
         if res.reports:
             parts.append("<h3>New reports</h3><ul>" + "".join(
                 f'<li>{link(st.lead.link, st.lead.title, "", st.lead.title)} <span class="meta">'
                 f'{e(st.lead.publisher or st.lead.source)} · {e(_when(st.lead))}</span></li>' for st in res.reports)
                 + "</ul>")
         evr = f'<section class="panel radar evr"><h2>Events &amp; reports</h2>{"".join(parts)}</section>'
-    side = (cro + pending + comp
+    side = (cro + pending + pf + comp
             + (f'<section class="panel radar"><h2>Also on the radar</h2><ul>{radar}</ul></section>' if radar else "")
             + evr
             + (f'<section class="panel"><details><summary>Routine enforcement, not ranked ({len(res.routine)})</summary>'
@@ -2016,8 +2361,8 @@ def to_html(res: Result) -> str:
     return f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1"><title>This Week in Risk</title>
 <style>
-:root{{--bg:#f4f6f9;--card:#fff;--fg:#1b1f24;--muted:#5b6470;--accent:#0b5cad;--tint:#e8f0fa;--line:#e3e6ea;--late:#b3261e}}
-@media (prefers-color-scheme:dark){{:root{{--bg:#0f1215;--card:#181c21;--fg:#e8eaed;--muted:#9aa3ad;--accent:#7fb3f0;--tint:#1f2b3a;--line:#2a2f36;--late:#f2b8b5}}}}
+:root{{--bg:#f4f6f9;--card:#fff;--fg:#1b1f24;--muted:#5b6470;--accent:#0b5cad;--tint:#e8f0fa;--line:#e3e6ea;--late:#b3261e;--amber:#9a5a00;--ok:#1e7b34}}
+@media (prefers-color-scheme:dark){{:root{{--bg:#0f1215;--card:#181c21;--fg:#e8eaed;--muted:#9aa3ad;--accent:#7fb3f0;--tint:#1f2b3a;--line:#2a2f36;--late:#f2b8b5;--amber:#f0c070;--ok:#8fd19e}}}}
 *{{box-sizing:border-box}}
 body{{background:var(--bg);color:var(--fg);font:15px/1.45 system-ui,sans-serif;margin:0;padding:20px 16px}}
 main{{max-width:1880px;margin:auto}} h1{{font-size:1.6rem;margin:0}} .sub{{color:var(--muted);margin:2px 0 14px}}
@@ -2037,8 +2382,11 @@ h2{{font-size:1.05rem;margin:0 0 6px}}
 .pending .pm b{{font-weight:600;color:var(--fg)}} .pending li.late .pm b{{color:var(--late)}}
 .comp .it{{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden}}
 .radar li{{padding:2px 0}}
+.pf .sig{{font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--muted)}}
+.pf li.red .sig{{color:var(--late)}} .pf li.amber .sig{{color:var(--amber)}} .pf li.green .sig{{color:var(--ok)}}
+.pf .pfn{{font-size:.85rem}} .pf .pfn .pm{{white-space:nowrap}}
 .evr h3{{font-size:.78rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:10px 0 2px}}
-.evr li.late .meta{{color:var(--late);font-weight:600}}
+.evr li.late .meta{{color:var(--late);font-weight:600}} .evr .more{{font-size:.85rem;font-weight:600;margin-top:4px}}
 .blocks{{display:grid;gap:14px;grid-template-columns:repeat(3,minmax(0,1fr))}}
 .block h2{{color:var(--accent);border-bottom:2px solid var(--tint);padding-bottom:5px}}
 .block ol{{list-style:none;padding:0;margin:0}} .block li{{display:flex;gap:9px;padding:8px 0;border-top:1px solid var(--line)}}
@@ -2059,6 +2407,7 @@ footer{{color:var(--muted);font-size:.75rem;margin-top:10px}}
   .block{{min-height:0;overflow:hidden;display:flex;flex-direction:column}}
   .block ol{{flex:1;min-height:0;overflow:hidden}}
   .block h3 a,.why,.radar li a{{display:-webkit-box;-webkit-box-orient:vertical;overflow:hidden}}
+  .pf .pfn a{{display:-webkit-box;-webkit-box-orient:vertical;overflow:hidden;-webkit-line-clamp:1}}
   .block h3 a{{-webkit-line-clamp:2}} .why{{-webkit-line-clamp:2}} .radar li a{{-webkit-line-clamp:1}}
   .block .meta{{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}}
   .readp{{display:none}} footer{{margin-top:6px}}
@@ -2165,6 +2514,8 @@ def to_pptx(res: Result, path: Path) -> bool:
 
     if res.compliance or res.compliance_info.get("total"):
         _compliance_slide(prs, blank, header, res, period, navy, grey, red, white)
+    if res.portfolio:
+        _portfolio_slide(prs, blank, header, res, period, navy, grey, red, white)
 
     # Slide 2: the six blocks, three across
     s2 = prs.slides.add_slide(blank)
@@ -2226,7 +2577,7 @@ def _events_slide(prs, layout, header, res: Result, navy, grey, accent) -> None:
     header(slide, "Events & reports", "Open consultations, upcoming events and new reports")
     cols = [("Comments due", [(c.title, c.url, f"{c.source} · {_due(c, today)}") for c in res.consultations]),
             ("Upcoming", [(ev.name, ev.url, ev.when + (f" · {_place(ev.place)}" if ev.place else ""))
-                          for ev in res.events]),
+                          for ev in _shown_events(res)]),
             ("New reports", [(st.lead.title, st.lead.link, f"{st.lead.publisher or st.lead.source} · {_when(st.lead)}")
                              for st in res.reports])]
     w = 3.95
@@ -2254,6 +2605,107 @@ def _events_slide(prs, layout, header, res: Result, navy, grey, accent) -> None:
             m.text = meta
             m.runs[0].font.size, m.runs[0].font.color.rgb = Pt(11), grey
             m.space_after = Pt(8)
+        if title == "Upcoming" and len(res.events) > 7:
+            q = tf.add_paragraph()
+            r = q.add_run()
+            r.text = _all_events_label(res) + " ↗"
+            r.font.size, r.font.color.rgb = Pt(11), accent
+            r.hyperlink.address = _events_file(res)        # the page next to the slides
+
+
+def to_events_html(res: Result) -> str:
+    """Every upcoming event in the window, as a table: kept one click away from the report."""
+    e = html.escape
+    rows = "".join(
+        f'<tr><td class="w">{e(ev.when)}</td><td><a href="{e(ev.url)}" target="_blank" rel="noopener">'
+        f'{e(ev.name)}</a></td><td>{e(_place(ev.place))}</td><td>{e(ev.organiser)}</td>'
+        f'<td class="t">{e(ev.topics)}</td></tr>' for ev in res.events)
+    return f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>Upcoming risk events</title>
+<style>
+:root{{--bg:#f4f6f9;--card:#fff;--fg:#1b1f24;--muted:#5b6470;--accent:#0b5cad;--line:#e3e6ea}}
+@media (prefers-color-scheme:dark){{:root{{--bg:#0f1215;--card:#181c21;--fg:#e8eaed;--muted:#9aa3ad;--accent:#7fb3f0;--line:#2a2f36}}}}
+body{{background:var(--bg);color:var(--fg);font:15px/1.45 system-ui,sans-serif;margin:0;padding:20px 16px}}
+main{{max-width:1200px;margin:auto}} h1{{font-size:1.5rem;margin:0}} .sub{{color:var(--muted);margin:2px 0 14px}}
+a{{color:var(--accent);text-decoration:none}} a:hover{{text-decoration:underline}}
+.wrap{{background:var(--card);border:1px solid var(--line);border-radius:10px;overflow-x:auto}}
+table{{border-collapse:collapse;width:100%}} th,td{{text-align:left;padding:8px 12px;border-top:1px solid var(--line);vertical-align:top}}
+th{{border-top:0;font-size:.8rem;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}}
+.w{{white-space:nowrap}} .t{{color:var(--muted);font-size:.85rem}}
+</style></head><body><main>
+<h1>Upcoming risk events</h1>
+<p class="sub">{len(res.events)} events from {res.end.strftime('%d %b %Y')} to
+{(res.end + timedelta(days=res.events_window)).strftime('%d %b %Y')} · from events.json and CAFRAL ·
+the report shows the nearest {res.events_max}</p>
+<div class="wrap"><table><thead><tr><th>When</th><th>Event</th><th>Place</th><th>Organiser</th><th>Topics</th></tr></thead>
+<tbody>{rows}</tbody></table></div>
+</main></body></html>"""
+
+
+def _portfolio_slide(prs, layout, header, res: Result, period: str, navy, grey, red, white) -> None:
+    """Credit portfolio watch: one row per company with news, worst signal first."""
+    from pptx.dml.color import RGBColor
+    from pptx.util import Inches, Pt
+    amber, green = RGBColor(0x9A, 0x5A, 0x00), RGBColor(0x1E, 0x7B, 0x34)
+    slide = prs.slides.add_slide(layout)
+    header(slide, PF_TITLE, f"{_pf_counts(res.portfolio)} · {period} · keyword flags, check each story")
+    shown = portfolio_order(res.portfolio)[:8]
+    quiet = _pf_quiet(res.portfolio)
+    if shown:
+        notes = any(co.note for co in shown)
+        widths = [2.2, 2.1, 5.6, 2.4] if notes else [2.4, 2.3, 7.6]
+        heads = ("Company", "Signal", "This week", "GigaCode")[:len(widths)]
+        rows = len(shown) + 1
+        row_h = min(0.65, 5.0 / len(shown))
+        tbl = slide.shapes.add_table(rows, len(widths), Inches(0.5), Inches(1.4), Inches(sum(widths)),
+                                     Inches(0.4 + row_h * len(shown))).table
+        for c, cw in enumerate(widths):
+            tbl.columns[c].width = Inches(cw)
+        tbl.rows[0].height = Inches(0.4)
+        for r in range(1, rows):
+            tbl.rows[r].height = Inches(row_h)
+        size = 11 if len(shown) <= 5 else 9.5
+        for c, head in enumerate(heads):
+            cell = tbl.cell(0, c)
+            cell.text = head
+            cell.fill.solid()
+            cell.fill.fore_color.rgb = navy
+            run = cell.text_frame.paragraphs[0].runs[0]
+            run.font.size, run.font.bold, run.font.color.rgb = Pt(size), True, white
+        for r, co in enumerate(shown, 1):
+            lv = co.signal[1]
+            colour = {"red": red, "amber": amber, "green": green}.get(lv, navy)
+            for c in range(len(widths)):
+                cell = tbl.cell(r, c)
+                cell.fill.solid()
+                cell.fill.fore_color.rgb = white if r % 2 else RGBColor(0xF1, 0xF4, 0xF8)
+                tf = cell.text_frame
+                tf.word_wrap = True
+                if c == 2:
+                    for n, st in enumerate(co.stories[:2 if lv in ("red", "amber") else 1]):
+                        q = tf.paragraphs[0] if n == 0 else tf.add_paragraph()
+                        run = q.add_run()
+                        run.text = _clean(st.lead.title, 110 if notes else 140)
+                        run.font.size, run.font.color.rgb = Pt(size), navy
+                        if st.lead.link:
+                            run.hyperlink.address = st.lead.link
+                        m = q.add_run()
+                        m.text = f"  {st.lead.publisher or st.lead.source}, {_when(st.lead)}"
+                        m.font.size, m.font.color.rgb = Pt(size - 1.5), grey
+                    continue
+                text = (co.name, _sig_text(co), "", _clean(co.note, 160))[c]
+                run = tf.paragraphs[0].add_run()
+                run.text = text
+                run.font.size = Pt(size)
+                run.font.bold = c == 0 or (c == 1 and lv in ("red", "amber"))
+                run.font.color.rgb = colour if c == 1 else navy
+    note = slide.shapes.add_textbox(Inches(0.5), Inches(6.85), Inches(12.3), Inches(0.45)).text_frame
+    note.word_wrap = True
+    more = len(portfolio_order(res.portfolio)) - len(shown)
+    note.text = ((f"{more} more company(ies) with news in the HTML page. " if more > 0 else "")
+                 + (f"No news this week: {', '.join(quiet)}" if quiet else "")) or " "
+    for run in note.paragraphs[0].runs:
+        run.font.size, run.font.color.rgb = Pt(10), grey
 
 
 def _compliance_slide(prs, layout, header, res: Result, period: str, navy, grey, red, white) -> None:
@@ -2352,10 +2804,13 @@ def _pending_table(slide, items: list[Pending], x: float, y: float, w: float, na
 def write(res: Result, out_dir: Path | str | None = None) -> dict:
     d = Path(out_dir) if out_dir else DEFAULT_OUT
     d.mkdir(parents=True, exist_ok=True)
-    stem = f"risk-week-{res.end.strftime('%Y-%m-%d')}"
+    stem = _file_stem(res)
     files = {"markdown": d / f"{stem}.md", "html": d / f"{stem}.html"}
     files["markdown"].write_text(to_markdown(res), encoding="utf-8")
     files["html"].write_text(to_html(res), encoding="utf-8")
+    if res.events:
+        files["events"] = d / _events_file(res)
+        files["events"].write_text(to_events_html(res), encoding="utf-8")
     if res.ai_log:
         files["ai_reply"] = d / f"{stem}-ai-reply.json"
         files["ai_reply"].write_text(json.dumps(res.ai_log, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -2506,6 +2961,21 @@ def to_confluence(res: Result) -> str:
         out.append("<h3>Also on the radar</h3><ul>" + "".join(
             f"<li>{a(s.lead.link, s.as_dict()['headline'])} · <em>{e(s.category)}</em></li>" for s in res.radar)
                    + "</ul>")
+    if res.portfolio:
+        rows = []
+        for c in portfolio_order(res.portfolio):
+            lv = c.signal[1]
+            colour = {"red": "Red", "amber": "Yellow", "green": "Green"}.get(lv, "Grey")
+            news = "".join(f"<p>{a(s.lead.link, s.lead.title)} · <em>{e(s.lead.publisher or s.lead.source)}, "
+                           f"{e(_when(s.lead))}</em></p>" for s in c.stories)
+            rows.append(f"<tr><td><strong>{e(c.name)}</strong></td><td>{_status_macro(LEVEL_LABEL[lv], colour)}"
+                        f"{(' ' + e(c.signal[0])) if c.signal[0] else ''}</td><td>{news}</td>"
+                        f"<td>{e(c.note)}</td></tr>")
+        quiet = _pf_quiet(res.portfolio)
+        out.append(f"<h3>{e(PF_TITLE)}</h3><p><em>{e(_pf_counts(res.portfolio))}</em></p>"
+                   + ("<table><tbody><tr><th>Company</th><th>Signal</th><th>This week</th><th>GigaCode</th></tr>"
+                      + "".join(rows) + "</tbody></table>" if rows else "")
+                   + (f"<p><em>No news this week: {e(', '.join(quiet))}</em></p>" if quiet else ""))
     if res.routine:
         out.append(_macro("expand", "<ul>" + "".join(
             f"<li>{a(i.link, i.title)} · <em>{e(i.publisher or i.source)}, {e(_when(i))}</em></li>"
@@ -2520,7 +2990,12 @@ def to_confluence(res: Result) -> str:
         if res.events:
             parts.append("<p><strong>Upcoming</strong></p><ul>" + "".join(
                 f"<li>{a(ev.url, ev.name)} · <em>{e(ev.when)}" + (f", {e(_place(ev.place))}" if ev.place else "")
-                + "</em></li>" for ev in res.events) + "</ul>")
+                + "</em></li>" for ev in _shown_events(res)) + "</ul>")
+            if len(res.events) > res.events_max:
+                parts.append(_macro("expand", "<ul>" + "".join(
+                    f"<li>{a(ev.url, ev.name)} · <em>{e(ev.when)}" + (f", {e(_place(ev.place))}" if ev.place else "")
+                    + (f" · {e(ev.organiser)}" if ev.organiser else "") + "</em></li>" for ev in res.events)
+                    + "</ul>", title=_all_events_label(res)))
         if res.reports:
             parts.append("<p><strong>New reports</strong></p><ul>" + "".join(
                 f"<li>{a(st.lead.link, st.lead.title)} · <em>{e(st.lead.publisher or st.lead.source)}, "
@@ -3096,7 +3571,8 @@ MCP_TOOLS = [
          "batch": {"type": "string", "description": "The batch code risk_week_prepare returned with the "
                                                     "candidates you ranked"},
          "ranking": {"description": "Your ranking as a JSON object (or a JSON string) with keys items, "
-                                    "radar and cro_focus, exactly as described by risk_week_prepare.",
+                                    "radar and cro_focus (and portfolio, when risk_week_prepare lists a "
+                                    "credit portfolio watch), exactly as described by risk_week_prepare.",
                      "type": ["object", "string"]},
          "publish": {"type": "boolean", "description": "Publish to Confluence (default true)"}}}},
     {"name": "risk_week_run",
@@ -3150,6 +3626,10 @@ _EXAMPLE_REPLY = {
     "radar": [3, 41],
     "cro_focus": {"id": 12, "message": "The action point for the CRO, at most 35 words."},
 }
+
+
+_EXAMPLE_PORTFOLIO = [{"company": "Example Steel Ltd", "signal": "amber",
+                       "note": "Q2 loss on weak prices; ask the RM for the latest stock statement and covenant test."}]
 
 
 class McpServer:
@@ -3251,7 +3731,9 @@ class McpServer:
                 "numbers.\n\n## Instructions\n" + _system(prof.bank, prof.guidance)
                 + "\n\n" + ranking_prompt(self.pool, self.top, prof.bank, list(prof.topics))
                 + "\n\n## Answer format for `ranking` (JSON; ids are the numbers in brackets)\n"
-                + json.dumps(_EXAMPLE_REPLY, ensure_ascii=False, indent=1))
+                + json.dumps(_EXAMPLE_REPLY, ensure_ascii=False, indent=1)
+                + (("\n\n" + portfolio_prompt(self.week.portfolio) + "\nExample: \"portfolio\": "
+                    + json.dumps(_EXAMPLE_PORTFOLIO, ensure_ascii=False)) if portfolio_order(self.week.portfolio) else ""))
 
     def _state_file(self) -> Path:
         return Path(self.out_dir or DEFAULT_OUT) / ".risk-week-mcp-batch.pickle"
@@ -3302,6 +3784,7 @@ class McpServer:
                     f"the ids in brackets from risk_week_prepare.", True)
         picked.status = f"AI · GigaCode via MCP ({len(self.pool)} candidates)"
         week, n = self.week, len(self.pool)
+        apply_portfolio_notes(week.portfolio, args.get("ranking"))
         self.week, self.pool, self.batch = None, [], None    # one report per prepare
         try:
             self._state_file().unlink()
@@ -3354,6 +3837,7 @@ class McpServer:
         lines = [f"Report written: {_title(res)}", f"Ranked by: {res.ai}",
                  f"Items shown: {shown} in {len(BLOCKS)} blocks; story of the week: {story}",
                  f"Pending items: {len(res.pending)}; RBI compliance (ISE) open items: {len(res.compliance)}",
+                 f"{PF_TITLE}: {_pf_counts(res.portfolio) if res.portfolio else 'off (no top 20.txt)'}",
                  "Files:"] + [f"  {k}: {v}" for k, v in files.items() if k != "ai_reply"] + [published]
         return "\n".join(lines)
 
@@ -3397,6 +3881,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--pending-file", default=str(Path(__file__).resolve().parent / "pending_items.txt"),
                    help="pending items for the status meeting, 'Item | Owner | Due | Status' per line "
                         "(default pending_items.txt next to this script)")
+    p.add_argument("--portfolio-file", default=None,
+                   help=f"companies to watch, one per line (default '{PORTFOLIO_FILE}' next to this script, "
+                        f"as set in sources.json)")
+    p.add_argument("--no-portfolio", action="store_true", help="skip the credit portfolio watch")
     p.add_argument("--confluence-config", default=None,
                    help=f"Confluence settings file (default '{CONFLUENCE_FILE}' next to this script or in "
                         f"the current folder); the report is published when it has a PAT")
@@ -3443,7 +3931,12 @@ def main(argv: list[str] | None = None) -> int:
             print(f"[risk-week] RBI compliance page not read: {comp_info['error']}", file=sys.stderr)
     print("Reading sources:", file=sys.stderr)
     notes = load_cro_notes(Path(a.cro_file)) + a.cro
-    res = run(days=a.days, top=a.top, provider=provider, sources=load_sources(a.sources),
+    sources = load_sources(a.sources)
+    if a.no_portfolio:
+        sources.pop("portfolio", None)
+    elif a.portfolio_file:
+        sources["portfolio"] = dict(sources.get("portfolio") or {}, file=str(Path(a.portfolio_file).resolve()))
+    res = run(days=a.days, top=a.top, provider=provider, sources=sources,
               log=lambda m: print(m, file=sys.stderr), cro_notes=notes,
               pending=pending)
     res.compliance, res.compliance_info = compliance, comp_info

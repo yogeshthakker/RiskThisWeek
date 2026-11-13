@@ -1,75 +1,381 @@
 {
-  "_comment": "Hand-kept events for 'Events & reports'. Add only events whose dates are confirmed on an official page. Dates as YYYY-MM-DD; 'end' optional. Shown when they start within sources.json events.window_days. 'watch' lists events whose next dates are not announced yet (not shown). CAFRAL programmes are read automatically and need no entry here.",
-  "events": [
-    {
-      "name": "DSCI Annual Information Security Summit (AISS) 2026",
-      "organiser": "DSCI",
-      "start": "2026-12-09",
-      "end": "2026-12-11",
-      "place": "",
-      "url": "https://www.dsci.in/event/aiss-2026",
-      "topics": "cyber"
-    },
-    {
-      "name": "IIBF: International Trade Finance",
-      "organiser": "IIBF",
-      "start": "2026-11-17",
-      "end": "2026-11-18",
-      "place": "Lucknow",
-      "url": "https://www.iibf.org.in/",
-      "topics": "trade finance"
-    },
-    {
-      "name": "IIBF: DPDP Act workshop",
-      "organiser": "IIBF",
-      "start": "2026-11-21",
-      "end": "",
-      "place": "",
-      "url": "https://www.iibf.org.in/",
-      "topics": "data protection"
-    },
-    {
-      "name": "IIBF: MSME Financing & Restructuring (virtual)",
-      "organiser": "IIBF",
-      "start": "2026-12-03",
-      "end": "2026-12-05",
-      "place": "Virtual",
-      "url": "https://www.iibf.org.in/",
-      "topics": "MSME"
-    },
-    {
-      "name": "IIBF: Fraud Risk Management, KYC & AML-CFT",
-      "organiser": "IIBF",
-      "start": "2026-12-16",
-      "end": "2026-12-18",
-      "place": "",
-      "url": "https://www.iibf.org.in/",
-      "topics": "fraud, AML"
-    },
-    {
-      "name": "IIBF: MSME Financing – Appraisal, Monitoring & Recovery",
-      "organiser": "IIBF",
-      "start": "2027-01-05",
-      "end": "2027-01-07",
-      "place": "Kolkata",
-      "url": "https://www.iibf.org.in/",
-      "topics": "MSME"
-    },
-    {
-      "name": "GARP Financial Risk Symposium 2027",
-      "organiser": "GARP",
-      "start": "2027-03-03",
-      "end": "2027-03-04",
-      "place": "",
-      "url": "https://www.garp.org/events",
-      "topics": "risk"
-    }
-  ],
-  "watch": [
-    {
-      "name": "NIBM–CAB–RBI International Conference (21–22 Jan per the call for papers; papers by 30 Nov 2026)",
-      "organiser": "NIBM / CAB / RBI",
-      "url": "https://www.nibmindia.org/documents/617/NIBM-CAB-RBI-Con-Jan_21-22_V2.pdf"
-    }
-  ]
+ "_comment": "Hand-kept events for 'Events & reports'. Add only events whose dates are confirmed on an official page. Dates as YYYY-MM-DD; 'end' optional. Shown when they start within sources.json events.window_days. 'watch' lists events whose next dates are not announced yet (not shown). CAFRAL programmes are read automatically and need no entry here.",
+ "events": [
+  {
+   "name": "RiskMinds International 2026",
+   "organiser": "Informa Connect",
+   "start": "2026-11-16",
+   "end": "2026-11-19",
+   "place": "London",
+   "url": "https://informaconnect.com/riskminds-international/",
+   "topics": "enterprise risk/credit/market/regulation"
+  },
+  {
+   "name": "IIBF: International Trade Finance",
+   "organiser": "IIBF",
+   "start": "2026-11-17",
+   "end": "2026-11-18",
+   "place": "Lucknow",
+   "url": "https://www.iibf.org.in/",
+   "topics": "trade finance"
+  },
+  {
+   "name": "IACPM 2026 Annual Fall Conference",
+   "organiser": "IACPM",
+   "start": "2026-11-18",
+   "end": "2026-11-20",
+   "place": "Washington DC",
+   "url": "https://iacpm.org/event/iacpm-2026-annual-fall-conference/",
+   "topics": "credit portfolio"
+  },
+  {
+   "name": "IIBF: DPDP Act workshop",
+   "organiser": "IIBF",
+   "start": "2026-11-21",
+   "end": "",
+   "place": "",
+   "url": "https://www.iibf.org.in/",
+   "topics": "data protection"
+  },
+  {
+   "name": "NIBM: Workshop on Validation Techniques for Risk Models",
+   "organiser": "NIBM",
+   "start": "2026-11-24",
+   "end": "2026-11-27",
+   "place": "Pune",
+   "url": "https://erp.nibmindia.org/web/programmecalendar",
+   "topics": "model risk/credit"
+  },
+  {
+   "name": "NIBM: Effective Resolution of Stressed Assets",
+   "organiser": "NIBM",
+   "start": "2026-12-02",
+   "end": "2026-12-04",
+   "place": "Pune",
+   "url": "https://erp.nibmindia.org/web/programmecalendar",
+   "topics": "credit/stressed assets"
+  },
+  {
+   "name": "IIBF: MSME Financing & Restructuring for Banks, NBFCs & FIs",
+   "organiser": "IIBF",
+   "start": "2026-12-03",
+   "end": "2026-12-05",
+   "place": "Online",
+   "url": "https://www.iibf.org.in/training",
+   "topics": "MSME/credit/restructuring"
+  },
+  {
+   "name": "IIBF: Building Resilient Banking - Credit, Operational and Climate Risk Management",
+   "organiser": "IIBF (PDC Lucknow)",
+   "start": "2026-12-03",
+   "end": "2026-12-05",
+   "place": "Online",
+   "url": "https://www.iibf.org.in/training",
+   "topics": "credit/operational/climate"
+  },
+  {
+   "name": "DSCI Annual Information Security Summit (AISS) 2026",
+   "organiser": "DSCI",
+   "start": "2026-12-09",
+   "end": "2026-12-11",
+   "place": "",
+   "url": "https://www.dsci.in/event/aiss-2026",
+   "topics": "cyber"
+  },
+  {
+   "name": "NIBM: Compliance for Banks",
+   "organiser": "NIBM",
+   "start": "2026-12-14",
+   "end": "2026-12-16",
+   "place": "Pune",
+   "url": "https://erp.nibmindia.org/web/programmecalendar",
+   "topics": "compliance"
+  },
+  {
+   "name": "IIBF: Cyber Risk Management & IT Security for Banks & FIs",
+   "organiser": "IIBF",
+   "start": "2026-12-15",
+   "end": "2026-12-16",
+   "place": "Online",
+   "url": "https://www.iibf.org.in/training",
+   "topics": "cyber"
+  },
+  {
+   "name": "NIBM: Lending to Services Sector in MSME",
+   "organiser": "NIBM",
+   "start": "2026-12-15",
+   "end": "2026-12-17",
+   "place": "Pune",
+   "url": "https://erp.nibmindia.org/web/programmecalendar",
+   "topics": "MSME/credit"
+  },
+  {
+   "name": "IIBF: Fraud Risk Management, KYC & AML-CFT Compliance",
+   "organiser": "IIBF (PDC Delhi)",
+   "start": "2026-12-16",
+   "end": "2026-12-18",
+   "place": "Online",
+   "url": "https://www.iibf.org.in/training",
+   "topics": "fraud/AML/compliance"
+  },
+  {
+   "name": "IIBF: MSME Financing – Appraisal, Monitoring & Recovery",
+   "organiser": "IIBF",
+   "start": "2027-01-05",
+   "end": "2027-01-07",
+   "place": "Kolkata",
+   "url": "https://www.iibf.org.in/",
+   "topics": "MSME"
+  },
+  {
+   "name": "NIBM: Operational Risk Management",
+   "organiser": "NIBM",
+   "start": "2027-01-06",
+   "end": "2027-01-08",
+   "place": "Pune",
+   "url": "https://erp.nibmindia.org/web/programmecalendar",
+   "topics": "operational"
+  },
+  {
+   "name": "NIBM: Certification on AML, KYC, Frauds and Trade-Based Money Laundering",
+   "organiser": "NIBM",
+   "start": "2027-01-07",
+   "end": "2027-01-09",
+   "place": "Pune",
+   "url": "https://erp.nibmindia.org/web/programmecalendar",
+   "topics": "fraud/AML/compliance"
+  },
+  {
+   "name": "NIBM: Integrated Risk Management",
+   "organiser": "NIBM",
+   "start": "2027-01-11",
+   "end": "2027-01-15",
+   "place": "Pune",
+   "url": "https://erp.nibmindia.org/web/programmecalendar",
+   "topics": "enterprise risk"
+  },
+  {
+   "name": "NIBM: Credit Monitoring and Early Warning Signals",
+   "organiser": "NIBM",
+   "start": "2027-01-18",
+   "end": "2027-01-20",
+   "place": "Pune",
+   "url": "https://erp.nibmindia.org/web/programmecalendar",
+   "topics": "credit"
+  },
+  {
+   "name": "IOD National Convention on Boards - Bengaluru",
+   "organiser": "Institute of Directors",
+   "start": "2027-01-23",
+   "place": "Bengaluru (The LaLiT Ashok)",
+   "url": "https://www.iodglobal.com/upcoming-events/details/bengaluru-national-convention-on-boards-2027",
+   "topics": "governance/board"
+  },
+  {
+   "name": "AIMA Middle East Forum 2027",
+   "organiser": "AIMA",
+   "start": "2027-02-04",
+   "place": "Dubai",
+   "url": "https://www.aima.org/events/aima-middle-east-forum-2027.html",
+   "topics": "private credit/markets"
+  },
+  {
+   "name": "IIBF: Resolution of Stressed Assets through IBC",
+   "organiser": "IIBF (PDC Delhi)",
+   "start": "2027-02-10",
+   "end": "2027-02-12",
+   "place": "Online",
+   "url": "https://www.iibf.org.in/training",
+   "topics": "credit/stressed assets"
+  },
+  {
+   "name": "NIBM: Managing Risks under Basel 3 Pillar 2 (ICAAP)",
+   "organiser": "NIBM",
+   "start": "2027-02-22",
+   "end": "2027-02-26",
+   "place": "Pune",
+   "url": "https://erp.nibmindia.org/web/programmecalendar",
+   "topics": "capital/ICAAP"
+  },
+  {
+   "name": "3rd Annual Third Party Risk Financial Services Conference",
+   "organiser": "Global Insight Conferences",
+   "start": "2027-02-24",
+   "place": "London",
+   "url": "https://thirdpartyconference.com",
+   "topics": "third-party/operational"
+  },
+  {
+   "name": "GARP Financial Risk Symposium 2027",
+   "organiser": "GARP",
+   "start": "2027-03-03",
+   "end": "2027-03-04",
+   "place": "New York",
+   "url": "https://www.garp.org/event/2027-financial-risk-symposium",
+   "topics": "enterprise risk/AI/geopolitical"
+  },
+  {
+   "name": "NIBM: Restructuring & Resolution of Stressed Corporate Assets",
+   "organiser": "NIBM",
+   "start": "2027-03-03",
+   "end": "2027-03-05",
+   "place": "Pune",
+   "url": "https://erp.nibmindia.org/web/programmecalendar",
+   "topics": "credit/restructuring"
+  },
+  {
+   "name": "NIBM: Trade and Forex Compliance - KYC, AML and TBML",
+   "organiser": "NIBM",
+   "start": "2027-03-05",
+   "end": "2027-03-06",
+   "place": "Pune",
+   "url": "https://erp.nibmindia.org/web/programmecalendar",
+   "topics": "compliance/AML/sanctions"
+  },
+  {
+   "name": "IACPM 2027 Annual Spring Conference",
+   "organiser": "IACPM",
+   "start": "2027-04-13",
+   "end": "2027-04-15",
+   "place": "Dublin",
+   "url": "https://iacpm.org/event/iacpm-2027-annual-spring-conference/",
+   "topics": "credit portfolio"
+  },
+  {
+   "name": "Operational & Organisational Resilience FS Conference Europe",
+   "organiser": "Global Insight Conferences",
+   "start": "2027-05-06",
+   "place": "Amsterdam",
+   "url": "https://opresilienceconference.com/europe",
+   "topics": "operational resilience"
+  },
+  {
+   "name": "Risk Live Dubai",
+   "organiser": "Risk.net",
+   "start": "2027-05-27",
+   "place": "Dubai",
+   "url": "https://dubai.risklive.net/",
+   "topics": "market/credit/ALM/operational"
+  },
+  {
+   "name": "Risk Live Europe",
+   "organiser": "Risk.net",
+   "start": "2027-06-22",
+   "end": "2027-06-24",
+   "place": "London",
+   "url": "https://europe.risklive.net/",
+   "topics": "enterprise risk"
+  },
+  {
+   "name": "Operational Resilience & Third Party Risk Cross-Sector Conference",
+   "organiser": "Global Insight Conferences",
+   "start": "2027-06-23",
+   "place": "London",
+   "url": "https://opresilienceconference.com/crosssector",
+   "topics": "operational/third-party"
+  },
+  {
+   "name": "Operational & Organisational Resilience Financial Services",
+   "organiser": "Global Insight Conferences",
+   "start": "2027-09-15",
+   "place": "London",
+   "url": "https://opresilienceconference.com/home",
+   "topics": "operational resilience"
+  },
+  {
+   "name": "Risk Live Asia 2027",
+   "organiser": "Risk.net",
+   "start": "2027-10-13",
+   "place": "Singapore",
+   "url": "https://asia.risklive.net/",
+   "topics": "enterprise risk"
+  }
+ ],
+ "watch": [
+  {
+   "name": "NIBM–CAB–RBI International Conference (21–22 Jan per the call for papers; papers by 30 Nov 2026)",
+   "organiser": "NIBM / CAB / RBI",
+   "url": "https://www.nibmindia.org/documents/617/NIBM-CAB-RBI-Con-Jan_21-22_V2.pdf"
+  },
+  {
+   "name": "TISA Financial Crime Conference 2027 (last held May 2026; no 2027 date)",
+   "organiser": "TISA",
+   "url": "https://www.tisa.uk.com/events/"
+  },
+  {
+   "name": "CAFRAL Conference of Chief Risk Officers (last held 21-22 Jul 2026, Mumbai)",
+   "organiser": "CAFRAL",
+   "url": "https://cafral.org.in/events"
+  },
+  {
+   "name": "CAFRAL Credit Risk & Stressed Assets programme 2027 (not listed yet)",
+   "organiser": "CAFRAL",
+   "url": "https://cafral.org.in/events"
+  },
+  {
+   "name": "CAFRAL Business Strategy & Strategic Risk 2027 (not found)",
+   "organiser": "CAFRAL",
+   "url": "https://cafral.org.in/events"
+  },
+  {
+   "name": "CAFRAL Data Protection & Data Privacy (last held 11 Sep 2026, virtual)",
+   "organiser": "CAFRAL",
+   "url": "https://cafral.org.in/events/virtual-program-data-protection-data-privacy-road-ahead"
+  },
+  {
+   "name": "FIBAC 2027 (2026 edition was 11-12 Aug, Trident Mumbai)",
+   "organiser": "FICCI & IBA (BCG knowledge partner)",
+   "url": "https://www.bcg.com/india/fibac"
+  },
+  {
+   "name": "Elets BFSI Gamechanger Summit 2027 (8th edition announced, no dates)",
+   "organiser": "Elets Technomedia",
+   "url": "https://events.eletsonline.com/gamechanger/"
+  },
+  {
+   "name": "ASSOCHAM India International Fintech Festival 2027 (3rd edition was Aug 2026)",
+   "organiser": "ASSOCHAM",
+   "url": "https://fintech.assocham.org/"
+  },
+  {
+   "name": "IACPM & NUS RMI Credit Portfolio Management Workshop 2027 (2026 edition was 6 Aug, Singapore)",
+   "organiser": "IACPM / NUS RMI",
+   "url": "https://rmi.nus.edu.sg/"
+  },
+  {
+   "name": "AI in Capital Markets Summit London 2027 (June 2027, day TBA; unverified)",
+   "organiser": "A-Team Group",
+   "url": "https://a-teaminsight.com/events/ai-in-capital-markets-summit-london/"
+  },
+  {
+   "name": "Russia Risk Conference 2027 (22nd edition was 15-16 Oct 2026, Moscow; check sanctions before attending)",
+   "organiser": "PRMIA Russia / Conglomerat",
+   "url": "https://www.interfax.ru/events/5487"
+  },
+  {
+   "name": "RiskMinds International 2027",
+   "organiser": "Informa Connect",
+   "url": "https://informaconnect.com/riskminds-international/"
+  },
+  {
+   "name": "Bharat Fintech Summit 2027",
+   "organiser": "The Digital Fifth",
+   "url": "https://bharatfintechsummit.com"
+  },
+  {
+   "name": "GARP Mumbai chapter meetings",
+   "organiser": "GARP",
+   "url": "https://www.garp.org/membership/chapter/mumbai"
+  },
+  {
+   "name": "ICMAI BFSI Board ECL / loan-restructuring workshops (none listed)",
+   "organiser": "ICMAI",
+   "url": "https://www.icmai.in/BFSI/BFSIIndex"
+  },
+  {
+   "name": "IIMBx: Special Topics in Risk Management of Banking and Financial Markets (online, self-paced; no run date)",
+   "organiser": "IIM Bangalore",
+   "url": "https://iimbx.iimb.ac.in/catalogue/special-topics-in-risk-management-of-banking-and-financial-markets/"
+  }
+ ]
 }
