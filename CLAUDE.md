@@ -10,7 +10,7 @@ web page for the weekly status meeting ("This week in risk"). The user runs it o
 ```bash
 pip install -r requirements.txt
 python risk_week.py --ai --open        # Gemini free tier; --open opens the web page
-python -m unittest test_risk_week      # 88 tests, no network or key needed
+python -m unittest test_risk_week      # 89 tests, no network or key needed
 ```
 
 Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
@@ -169,7 +169,9 @@ Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
    title matches `profile.exclude` (sources.json; not when `KEEP_ANYWAY` (FEMA, sanctions,
    PMLA, FATF, OFAC) or a priority topic also matches), removes `_foreign_detention()` stories
    (`DETENTION` and `FOREIGN` in the title, not an Indian court), replaces only removed picks
-   from the keyword ranking of the same block, and re-picks the story of the week when it is
+   from the keyword ranking of the same block, drops picks the AI rated `MAX_DROPPED_IMPACT` (4)
+   or lower without replacing them (user, 13 Nov 2026, after Gemini's fallback showed "Metro Bank
+   UK put up for sale" at 4/10), and re-picks the story of the week when it is
    gone or a detention / court story (highest impact, India preferred; action point dropped).
    Changes go to `Result.ai` ("safety net: N change(s)") and `ai_log`. On 13 Nov 2026 live
    news the list matched 13 of 159 stories (all correct after the FEMA exemption).

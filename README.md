@@ -124,6 +124,8 @@ on your computer, whatever the model chose:
   loans, quarterly results, share prices, retail product and festive offers) is removed, unless
   the headline is also about FEMA, sanctions, money laundering or a priority topic;
 - a **detention, arrest or court case abroad** is removed from the blocks;
+- a pick the AI itself rated **4/10 or lower** is removed and *not* replaced, so a block can
+  show fewer than three stories rather than a weak one;
 - the **story of the week** is never a detention, arrest or court story (Indian courts such as
   the Supreme Court are fine), and prefers India; when it changes, the AI's action point
   (written for the old story) is dropped.
