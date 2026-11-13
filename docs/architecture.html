@@ -1,0 +1,87 @@
+<!doctype html><html><head><meta charset="utf-8"><style>
+body{margin:0;background:#fff;font:15px/1.35 Arial,Helvetica,sans-serif;color:#1b1f24}
+#c{position:relative;width:1740px;padding:28px 32px 30px;box-sizing:border-box}
+h1{font-size:26px;margin:0 0 4px;color:#14213d} .sub{color:#5b6470;margin:0 0 22px;font-size:15px}
+.grid{display:grid;grid-template-columns:330px 330px 330px 330px;column-gap:116px;position:relative;z-index:1}
+.col{display:flex;flex-direction:column;gap:18px} .col:last-child{gap:34px} .col:last-child .colh{margin-bottom:-22px}
+.colh{font-size:13px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#5b6470;margin-bottom:-6px}
+.box{border:2px solid #9aa8bf;background:#f3f6fb;border-radius:10px;padding:10px 14px}
+.box b{display:block;font-size:16px;margin-bottom:3px;color:#14213d}
+.box small{display:block;color:#3c4652;font-size:13.5px}
+.priv{background:#fff4d6;border-color:#c99a2e}
+.ext{background:#fde8e8;border-color:#c0504a}
+.inh{background:#e3ecfa;border-color:#0b5cad}
+.out{background:#e4f5e8;border-color:#2f8a47}
+.tool{background:#eef0fb;border-color:#6c74c9}
+.op{border-radius:40px;text-align:center;background:#ece9ff;border-color:#6c5ce7;width:300px}
+.oprow{display:flex;justify-content:center;padding-left:200px;margin-bottom:44px;position:relative;z-index:1}
+.legend{display:flex;gap:22px;margin-top:26px;font-size:13.5px;color:#3c4652;position:relative;z-index:1}
+.legend span{display:inline-flex;align-items:center;gap:7px} .legend i{width:16px;height:12px;border-radius:3px;border:2px solid}
+svg{position:absolute;inset:0;width:100%;height:100%;z-index:2;overflow:visible;pointer-events:none}
+.lbl{font-size:12.5px;fill:#3c4652;paint-order:stroke;stroke:#fff;stroke-width:5px}
+</style></head><body><div id="c">
+<h1>This Week in Risk · how it works</h1>
+<p class="sub">risk_week.py runs on your computer. Only public news goes to Gemini; private files, ISE items and portfolio names stay local or go to in-house GigaCode.</p>
+<div class="oprow"><div class="box op" id="op"><b>Bank operator</b><small>runs the CLI, or asks GigaCode in chat</small></div></div>
+<div class="grid">
+ <div class="col">
+  <div class="colh">Inputs</div>
+  <div class="box" id="cfg"><b>Settings (in the repo)</b><small>sources.json: feeds, searches, bank profile, pass-over list<br>events.json: conferences and programmes</small></div>
+  <div class="box ext" id="pub"><b>Public sources</b><small>RBI · SEBI · CCIL · FSB · OFSI · Risk.net · press<br>Google News searches · BIS / McKinsey reports<br>RBI draft directions · CAFRAL events</small></div>
+  <div class="box priv" id="priv"><b>Private files (your computer)</b><small>pending_items.txt · cro_desk.txt<br>top 20.txt (borrowers) · Confluence PAT.txt</small></div>
+  <div class="box priv" id="ise"><b>Confluence: ISE page</b><small>RBI compliance observations · read only</small></div>
+ </div>
+ <div class="col">
+  <div class="colh">risk_week.py</div>
+  <div class="box tool" id="entry"><b>Entry</b><small>CLI: python risk_week.py [--ai]<br>MCP server: --mcp (prepare · publish · run · check)</small></div>
+  <div class="box tool" id="pipe"><b>News pipeline</b><small>collect 7 days → filter noise → set aside routine fines → group the same story (local, before any AI)</small></div>
+  <div class="box tool" id="side"><b>Side sections</b><small>Events &amp; reports (comments due · upcoming · new reports)<br>Credit portfolio watch (early-warning flags)<br>ISE compliance (Risk dept, RMP and overdue first)<br>Pending items · CRO notes</small></div>
+ </div>
+ <div class="col">
+  <div class="colh">Ranking · one per run</div>
+  <div class="box inh" id="giga"><b>GigaCode (in-house)</b><small>MCP client: prepare → rank → publish<br>also judges portfolio names</small></div>
+  <div class="box ext" id="gem"><b>Gemini API</b><small>--ai or risk_week_run · public news only</small></div>
+  <div class="box tool" id="kw"><b>Keyword ranking</b><small>no AI, or when the AI fails</small></div>
+ </div>
+ <div class="col">
+  <div class="colh">Checks and outputs</div>
+  <div class="box tool" id="net"><b>Safety net (risk_week.py)</b><small>pass-over list · India test · foreign detentions out · drop impact ≤ 4</small></div>
+  <div class="box tool" id="rep"><b>Report</b><small>6 risk blocks × 3 · story of the week + action point · radar · side sections</small></div>
+  <div class="box out" id="files"><b>output/</b><small>risk-week-&lt;date&gt;.pptx · .html · .md<br>-events.html (all events) · -ai-reply.json</small></div>
+  <div class="box out" id="newsp"><b>Confluence: news page</b><small>"This week in Risk" · one dated entry per run</small></div>
+ </div>
+</div>
+<div class="legend"><span><i style="background:#fff4d6;border-color:#c99a2e"></i>private, never sent to Gemini</span><span><i style="background:#fde8e8;border-color:#c0504a"></i>external</span><span><i style="background:#e3ecfa;border-color:#0b5cad"></i>in-house AI</span><span><i style="background:#eef0fb;border-color:#6c74c9"></i>risk_week.py</span><span><i style="background:#e4f5e8;border-color:#2f8a47"></i>outputs</span><span>- - - dashed: GigaCode drives the tool via MCP</span></div>
+<svg id="s"><defs><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0L10,5L0,10z" fill="#4a5568"/></marker></defs></svg>
+</div>
+<script>
+const c=document.getElementById('c').getBoundingClientRect(), s=document.getElementById('s');
+const R=id=>{const r=document.getElementById(id).getBoundingClientRect();return{l:r.left-c.left,r:r.right-c.left,t:r.top-c.top,b:r.bottom-c.top,cx:(r.left+r.right)/2-c.left,cy:(r.top+r.bottom)/2-c.top}};
+function arrow(a,b,label,opt={}){const A=R(a),B=R(b);let x1,y1,x2,y2,d;
+ const fy=opt.fy??.5, ty=opt.ty??.5;
+ if(opt.down){x1=A.cx+(opt.dx||0);y1=A.b;x2=B.cx+(opt.dx2||opt.dx||0);y2=B.t;d=`M${x1},${y1} C${x1},${(y1+y2)/2} ${x2},${(y1+y2)/2} ${x2},${y2}`}
+ else if(opt.back){x1=A.l;y1=A.t+(A.b-A.t)*fy;x2=B.r;y2=B.t+(B.b-B.t)*ty;d=`M${x1},${y1} C${x1-40},${y1} ${x2+40},${y2} ${x2},${y2}`}
+ else if(opt.low){x1=A.r;y1=A.t+(A.b-A.t)*fy;x2=B.l;y2=B.t+(B.b-B.t)*ty;d=`M${x1},${y1} C${x2-30},${y1} ${x2-70},${y2} ${x2},${y2}`}
+ else{x1=A.r;y1=A.t+(A.b-A.t)*fy;x2=B.l;y2=B.t+(B.b-B.t)*ty;const m=(x2-x1)/2;d=`M${x1},${y1} C${x1+m},${y1} ${x2-m},${y2} ${x2},${y2}`}
+ const p=document.createElementNS('http://www.w3.org/2000/svg','path');p.setAttribute('d',d);p.setAttribute('fill','none');p.setAttribute('stroke','#4a5568');p.setAttribute('stroke-width','1.8');if(opt.dash)p.setAttribute('stroke-dasharray','6 5');p.setAttribute('marker-end','url(#a)');s.appendChild(p);
+ if(label){const L=p.getPointAtLength(p.getTotalLength()*(opt.at??.5));const t=document.createElementNS('http://www.w3.org/2000/svg','text');t.setAttribute('x',L.x+(opt.lx||0));t.setAttribute('y',L.y-5+(opt.ly||0));t.setAttribute('text-anchor','middle');t.setAttribute('class','lbl');t.textContent=label;s.appendChild(t)}}
+arrow('op','entry','runs the CLI',{down:true,dx:-60,dx2:0,lx:-52});
+arrow('op','giga','asks in chat',{down:true,dx:60,dx2:0,lx:52});
+arrow('giga','entry','calls MCP tools',{back:true,dash:true,fy:.62,ty:.62,at:.5,ly:-3});
+arrow('cfg','pipe','',{fy:.5,ty:.3});
+arrow('pub','pipe','news',{fy:.3,ty:.7,at:.55});
+arrow('pub','side','events, reports',{fy:.75,ty:.15,at:.45,ly:-2});
+arrow('priv','side','',{fy:.5,ty:.5});
+arrow('ise','side','read',{fy:.5,ty:.85,at:.45});
+arrow('entry','pipe','',{down:true});
+arrow('pipe','giga','candidates',{fy:.2,ty:.9,at:.62,lx:-6,ly:14});
+arrow('pipe','gem','candidates',{fy:.5,ty:.55,at:.5,ly:-2});
+arrow('pipe','kw','',{fy:.8,ty:.5});
+arrow('giga','net','ranking + notes',{fy:.5,ty:.5,at:.5,ly:20});
+arrow('gem','net','ranking',{fy:.5,ty:.75,at:.5});
+arrow('kw','rep','',{fy:.5,ty:.6});
+arrow('net','rep','',{down:true});
+arrow('side','rep','side sections',{low:true,fy:.85,ty:.85,at:.35});
+arrow('rep','files','write',{down:true,lx:28,ly:14});
+arrow('files','newsp','publish',{down:true,lx:34,ly:14});
+</script></body></html>

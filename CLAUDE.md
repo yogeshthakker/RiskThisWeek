@@ -26,6 +26,7 @@ Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
 | `pending_items.txt` | Pending items for the status meeting, `Item \| Owner \| Due \| Status` per line. Every run shows them and asks for updates first (`review_pending`: number = edit, `a` add, `d N` done, `x N` delete, Enter = carry on; saved with `save_pending`, header comments kept); skipped with `--no-prompt` or when stdin is not a terminal. Git-ignored; `pending_items.example.txt` shows the format |
 | `events.json` | Upcoming conferences and programmes (`events`, dated) and ones to watch (`watch`, no date yet). Public, committed; the user edits it |
 | `top 20.txt` | The bank's borrowers for the credit portfolio watch, `Name \| alias` per line. **Git-ignored** (`top*.txt`); `top20.example.txt` shows the format |
+| `docs/architecture.png` / `.html` / `.mmd` | Architecture diagram (13 Nov 2026): the PNG is drawn from the HTML (Playwright screenshot of `#c` at 1740 px wide, scale 2); the Mermaid copy is in the README. Update them when the flow changes |
 | `test_risk_week.py` | unittest tests using sample feeds and fake AI replies |
 | `test_headlines.json` | One week's real headlines (6 Nov 2026), used to test the same-story grouping |
 | `.env` | `GEMINI_API_KEY=...` on the user's machine. Git-ignored |
@@ -189,7 +190,7 @@ Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
    shows the nearest `events.max` (10) of the 60-day window (user, 13 Nov 2026: "show top 10,
    keep the 22 handy on a clickable link"): `write()` adds `<stem>-events.html`
    (`to_events_html`, all events), linked from the page panel, the slide and Markdown; the
-   console prints its file link; Confluence gets an expand with all of them. events.json was filled from a research agent's validation of
+   console prints its file link; Confluence gets an expand with all of them (a table: When, Event, Place, Organiser, Topics). In Confluence the section is a table grouped in blocks, like the news (user, 13 Nov 2026): Comments due | Upcoming | New reports, each entry a bold link with its meta in italics; comments due carry a status badge ("13 days left", red at 7 or fewer). events.json was filled from a research agent's validation of
    the user's list (13 Nov 2026): 33 dated events (NIBM, IIBF, IACPM, Risk Live, GARP, IOD,
    AIMA, Global Insight), 17 under `watch` (no 2027 date yet, or unverified). Any
    failure goes to the errors list, never fatal. Nothing here goes to the AI.

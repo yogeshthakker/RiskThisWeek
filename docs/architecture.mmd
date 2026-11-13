@@ -1,0 +1,59 @@
+flowchart LR
+    op(["Bank operator"])
+
+    subgraph IN["Inputs"]
+        direction TB
+        cfg["<b>Settings (in the repo)</b><br/>sources.json · events.json"]
+        pub["<b>Public sources</b><br/>RBI · SEBI · CCIL · FSB · Risk.net · press<br/>Google News · RBI drafts · CAFRAL"]
+        priv["<b>Private files</b><br/>pending_items.txt · cro_desk.txt<br/>top 20.txt · Confluence PAT.txt"]
+        isep["<b>Confluence: ISE page</b><br/>read only"]
+    end
+
+    subgraph TOOL["risk_week.py"]
+        direction TB
+        entry["<b>Entry</b><br/>CLI [--ai] · MCP server --mcp"]
+        pipe["<b>News pipeline</b><br/>collect → filter → set aside fines<br/>→ group same story"]
+        side["<b>Side sections</b><br/>events &amp; reports · portfolio watch<br/>ISE items · pending · CRO notes"]
+        entry --> pipe
+    end
+
+    subgraph RANK["Ranking · one per run"]
+        direction TB
+        giga["<b>GigaCode</b> (in-house)<br/>prepare → rank → publish"]
+        gem["<b>Gemini API</b><br/>public news only"]
+        kw["<b>Keyword ranking</b><br/>no AI / fallback"]
+    end
+
+    subgraph OUT["Checks and outputs"]
+        direction TB
+        net["<b>Safety net</b><br/>pass-over · India test · impact ≤ 4 out"]
+        rep["<b>Report</b><br/>6 blocks × 3 · story of the week"]
+        files["<b>output/</b><br/>.pptx · .html · .md · -events.html"]
+        newsp["<b>Confluence: news page</b><br/>one dated entry per run"]
+        net --> rep -->|write| files -->|publish| newsp
+    end
+
+    op -->|runs the CLI| entry
+    op -->|asks in chat| giga
+    giga -.->|calls MCP tools| entry
+    cfg --> pipe
+    pub -->|news| pipe
+    pub -->|events, reports| side
+    priv --> side
+    isep -->|read| side
+    pipe -->|candidates| giga
+    pipe -->|candidates| gem
+    pipe --> kw
+    giga -->|ranking + notes| net
+    gem -->|ranking| net
+    kw --> rep
+    side -->|side sections| rep
+
+    classDef private fill:#fff4d6,stroke:#c99a2e,color:#3a2a00
+    classDef ext fill:#fde8e8,stroke:#c0504a,color:#3a0d0a
+    classDef inhouse fill:#e3ecfa,stroke:#0b5cad,color:#0b2545
+    classDef outc fill:#e4f5e8,stroke:#2f8a47,color:#0c2e14
+    class priv,isep private
+    class pub,gem ext
+    class giga inhouse
+    class files,newsp outc
