@@ -86,14 +86,13 @@ Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
 7. **Write** the slides (1: "For CRO's desk" panel (story of the week, why, action point,
    then the user's notes small) and "Pending items" table from
    `pending_items.txt`, overdue in red; 2: the six blocks, 3 × 2; 3: "Also on the radar"),
-   the HTML page and Markdown. The page is a **one-screen dashboard** on screens at least
-   1200 × 700 (target 1920 × 1080, no page scroll): the six blocks 3 × 2 on the left, a
-   sidebar with the CRO box, pending items, radar and routine enforcement on the right
-   (the sidebar scrolls on its own if long). Headlines are clamped to 2 lines; summaries
-   to 2 lines (1 below 1000px of height, hidden below 800px); hovering shows the full
-   text. Smaller screens get a scrolling page (CRO box and pending items first, blocks in
-   2 or 1 columns). After changing the page, check with Playwright at 1920 × 1080 and
-   1920 × 940 (a browser with toolbars) that nothing is cut off. The page and the slides take
+   the HTML page and Markdown. The page **scrolls and shows everything in full** (user, 13 Nov
+   2026: "dispense with the one-page requirement"; before that it was a one-screen 1920 × 1080
+   dashboard with clamped text): on screens 1200px wide or more, the six blocks 3 × 2 with a
+   sidebar (CRO box, pending items, ISE items); under the blocks the credit portfolio watch (2
+   columns) beside the radar and routine enforcement, then Events & reports in 3 columns.
+   Smaller screens stack it all (sidebar first). After changing the page, check it with
+   Playwright at 1920, 1100 and 420 px wide (no sideways scroll). The page and the slides take
    the same content. Every headline is a link (on slides: Slide Show, or Ctrl+click while editing).
 
 8. **Confluence** (user's request, 6 Nov 2026). After the files are written, if `Confluence
@@ -185,7 +184,7 @@ Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
    news the list matched 13 of 159 stories (all correct after the FEMA exemption).
 
 12. **Events & reports** (user's request, 13 Nov 2026: "not only news but upcoming seminars /
-   conferences or interesting reports"). Three lists, shown in the sidebar under the radar, on a
+   conferences or interesting reports"). Three lists, shown on the page under the blocks (3 columns), on a
    slide of their own (last), in Markdown, console and Confluence (after routine enforcement):
    **Comments due** (`read_rbi_drafts`: RBI's draft-directions page, each press release read for
    "on or before <date>"; open or undated drafts of the last 30 days), **Upcoming** (`events.json`
@@ -202,7 +201,7 @@ Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
 
 13. **Credit portfolio watch** (user's request, 13 Nov 2026: "a news analyzer on my credit
    portfolio", names in `top 20.txt`). The user's choices: Google News search per name (names
-   only, quoted; never to Gemini), a section in the weekly report (page sidebar after pending
+   only, quoted; never to Gemini), a section in the weekly report (page: under the blocks, was sidebar after pending
    items, slide after slide 1, Markdown, console, Confluence after the radar), local rules plus
    GigaCode. `load_portfolio` (utf-8 or cp1252, numbering stripped, `|` aliases),
    `scan_portfolio` (search + the week's raw items; headline must name the company; `PF_NOISE`
@@ -226,8 +225,8 @@ Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
   `profile.priority.topics` and `profile.guidance` (passed to the AI) in `sources.json`.
 - **Pending items** are the CRO's second focus: a hand-kept file shown next to the CRO box.
   Each run displays them and asks for updates (the user's request of 6 Nov 2026).
-- **Six blocks of three items**, using the full page width, and the whole page on one
-  1920 × 1080 screen without scrolling (the user's requests of 6 Nov 2026).
+- **Six blocks of three items**, using the full page width (6 Nov 2026). The one-screen rule
+  (whole page on 1920 × 1080 without scrolling) was dropped on 13 Nov 2026: the page scrolls.
 - No home-regulator feed: the user said not to add one.
 - **AI first, local fallback**: the AI does the ranking and impact judgement; the keyword
   ranking is the fallback. AI stays optional (no key = keyword ranking).

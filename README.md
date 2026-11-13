@@ -86,7 +86,7 @@ This writes three files to `./output/` (`--open` also opens the web page):
 | File | Use |
 |---|---|
 | `risk-week-<date>.pptx` | Slide 1: "For CRO's desk" (the story of the week) and "Pending items" side by side. Slide 2: the six blocks, three across. Slide 3: "Also on the radar" (the next 6) |
-| `risk-week-<date>.html` | The same as a one-screen web page sized for 1920 × 1080: the six blocks in a 3 × 2 grid, with the CRO box, pending items, "also on the radar" and the routine enforcement in a sidebar on the right. Long headlines and summaries are shortened to fit; hover to read them in full, or click to open the article. On smaller screens it becomes a normal scrolling page |
+| `risk-week-<date>.html` | The same as a web page: the six blocks in a 3 × 2 grid with the CRO box, pending items and ISE items beside them; below them the credit portfolio watch, "also on the radar", routine enforcement and Events & reports. Everything is shown in full; the page scrolls. On smaller screens it stacks into one column |
 | `risk-week-<date>.md` | The same as text notes |
 
 **Links.** Every headline links to its article. On the slide, click a headline during Slide
@@ -175,7 +175,7 @@ headlines:
   financial or operational stress (losses, falling profit, shutdowns, strikes, shares falling).
 - **Positive**: upgrades, order wins, profit growth, deleveraging.
 
-The section appears in the page sidebar, on a slide after slide 1, in Markdown and the console,
+The section appears on the page under the six blocks, on a slide after slide 1, in Markdown and the console,
 and in the Confluence entry. Red names come first. Companies with no news are listed in one
 line. The flags come from keywords, so read each story.
 
