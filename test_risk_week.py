@@ -950,6 +950,122 @@ class TestSafetyNet(unittest.TestCase):
             self.assertFalse(excl.search(t), t)
 
 
+RBI_DRAFTS_PAGE = (
+    '<table class="tablebg"><tr><td class="tableheader" colspan="2"><b>Nov 05, 2026</b></td></tr>'
+    "<tr><td><a class='link2' href=BS_PressReleaseDisplay.aspx?prid=1>Priority Sector Lending – Drafts for Comments</a></td></tr>"
+    '<tr><td class="tableheader" colspan="2"><b>Oct 20, 2026</b></td></tr>'
+    "<tr><td><a class='link2' href=BS_PressReleaseDisplay.aspx?prid=2>Draft KYC Amendment Directions</a></td></tr>"
+    '<tr><td class="tableheader" colspan="2"><b>Jan 10, 2026</b></td></tr>'
+    "<tr><td><a class='link2' href=BS_PressReleaseDisplay.aspx?prid=3>An old draft</a></td></tr></table>")
+CAFRAL_LIST = ('<a href="/events/ecl-board-oversight-programme">ECL</a> <a href="/events/learning">Learning</a>'
+               '<a href="/events/kyc-aml-senior-executives-programme">KYC</a>')
+
+
+def cafral_page(start, end, title, place):
+    return (f'<var class="atc_date_start">{start} 09:45:00</var><var class="atc_date_end">{end} 17:00:00</var>'
+            f'<var class="atc_title">{title}</var><var class="atc_location">{place}</var>')
+
+
+EVENT_PAGES = {
+    rw.RBI_DRAFTS: RBI_DRAFTS_PAGE,
+    "https://www.rbi.org.in/Scripts/BS_PressReleaseDisplay.aspx?prid=1":
+        "<p>Comments may be submitted on or before November 26, 2026.</p>",
+    "https://www.rbi.org.in/Scripts/BS_PressReleaseDisplay.aspx?prid=2":
+        "<p>Comments were invited by October 31, 2026.</p>",
+    rw.CAFRAL_EVENTS: CAFRAL_LIST,
+    "https://www.cafral.org.in/events/ecl-board-oversight-programme":
+        cafral_page("2026-11-25", "2026-11-25", "ECL Framework: Board Oversight Programme",
+                    "CAFRAL Campus, Dadar (West), Mumbai – 400028"),
+    "https://www.cafral.org.in/events/kyc-aml-senior-executives-programme":
+        cafral_page("2026-12-03", "2026-12-04", "Programme on KYC/AML for Senior Executives", "Mumbai"),
+}
+REPORTS = rss(("BIS: liquidity stress testing for banks", "https://bis/1", "", "Wed, 11 Nov 2026 08:00:00 GMT", ""),
+              ("Cyber attack disrupts UPI services at major private bank", "https://bis/2", "",
+               "Tue, 10 Nov 2026 08:00:00 GMT", ""),
+              ("1 | Page Consultation paper on anti-money laundering norms", "https://bis/3", "",
+               "Tue, 10 Nov 2026 09:00:00 GMT", ""),
+              ("Birla Corporation Limited", "https://bis/4", "", "Tue, 10 Nov 2026 10:00:00 GMT", ""))
+
+
+class TestEventsAndReports(unittest.TestCase):
+    TODAY = datetime(2026, 11, 13).date()
+
+    def fetch(self, url):
+        if url in EVENT_PAGES:
+            return EVENT_PAGES[url].encode("utf-8")
+        if url == "bisfeed":
+            return REPORTS
+        return fetcher(url)
+
+    def test_rbi_drafts_with_deadlines(self):
+        drafts = rw.read_rbi_drafts(self.fetch, self.TODAY)
+        self.assertEqual([c.title[:20] for c in drafts], ["Priority Sector Lend", "Draft KYC Amendment "])  # old one dropped
+        self.assertEqual(drafts[0].deadline, datetime(2026, 11, 26).date())
+        self.assertEqual(drafts[0].days_left(self.TODAY), 13)
+        self.assertEqual(rw._due(drafts[0], self.TODAY), "comments due 26 Nov (13 days)")
+
+    def test_cafral_events(self):
+        evs = rw.read_cafral_events(self.fetch)
+        self.assertEqual([e.organiser for e in evs], ["CAFRAL", "CAFRAL"])            # /events/learning skipped
+        self.assertEqual(evs[1].when, "3–4 Dec 2026")
+        self.assertEqual(rw._place(evs[0].place), "Mumbai")
+        self.assertEqual(rw._place("Online CISCO WebEx"), "Online")
+
+    def test_gather_window_dedupe_and_open_only(self):
+        with tempfile.TemporaryDirectory() as d:
+            f = pathlib.Path(d) / "events.json"
+            f.write_text(json.dumps({"events": [
+                {"name": "ECL Framework: Board Oversight Programme", "start": "2026-11-25"},   # also from CAFRAL
+                {"name": "Too far away", "start": "2027-06-01"},
+                {"name": "Already over", "start": "2026-11-01", "end": "2026-11-02"},
+                {"name": "Fraud summit", "start": "2026-11-20", "url": "https://x"},
+                {"name": "No date"}]}), encoding="utf-8")
+            evs, cons, errs = rw.gather_events({"file": str(f), "window_days": 60}, self.fetch, self.TODAY)
+        self.assertEqual([e.name for e in evs], ["Fraud summit", "ECL Framework: Board Oversight Programme",
+                                                 "Programme on KYC/AML for Senior Executives"])
+        self.assertEqual([c.title[:8] for c in cons], ["Priority"])        # the KYC draft closed on 31 Oct
+        self.assertEqual(errs, [])
+        def broken(url):
+            raise OSError("down")
+        evs, cons, errs = rw.gather_events({"file": str(pathlib.Path(d) / "none.json")}, broken, self.TODAY)
+        self.assertEqual((evs, cons), ([], []))
+        self.assertEqual(len(errs), 2)                                    # reported, not fatal
+
+    def test_reports_kept_out_of_blocks_and_shown_everywhere(self):
+        src = dict(SOURCES, reports={"feeds": [{"name": "BIS publications", "url": "bisfeed", "weight": 0.6}]},
+                   events={"file": "/no/such/events.json", "window_days": 60})
+        res = rw.run(top=3, sources=src, fetcher=self.fetch, now=NOW + rw.timedelta(days=8))
+        self.assertNotIn("https://bis/1", [s.lead.link for s in res.top])
+        self.assertIn("https://bis/1", [s.lead.link for s in res.reports])
+        self.assertNotIn("https://bis/4", [s.lead.link for s in res.reports])      # a company rating, no risk
+        self.assertIn("Consultation paper on anti-money laundering norms", [s.lead.title for s in res.reports])
+        self.assertEqual([c.title[:8] for c in res.consultations], ["Priority"])
+        self.assertEqual(len(res.events), 2)
+        md = rw.to_markdown(res)
+        self.assertIn("## Events & reports", md)
+        self.assertIn("comments due 26 Nov (13 days)", md)
+        page = rw.to_html(res)
+        self.assertIn("Events &amp; reports", page)
+        self.assertIn("<h3>Upcoming</h3>", page)
+        self.assertIn("EVENTS & REPORTS", rw.to_console(res, {}))
+        week = rw.to_confluence(res)
+        import xml.etree.ElementTree as ET
+        ET.fromstring('<r xmlns:ac="a" xmlns:ri="b">' + week + "</r>")
+        self.assertLess(week.index("Events &amp; reports"), len(week))
+        try:
+            from pptx import Presentation
+        except ImportError:
+            return
+        with tempfile.TemporaryDirectory() as d:
+            files = rw.write(res, d)
+            titles = [[sh.text_frame.text for sh in sl.shapes if sh.has_text_frame][0]
+                      for sl in Presentation(files["pptx"]).slides]
+        self.assertIn("Events & reports", "\n".join(titles))
+
+    def test_shipped_events_file_reads(self):
+        self.assertTrue(rw.load_events_file(pathlib.Path(rw.__file__).with_name("events.json")))
+
+
 class TestPrivacy(unittest.TestCase):
     def test_notes_and_pending_never_sent_to_ai(self):
         sent = []

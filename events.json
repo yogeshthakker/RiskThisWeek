@@ -1,0 +1,75 @@
+{
+  "_comment": "Hand-kept events for 'Events & reports'. Add only events whose dates are confirmed on an official page. Dates as YYYY-MM-DD; 'end' optional. Shown when they start within sources.json events.window_days. 'watch' lists events whose next dates are not announced yet (not shown). CAFRAL programmes are read automatically and need no entry here.",
+  "events": [
+    {
+      "name": "DSCI Annual Information Security Summit (AISS) 2026",
+      "organiser": "DSCI",
+      "start": "2026-12-09",
+      "end": "2026-12-11",
+      "place": "",
+      "url": "https://www.dsci.in/event/aiss-2026",
+      "topics": "cyber"
+    },
+    {
+      "name": "IIBF: International Trade Finance",
+      "organiser": "IIBF",
+      "start": "2026-11-17",
+      "end": "2026-11-18",
+      "place": "Lucknow",
+      "url": "https://www.iibf.org.in/",
+      "topics": "trade finance"
+    },
+    {
+      "name": "IIBF: DPDP Act workshop",
+      "organiser": "IIBF",
+      "start": "2026-11-21",
+      "end": "",
+      "place": "",
+      "url": "https://www.iibf.org.in/",
+      "topics": "data protection"
+    },
+    {
+      "name": "IIBF: MSME Financing & Restructuring (virtual)",
+      "organiser": "IIBF",
+      "start": "2026-12-03",
+      "end": "2026-12-05",
+      "place": "Virtual",
+      "url": "https://www.iibf.org.in/",
+      "topics": "MSME"
+    },
+    {
+      "name": "IIBF: Fraud Risk Management, KYC & AML-CFT",
+      "organiser": "IIBF",
+      "start": "2026-12-16",
+      "end": "2026-12-18",
+      "place": "",
+      "url": "https://www.iibf.org.in/",
+      "topics": "fraud, AML"
+    },
+    {
+      "name": "IIBF: MSME Financing – Appraisal, Monitoring & Recovery",
+      "organiser": "IIBF",
+      "start": "2027-01-05",
+      "end": "2027-01-07",
+      "place": "Kolkata",
+      "url": "https://www.iibf.org.in/",
+      "topics": "MSME"
+    },
+    {
+      "name": "GARP Financial Risk Symposium 2027",
+      "organiser": "GARP",
+      "start": "2027-03-03",
+      "end": "2027-03-04",
+      "place": "",
+      "url": "https://www.garp.org/events",
+      "topics": "risk"
+    }
+  ],
+  "watch": [
+    {
+      "name": "NIBM–CAB–RBI International Conference (21–22 Jan per the call for papers; papers by 30 Nov 2026)",
+      "organiser": "NIBM / CAB / RBI",
+      "url": "https://www.nibmindia.org/documents/617/NIBM-CAB-RBI-Con-Jan_21-22_V2.pdf"
+    }
+  ]
+}

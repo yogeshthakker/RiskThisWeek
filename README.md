@@ -88,6 +88,20 @@ longer need showing). `pending_items.txt` is not committed to git.
 Add, remove or edit any of them; `weight` makes a source rank higher. A source that cannot be
 read is named at the end of the page; the rest still run.
 
+## Events & reports
+
+Next to the news, the page, the last slide and Confluence show three short lists:
+
+- **Comments due**: RBI draft directions still open for comments, with the deadline read from
+  the press release ("comments due 26 Nov (13 days)"; red when 7 days or fewer are left).
+- **Upcoming**: conferences and programmes in the next 60 days, from `events.json` (edit it:
+  one entry per event with `name`, `start`, optional `end`, `place`, `url`, `organiser`) and
+  from CAFRAL's events page. Put events without a date yet under `watch`.
+- **New reports**: the week's papers from `reports` in `sources.json` (BIS, SEBI and IFSCA
+  consultation papers, Basel Committee, rating agencies, DSCI). They never enter the six blocks.
+
+Set `"events": {"cafral": false, "rbi_drafts": false}` in `sources.json` to switch a reader off.
+
 ## The bank profile
 
 The `profile` section of `sources.json` describes the bank reading the report. Edit it to
