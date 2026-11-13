@@ -2144,7 +2144,9 @@ def _anchor(kind: str, key: str) -> str:
 
 
 def to_confluence(res: Result) -> str:
-    """One week of the report in Confluence storage format (XHTML with Confluence macros)."""
+    """One report in Confluence storage format (XHTML with Confluence macros): the news first
+    (For CRO's desk, the six blocks, radar, routine enforcement), then pending items and the
+    RBI compliance (ISE) status last."""
     e = html.escape
 
     def a(url: str, text: str) -> str:
@@ -2167,30 +2169,6 @@ def to_confluence(res: Result) -> str:
         if box["notes"]:
             body += "<p><strong>Notes</strong></p><ul>" + "".join(f"<li>{e(n)}</li>" for n in box["notes"]) + "</ul>"
         out.append(_macro("info", body, title=CRO_TITLE))
-    if res.pending:
-        rows = []
-        for p in res.pending:
-            colour = "Red" if p.overdue else "Green" if _DONE.match(p.status) else (
-                "Yellow" if re.search(r"progress|wip|ongoing", p.status, re.I) else "Grey")
-            rows.append(f"<tr><td>{e(p.item)}</td><td>{e(p.owner)}</td><td>{e(p.due)}</td>"
-                        f"<td>{_status_macro(_status(p), colour)}</td></tr>")
-        out.append("<h3>Pending items</h3><table><tbody><tr><th>Item</th><th>Owner</th><th>Due</th>"
-                   "<th>Status</th></tr>" + "".join(rows) + "</tbody></table>")
-    info = res.compliance_info
-    if res.compliance or info.get("total"):
-        rows = []
-        for i in res.compliance:
-            colour = "Red" if i.severe else "Yellow" if re.search(r"non", i.status, re.I) else "Grey"
-            rows.append(f"<tr><td>{e(i.subsection)}</td><td>{e(i.observation)}</td><td>{e(i.owner)}</td>"
-                        f"<td>{e(i.deadline)}</td><td>{_status_macro(i.shown_status, colour)}</td>"
-                        f"<td>{e(i.comments)}</td></tr>")
-        src = f' <a href="{e(info["url"])}">(source page)</a>' if info.get("url") else ""
-        out.append(f"<h3>Pending RBI compliance items{e(_ise_label(info))}{src}</h3>"
-                   f"<p><em>{e(_ise_counts(res.compliance))}, of {info.get('total', 0)}</em></p>"
-                   + ("<table><tbody><tr><th>Sub-section</th><th>Observation</th><th>Department</th>"
-                      "<th>Deadline</th><th>Status</th><th>Comments</th></tr>" + "".join(rows) + "</tbody></table>"
-                      if rows else ""))
-
     def cell(block: str, stories: list[Story]) -> str:
         if not stories:
             return f"<td><p><em>{EMPTY_BLOCK}</em></p></td>"
@@ -2222,6 +2200,31 @@ def to_confluence(res: Result) -> str:
             for i in res.routine) + "</ul>", title=f"Routine enforcement, not ranked ({len(res.routine)})"))
     out.append("<p><em>Machine-selected from public feeds. Check each source before quoting figures or "
                "names.</em></p>")
+    # Local status last (news first): the user's pending items, then the RBI compliance (ISE) items.
+    if res.pending:
+        rows = []
+        for p in res.pending:
+            colour = "Red" if p.overdue else "Green" if _DONE.match(p.status) else (
+                "Yellow" if re.search(r"progress|wip|ongoing", p.status, re.I) else "Grey")
+            rows.append(f"<tr><td>{e(p.item)}</td><td>{e(p.owner)}</td><td>{e(p.due)}</td>"
+                        f"<td>{_status_macro(_status(p), colour)}</td></tr>")
+        out.append("<h3>Pending items</h3><table><tbody><tr><th>Item</th><th>Owner</th><th>Due</th>"
+                   "<th>Status</th></tr>" + "".join(rows) + "</tbody></table>")
+    info = res.compliance_info
+    if res.compliance or info.get("total"):
+        rows = []
+        for i in res.compliance:
+            colour = "Red" if i.severe else "Yellow" if re.search(r"non", i.status, re.I) else "Grey"
+            rows.append(f"<tr><td>{e(i.subsection)}</td><td>{e(i.observation)}</td><td>{e(i.owner)}</td>"
+                        f"<td>{e(i.deadline)}</td><td>{_status_macro(i.shown_status, colour)}</td>"
+                        f"<td>{e(i.comments)}</td></tr>")
+        src = f' <a href="{e(info["url"])}">(source page)</a>' if info.get("url") else ""
+        out.append(f"<h3>Pending RBI compliance items{e(_ise_label(info))}{src}</h3>"
+                   f"<p><em>{e(_ise_counts(res.compliance))}, of {info.get('total', 0)}</em></p>"
+                   + ("<table><tbody><tr><th>Sub-section</th><th>Observation</th><th>Department</th>"
+                      "<th>Deadline</th><th>Status</th><th>Comments</th></tr>" + "".join(rows) + "</tbody></table>"
+                      if rows else ""))
+
     out.append(_anchor("end", key))
     return "".join(out)
 

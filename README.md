@@ -240,9 +240,9 @@ only. `--no-prompt` is implied: pending items are read from `pending_items.txt` 
 ## Publishing to Confluence
 
 Each run can put the report on a Confluence page (Server / Data Center, with a personal
-access token). The page shows **this week in full at the top**: the "For CRO's desk" panel,
-pending items with coloured status labels, the six risk blocks as a table, the radar, and the
-routine enforcement. Below it, under **Previous reports**, every earlier run sits in its own
+access token). The page shows **the latest report in full at the top**, news first: the "For
+CRO's desk" panel, the six risk blocks as a table, the radar and the routine enforcement; then,
+last, your pending items and the RBI compliance (ISE) items with coloured status labels. Below it, under **Previous reports**, every earlier run sits in its own
 collapsible section titled with its date and time ("Report of 13 Nov 2026, 15:32"), newest
 first, so two runs in the same week, or the same day, are both kept. The page keeps the last 52
 reports (`KEEP_REPORTS`); older ones stay in Confluence's page history, as every run also saves

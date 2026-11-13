@@ -10,7 +10,7 @@ web page for the weekly status meeting ("This week in risk"). The user runs it o
 ```bash
 pip install -r requirements.txt
 python risk_week.py --ai --open        # Gemini free tier; --open opens the web page
-python -m unittest test_risk_week      # 85 tests, no network or key needed
+python -m unittest test_risk_week      # 86 tests, no network or key needed
 ```
 
 Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
@@ -93,8 +93,9 @@ Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
 8. **Confluence** (user's request, 6 Nov 2026). After the files are written, if `Confluence
    PAT.txt` has a PAT, `publish_confluence()` GETs the page (`/rest/api/content/{id}?expand=
    body.storage,version`, `Authorization: Bearer <PAT>`) and PUTs a new version. The body is
-   storage-format XHTML from `to_confluence()` (info panel, status macros, a 2 × 3 table of
-   blocks, expand for routine enforcement). **One entry per run** (user's choice, 13 Nov 2026;
+   storage-format XHTML from `to_confluence()`, **news first, compliance last** (user, 13 Nov
+   2026): info panel (For CRO's desk), the 2 × 3 table of blocks, radar, expand for routine
+   enforcement, then pending items, then the ISE items (status macros). **One entry per run** (user's choice, 13 Nov 2026;
    before that one per ISO week): each sits between anchor macros `rtw-week-<key>` /
    `rtw-end-<key>`, key = run time `YYYYMMDDTHHMM` (old entries `YYYY-Www` are still read and
    sort as that week's Monday 00:00, below its runs). The h2 is "Report of 13 Nov 2026, 15:32";

@@ -644,6 +644,18 @@ class TestCompliance(unittest.TestCase):
         items, info = rw.load_compliance(cfg, client=rw.ConfluenceClient(cfg, opener=FakeConfluence(body="<p>x</p>")))
         self.assertIn("no table", info["error"])
 
+    def test_confluence_order_news_first_compliance_last(self):
+        res = rw.run(top=3, sources=SOURCES, fetcher=fetcher, now=NOW, cro_notes=["note"],
+                     pending=[rw.Pending(item="P1")])
+        cfg = dict(TestConfluence.CFG, COMPLIANCE_PAGE_ID="999", ISE_DEPARTMENT="")
+        res.compliance, res.compliance_info = rw.load_compliance(
+            cfg, client=rw.ConfluenceClient(cfg, opener=FakeConfluence(body=COMPLIANCE_PAGE)), today=self.TODAY)
+        week = rw.to_confluence(res)
+        order = [week.index(x) for x in ('ac:name="info"', "<h3>This week by risk area</h3>",
+                                         "Routine enforcement, not ranked", "<h3>Pending items</h3>",
+                                         "<h3>Pending RBI compliance items", "rtw-end-")]
+        self.assertEqual(order, sorted(order))
+
     def test_shown_in_every_format(self):
         res = rw.run(top=3, sources=SOURCES, fetcher=fetcher, now=NOW)
         cfg = dict(TestConfluence.CFG, COMPLIANCE_PAGE_ID="999", ISE_DEPARTMENT="")
