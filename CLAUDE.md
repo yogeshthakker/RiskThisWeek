@@ -26,6 +26,7 @@ Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
 | `pending_items.txt` | Pending items for the status meeting, `Item \| Owner \| Due \| Status` per line. Every run shows them and asks for updates first (`review_pending`: number = edit, `a` add, `d N` done, `x N` delete, Enter = carry on; saved with `save_pending`, header comments kept); skipped with `--no-prompt` or when stdin is not a terminal. Git-ignored; `pending_items.example.txt` shows the format |
 | `events.json` | Upcoming conferences and programmes (`events`, dated) and ones to watch (`watch`, no date yet). Public, committed; the user edits it |
 | `top 20.txt` | The bank's borrowers for the credit portfolio watch, `Name \| alias` per line. **Git-ignored** (`top*.txt`); `top20.example.txt` shows the format |
+| `docs/architecture.png` / `.html` / `.mmd` | Architecture diagram (13 Nov 2026): the PNG is drawn from the HTML (Playwright screenshot of `#c` at 1740 px wide, scale 2); the Mermaid copy is in the README. Update them when the flow changes |
 | `test_risk_week.py` | unittest tests using sample feeds and fake AI replies |
 | `test_headlines.json` | One week's real headlines (6 Nov 2026), used to test the same-story grouping |
 | `.env` | `GEMINI_API_KEY=...` on the user's machine. Git-ignored |
