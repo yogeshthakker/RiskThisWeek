@@ -423,6 +423,7 @@ class Profile:
     less_weight: float
     peers: re.Pattern | None
     threshold: float
+    exclude: re.Pattern | None = None   # never shown, whatever the AI picks (the safety net)
 
     @classmethod
     def from_sources(cls, sources: dict) -> "Profile":
@@ -442,6 +443,7 @@ class Profile:
             min_per_topic=int(cfg["priority"].get("min_per_topic", 1)),
             focus=pat(cfg["focus"].get("terms", [])), focus_weight=float(cfg["focus"].get("weight", 1.6)),
             less=pat(cfg["less_relevant"].get("terms", [])),
+            exclude=pat((cfg.get("exclude") or {}).get("terms", [])),
             less_weight=float(cfg["less_relevant"].get("weight", 2.2)),
             peers=re.compile(r"\b(" + "|".join(peers) + r")\b", re.I) if peers else None,
             threshold=float(cfg.get("penalty_threshold_crore", 10)),
@@ -1174,12 +1176,92 @@ def prepare_week(days: int = 7, sources: dict | None = None, fetcher: Callable[[
                 collected=len(raw), kept=len(kept), errors=errors)
 
 
+# Detentions, arrests and court cases: never the story of the week; abroad, not in the blocks either.
+DETENTION = re.compile(r"\bdetain|\bdetention|\bjail|\bjailed|\barrest|\bconvict|\bsentenc|\bextradit|"
+                       r"\bcustody|\bimprison|\bcourt\b", re.I)
+FOREIGN = re.compile(r"\b(?:UK|U\.K\.|US|U\.S\.|EU|UAE)\b|\b(?:britain|british|london|england|scotland|"
+                     r"united states|america|american|singapore|dubai|hong kong|europe|european|germany|"
+                     r"france|canada|australia|switzerland|swiss|netherlands|dutch)\b")
+INDIA_COURT = re.compile(r"supreme court|high court|\bnclt\b|\bnclat\b|\bdrt\b", re.I)
+
+
+# A headline that matches the pass-over list but is about one of these is kept (e.g. "weak Q2
+# results: RBI returns FEMA compounding application").
+KEEP_ANYWAY = re.compile(r"\bfema\b|sanction|money laundering|\bpmla\b|\bfatf\b|\bofac\b", re.I)
+
+
+def _foreign_detention(s: Story) -> bool:
+    t = s.lead.title
+    return bool(DETENTION.search(t) and FOREIGN.search(t) and not INDIA_COURT.search(t))
+
+
+def apply_rules(picked: "AiPick", week: Week, top: int) -> tuple["AiPick", list[str]]:
+    """The safety net after any AI ranking: enforce the rules the user has set, whatever the
+    model decided.
+
+    - a pick whose headline matches the profile's `exclude` terms (co-operative banks,
+      microfinance, results, share prices...) is removed;
+    - a detention, arrest or court story abroad is removed from the blocks (it may stay on the
+      radar);
+    - the story of the week is never a detention, arrest or court story, and prefers India.
+    Removed picks are replaced by the best keyword-ranked story of the same block.
+    """
+    notes: list[str] = []
+    excl = week.profile.exclude
+
+    def banned(s: Story) -> str:
+        t = s.lead.title
+        keep = KEEP_ANYWAY.search(t) or (week.profile.priority and week.profile.priority.search(t))
+        if excl and excl.search(t) and not keep:
+            return "on the pass-over list"
+        if _foreign_detention(s):
+            return "a detention or court case abroad"
+        return ""
+
+    blocks = {b: list(v) for b, v in picked.blocks.items()}
+    removed: dict[str, int] = {}
+    for b, stories in blocks.items():
+        for s in list(stories):
+            why = banned(s)
+            if why:
+                stories.remove(s)
+                removed[b] = removed.get(b, 0) + 1
+                notes.append(f"removed '{_clean(s.as_dict()['headline'], 60)}' ({why})")
+    shown = {id(s) for v in blocks.values() for s in v} | {id(s) for v in picked.blocks.values() for s in v}
+    for b, n in removed.items():             # replace only what was removed, from the same block
+        for cand in week.stories:
+            if n <= 0:
+                break
+            if cand.category == b and id(cand) not in shown and not banned(cand):
+                blocks[b].append(cand)
+                shown.add(id(cand))
+                n -= 1
+    shown = {id(s) for v in blocks.values() for s in v}
+    radar = [s for s in picked.radar if id(s) not in shown and not (excl and excl.search(s.lead.title))]
+    focus = picked.focus
+    flat = flatten(blocks)
+    if focus is None or id(focus.story) not in shown or DETENTION.search(focus.story.lead.title) \
+            and not INDIA_COURT.search(focus.story.lead.title):
+        ok = [s for s in flat if not DETENTION.search(s.lead.title) or INDIA_COURT.search(s.lead.title)]
+        india = [s for s in ok if INDIA.search(f"{s.lead.title} {s.lead.summary}")]
+        best = max(india or ok or flat, key=lambda s: (s.impact or 0, s.score)) if flat else None
+        if focus is not None and (best is None or best is not focus.story):
+            notes.append(f"story of the week changed from '{_clean(focus.story.as_dict()['headline'], 60)}'")
+        focus = CroFocus(best, "") if best else None
+    return AiPick(blocks=blocks, radar=radar, focus=focus, status=picked.status, ok=True), notes
+
+
 def finish_week(week: Week, top: int = 3, picked: "AiPick | None" = None, ai: str = "keywords (AI off)",
                 ai_log: list | None = None, cro_notes: list[str] | None = None,
                 pending: list["Pending"] | None = None) -> Result:
     """The report: the AI's ranking when it is usable, otherwise the keyword ranking."""
     stories, profile = week.stories, week.profile
+    ai_log = list(ai_log or [])
     if picked is not None and picked.ok:
+        picked, notes = apply_rules(picked, week, top)
+        if notes:
+            ai += f"; safety net: {len(notes)} change(s)"
+            ai_log.append({"safety_net": notes})
         blocks, focus = picked.blocks, picked.focus
         radar = picked.radar or radar_of(blocks, stories)
     else:                                       # keyword ranking: no AI, or the AI failed
@@ -1193,7 +1275,7 @@ def finish_week(week: Week, top: int = 3, picked: "AiPick | None" = None, ai: st
         focus = CroFocus(max(india or shown, key=lambda s: s.score), "") if shown else None
     return Result(start=week.start, end=week.end, top=flatten(blocks), radar=radar, collected=week.collected,
                   kept=week.kept, errors=week.errors, ai=ai, routine=week.routine,
-                  cro_notes=list(cro_notes or []), cro_focus=focus, ai_log=list(ai_log or []),
+                  cro_notes=list(cro_notes or []), cro_focus=focus, ai_log=ai_log,
                   pending=list(pending or []), blocks=blocks)
 
 

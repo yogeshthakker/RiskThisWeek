@@ -116,6 +116,22 @@ empty shows "Nothing significant this week". If the AI call fails or its reply i
 the keyword ranking is used and the page's "ranked by" line says why. Without `--ai`, the
 keyword ranking is used on its own.
 
+**Safety net.** After any AI ranking (Gemini, GigaCode or Claude), your rules are applied
+on your computer, whatever the model chose:
+
+- a pick whose headline matches the **pass-over list** (`profile.exclude` in `sources.json`:
+  co-operative banks, microfinance, regional rural and small finance banks, gold and farm
+  loans, quarterly results, share prices, retail product and festive offers) is removed, unless
+  the headline is also about FEMA, sanctions, money laundering or a priority topic;
+- a **detention, arrest or court case abroad** is removed from the blocks;
+- the **story of the week** is never a detention, arrest or court story (Indian courts such as
+  the Supreme Court are fine), and prefers India; when it changes, the AI's action point
+  (written for the old story) is dropped.
+
+Removed picks are replaced by the best story of the same block from the local ranking; a block
+the AI left short is not topped up. The "ranked by" line says how many changes were made, and
+`ai-reply.json` lists them.
+
 The filters and the keyword ranking:
 
 1. **Filter.** Drops routine notices (T-bill auctions, money market operations, VRRR

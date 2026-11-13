@@ -10,7 +10,7 @@ web page for the weekly status meeting ("This week in risk"). The user runs it o
 ```bash
 pip install -r requirements.txt
 python risk_week.py --ai --open        # Gemini free tier; --open opens the web page
-python -m unittest test_risk_week      # 80 tests, no network or key needed
+python -m unittest test_risk_week      # 84 tests, no network or key needed
 ```
 
 Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
@@ -152,6 +152,17 @@ Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
    finds > 1/4 of picks whose headline shares no non-common word with the story their id names.
    The first GigaCode-driven ranking (11 Nov) put a co-op bank supersession in Non-financial
    risk and the UK sailor detention (Russian oil) at 9 in Compliance risk.
+
+11. **Safety net** (user's request, 13 Nov 2026, after both Gemini's fallback and the
+   GigaCode-driven ranking picked a co-op bank story and rated a UK sailor detention 9/10).
+   `finish_week()` runs `apply_rules()` on every accepted AI ranking: removes picks whose lead
+   title matches `profile.exclude` (sources.json; not when `KEEP_ANYWAY` (FEMA, sanctions,
+   PMLA, FATF, OFAC) or a priority topic also matches), removes `_foreign_detention()` stories
+   (`DETENTION` and `FOREIGN` in the title, not an Indian court), replaces only removed picks
+   from the keyword ranking of the same block, and re-picks the story of the week when it is
+   gone or a detention / court story (highest impact, India preferred; action point dropped).
+   Changes go to `Result.ai` ("safety net: N change(s)") and `ai_log`. On 13 Nov 2026 live
+   news the list matched 13 of 159 stories (all correct after the FEMA exemption).
 
 ## Decisions the user made
 

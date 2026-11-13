@@ -777,6 +777,91 @@ class TestMcp(unittest.TestCase):
         self.assertEqual([json.loads(l)["id"] for l in lines], [1, 2, 3])
 
 
+class TestSafetyNet(unittest.TestCase):
+    """After any AI ranking, the user's rules apply whatever the model picked."""
+
+    NEWS = rss(
+        ("Supersession of Board of Directors of Abhyudaya Co-operative Bank Ltd., Mumbai", "https://g/coop",
+         "", "Wed, 04 Nov 2026 08:00:00 GMT", "RBI"),
+        ("Indian sailor detained in UK for transporting sanctioned Russian oil", "https://g/sailor", "",
+         "Wed, 04 Nov 2026 09:00:00 GMT", "BBC"),
+        ("Supreme Court tells banks to pay victims of cyber fraud", "https://g/sc", "",
+         "Tue, 03 Nov 2026 09:00:00 GMT", "LiveLaw"),
+        ("RBI extends Mudra loan guarantee for MSME borrowers", "https://g/mudra", "",
+         "Tue, 03 Nov 2026 10:00:00 GMT", "ET"),
+        ("RBI tightens cyber security norms for payment operators", "https://g/cyber", "",
+         "Mon, 02 Nov 2026 10:00:00 GMT", "Mint"),
+        ("Russian fintech A7 plans rupee cross-border payments in India", "https://g/a7", "",
+         "Mon, 02 Nov 2026 11:00:00 GMT", "ET"))
+    SRC = {"feeds": [], "google_news": {"queries": ["x"]}, "profile": json.loads(
+        (pathlib.Path(__file__).resolve().parent / "sources.json").read_text(encoding="utf-8"))["profile"]}
+
+    def run_with(self, reply):
+        class AI:
+            name, model = "fake", "f"
+            def json_call(s, system, user, response_schema=None, max_output_tokens=0):
+                self.prompt = user
+                return reply(user) if callable(reply) else {"items": []}
+        return rw.run(top=3, sources=self.SRC, fetcher=lambda u: self.NEWS, now=NOW, provider=AI())
+
+    def test_rules_override_the_ai(self):
+        def reply(user):
+            ids = {l.split(") ", 1)[1][:12]: int(l[1:l.index("]")]) for l in user.split("Candidates:\n")[1].splitlines()
+                   if l.startswith("[")}
+            i = lambda prefix: next(v for k, v in ids.items() if k.startswith(prefix))  # noqa: E731
+            pick = lambda pre, block, imp: {"id": i(pre), "category": block, "impact": imp,  # noqa: E731
+                                            "headline": pre, "why_it_matters": "w"}
+            return {"items": [pick("Supersession", "Non-financial risk", 7),
+                              pick("Indian sailo", "Compliance risk", 9),
+                              pick("Russian fint", "Compliance risk", 8),
+                              pick("Supreme Cour", "Fraud risk", 8),
+                              pick("RBI extends ", "Credit risk", 8)],
+                    "radar": [], "cro_focus": {"id": i("Indian sailo"), "message": "Raise sanctions screening."}}
+        res = self.run_with(reply)
+        links = [s.lead.link for s in res.top]
+        self.assertNotIn("https://g/coop", links)                 # pass-over list
+        self.assertNotIn("https://g/sailor", links)               # detention abroad
+        self.assertIn("https://g/sc", links)                      # an Indian court stays
+        self.assertIn("https://g/a7", links)
+        self.assertEqual(res.cro_focus.story.lead.link, "https://g/mudra")    # highest remaining India pick
+        self.assertEqual(res.cro_focus.message, "")               # the action point was for the old story
+        self.assertIn("safety net: 3 change(s)", res.ai)
+        notes = next(e["safety_net"] for e in res.ai_log if "safety_net" in e)
+        self.assertTrue(any("pass-over" in n for n in notes) and any("abroad" in n for n in notes))
+        self.assertEqual(res.blocks["Non-financial risk"], [])    # nothing left that passes: stays empty
+
+    def test_good_ranking_is_untouched(self):
+        def reply(user):
+            first = next(int(l[1:l.index("]")]) for l in user.split("Candidates:\n")[1].splitlines()
+                         if l.startswith("[") and "Mudra" in l)
+            return {"items": [{"id": first, "category": "Credit risk", "impact": 8, "headline": "Mudra",
+                               "why_it_matters": "w"}], "radar": [], "cro_focus": {"id": first, "message": "Act."}}
+        res = self.run_with(reply)
+        self.assertNotIn("safety net", res.ai)
+        self.assertEqual(res.cro_focus.message, "Act.")
+        self.assertEqual([s.lead.link for s in res.top], ["https://g/mudra"])   # the AI's one pick, no top-up
+
+    def test_relevant_headline_kept_despite_pass_over_words(self):
+        week = rw.prepare_week(sources=self.SRC, fetcher=lambda u: rss(
+            ("More trouble for Page Industries after weak Q2 results: RBI returns FEMA compounding application",
+             "https://g/fema", "", "Wed, 04 Nov 2026 08:00:00 GMT", "ET")), now=NOW)
+        st = week.stories[0]
+        st.impact, st.category = 7, "Compliance risk"
+        pick = rw.AiPick(blocks={b: ([st] if b == "Compliance risk" else []) for b in rw.BLOCKS},
+                         focus=rw.CroFocus(st, "m"))
+        out, notes = rw.apply_rules(pick, week, 3)
+        self.assertEqual(notes, [])
+        self.assertEqual(out.blocks["Compliance risk"], [st])
+
+    def test_patterns(self):
+        excl = rw.Profile.from_sources(self.SRC).exclude
+        for t in ("Abhyudaya Co-op Bank board superseded", "Urban co-operative bank licence cancelled",
+                  "Microfinance stress rises", "HDFC Bank Q2 results: net profit up"):
+            self.assertTrue(excl.search(t), t)
+        for t in ("RBI widens MSME credit guarantee", "Cooperation pact on cyber security", "Bond yields rise"):
+            self.assertFalse(excl.search(t), t)
+
+
 class TestPrivacy(unittest.TestCase):
     def test_notes_and_pending_never_sent_to_ai(self):
         sent = []
