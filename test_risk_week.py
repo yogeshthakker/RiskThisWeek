@@ -1057,6 +1057,10 @@ class TestEventsAndReports(unittest.TestCase):
         self.assertIn('href="risk-week-2026-11-13-events.html"', rw.to_html(res))
         self.assertEqual(rw.to_html(res).count("Programme on KYC/AML"), 0)
         self.assertIn('ac:parameter ac:name="title">All 2 events', rw.to_confluence(res))
+        conf = rw.to_confluence(res)
+        self.assertIn("<th>Comments due</th><th>Upcoming</th><th>New reports</th>", conf)   # grouped in blocks
+        self.assertIn("13 days left", conf)
+        ET.fromstring('<r xmlns:ac="a" xmlns:ri="b">' + conf + "</r>")
         with tempfile.TemporaryDirectory() as d:
             files = rw.write(res, d)
             allpage = pathlib.Path(files["events"]).read_text(encoding="utf-8")

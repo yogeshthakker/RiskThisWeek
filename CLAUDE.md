@@ -190,7 +190,7 @@ Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
    shows the nearest `events.max` (10) of the 60-day window (user, 13 Nov 2026: "show top 10,
    keep the 22 handy on a clickable link"): `write()` adds `<stem>-events.html`
    (`to_events_html`, all events), linked from the page panel, the slide and Markdown; the
-   console prints its file link; Confluence gets an expand with all of them. events.json was filled from a research agent's validation of
+   console prints its file link; Confluence gets an expand with all of them (a table: When, Event, Place, Organiser, Topics). In Confluence the section is a table grouped in blocks, like the news (user, 13 Nov 2026): Comments due | Upcoming | New reports, each entry a bold link with its meta in italics; comments due carry a status badge ("13 days left", red at 7 or fewer). events.json was filled from a research agent's validation of
    the user's list (13 Nov 2026): 33 dated events (NIBM, IIBF, IACPM, Risk Live, GARP, IOD,
    AIMA, Global Insight), 17 under `watch` (no 2027 date yet, or unverified). Any
    failure goes to the errors list, never fatal. Nothing here goes to the AI.

@@ -2982,24 +2982,35 @@ def to_confluence(res: Result) -> str:
             for i in res.routine) + "</ul>", title=f"Routine enforcement, not ranked ({len(res.routine)})"))
     if _has_events(res):
         today = res.end.date()
-        parts = ["<h3>Events &amp; reports</h3>"]
-        if res.consultations:
-            parts.append("<p><strong>Comments due</strong></p><ul>" + "".join(
-                f"<li>{a(c.url, c.title)} · <em>{e(c.source)}, {e(_due(c, today))}</em></li>"
-                for c in res.consultations) + "</ul>")
-        if res.events:
-            parts.append("<p><strong>Upcoming</strong></p><ul>" + "".join(
-                f"<li>{a(ev.url, ev.name)} · <em>{e(ev.when)}" + (f", {e(_place(ev.place))}" if ev.place else "")
-                + "</em></li>" for ev in _shown_events(res)) + "</ul>")
-            if len(res.events) > res.events_max:
-                parts.append(_macro("expand", "<ul>" + "".join(
-                    f"<li>{a(ev.url, ev.name)} · <em>{e(ev.when)}" + (f", {e(_place(ev.place))}" if ev.place else "")
-                    + (f" · {e(ev.organiser)}" if ev.organiser else "") + "</em></li>" for ev in res.events)
-                    + "</ul>", title=_all_events_label(res)))
-        if res.reports:
-            parts.append("<p><strong>New reports</strong></p><ul>" + "".join(
-                f"<li>{a(st.lead.link, st.lead.title)} · <em>{e(st.lead.publisher or st.lead.source)}, "
-                f"{e(_when(st.lead))}</em></li>" for st in res.reports) + "</ul>")
+        # A table grouped in blocks, like the news: comments due | upcoming | new reports.
+        def entry(url: str, title: str, meta: str, status: str = "") -> str:
+            return f"<p><strong>{a(url, title)}</strong><br/>{status}<em>{e(meta)}</em></p>"
+
+        def cell(entries: list[str]) -> str:
+            return "<td>" + ("".join(entries) or "<p><em>None this week.</em></p>") + "</td>"
+
+        due = []
+        for c in res.consultations:
+            n = c.days_left(today)
+            badge = (_status_macro(f"{n} days left" if n else "today", "Red" if n <= 7 else "Yellow") + " "
+                     if n is not None else "")
+            when = (f"due {c.deadline.strftime('%d %b %Y').lstrip('0')}" if c.deadline else _due(c, today))
+            due.append(entry(c.url, c.title, f"{c.source} · {when}", badge))
+        upcoming = [entry(ev.url, ev.name, ev.when + (f" · {_place(ev.place)}" if ev.place else "")
+                          + (f" · {ev.organiser}" if ev.organiser else "")) for ev in _shown_events(res)]
+        if len(res.events) > res.events_max:
+            upcoming.append(f"<p><em>Nearest {res.events_max} of {len(res.events)}; all of them below.</em></p>")
+        reports = [entry(st.lead.link, st.lead.title, f"{st.lead.publisher or st.lead.source} · {_when(st.lead)}")
+                   for st in res.reports]
+        parts = ["<h3>Events &amp; reports</h3><table><tbody><tr><th>Comments due</th><th>Upcoming</th>"
+                 "<th>New reports</th></tr><tr>" + cell(due) + cell(upcoming) + cell(reports)
+                 + "</tr></tbody></table>"]
+        if len(res.events) > res.events_max:
+            parts.append(_macro("expand", "<table><tbody><tr><th>When</th><th>Event</th><th>Place</th>"
+                                "<th>Organiser</th><th>Topics</th></tr>" + "".join(
+                                    f"<tr><td>{e(ev.when)}</td><td>{a(ev.url, ev.name)}</td><td>{e(_place(ev.place))}"
+                                    f"</td><td>{e(ev.organiser)}</td><td>{e(ev.topics)}</td></tr>" for ev in res.events)
+                                + "</tbody></table>", title=_all_events_label(res)))
         out.append("".join(parts))
     out.append("<p><em>Machine-selected from public feeds. Check each source before quoting figures or "
                "names.</em></p>")
