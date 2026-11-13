@@ -10,7 +10,7 @@ web page for the weekly status meeting ("This week in risk"). The user runs it o
 ```bash
 pip install -r requirements.txt
 python risk_week.py --ai --open        # Gemini free tier; --open opens the web page
-python -m unittest test_risk_week      # 87 tests, no network or key needed
+python -m unittest test_risk_week      # 88 tests, no network or key needed
 ```
 
 Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
@@ -149,7 +149,9 @@ Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
    and candidates as the Gemini path, plus an answer example), `risk_week_publish`
    (`parse_ranking()` on the client's JSON, then `finish_week()`, ISE / pending / CRO notes
    added locally, `write()`, `confluence_step()`; replies with a short summary only, no pending,
-   notes or ISE content), `risk_week_check`. State (week, pool) lives in the server process; one
+   notes or ISE content), `risk_week_run` (user, 13 Nov 2026: choose Gemini or MCP from the chat;
+   `ranker` "gemini" (default; `self.gemini()` factory, keyword fallback with the reason when it
+   cannot be built or fails) or "keywords"; same `_finish()` as publish), `risk_week_check`. State (week, pool) lives in the server process; one
    report per prepare. `run()` = `prepare_week()` + `explain()` + `finish_week()`; feeds are
    fetched with 8 threads (~8 s live). **Batch codes** (11 Nov 2026, after the user's local
    assistant drove the tools from a temp script that restarted the server per call, so prepare

@@ -735,7 +735,7 @@ class TestMcp(unittest.TestCase):
         self.assertIn("tools", init["result"]["capabilities"])
         self.assertIsNone(srv.handle({"jsonrpc": "2.0", "method": "notifications/initialized"}))
         names = [t["name"] for t in srv.handle({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})["result"]["tools"]]
-        self.assertEqual(names, ["risk_week_prepare", "risk_week_publish", "risk_week_check"])
+        self.assertEqual(names, ["risk_week_prepare", "risk_week_publish", "risk_week_run", "risk_week_check"])
         self.assertEqual(srv.handle({"jsonrpc": "2.0", "id": 2, "method": "nope"})["error"]["code"], -32601)
 
     def test_prepare_rank_publish(self):
@@ -777,6 +777,38 @@ class TestMcp(unittest.TestCase):
             self.assertIn("SECRET-CRO-NOTE", md)                  # notes and pending items are in the report
             self.assertIn("SECRET-PENDING", md)
             self.assertTrue(self.call(srv, "risk_week_publish", {"batch": batch, "ranking": ranking})[1])  # once
+
+    def test_run_with_gemini_or_keywords(self):
+        with tempfile.TemporaryDirectory() as d:
+            srv = self.server(d)
+            seen = []
+
+            class FakeGemini:
+                name, model, label = "gemini", "gemini-3.8-flash", "gemini-3.8-flash"
+                def json_call(self, system, user, response_schema=None, max_output_tokens=0):
+                    seen.append(user)
+                    first = int(user.split("Candidates:\n")[1].splitlines()[0][1:].split("]")[0])
+                    return {"items": [{"id": first, "category": "Credit risk", "impact": 8, "headline": "G pick",
+                                       "why_it_matters": "w"}], "radar": [], "cro_focus": {"id": first, "message": "m"}}
+
+            srv.gemini = FakeGemini
+            text, err = self.call(srv, "risk_week_run", {"publish": False})          # default: gemini
+            self.assertFalse(err)
+            self.assertIn("Ranked by: AI · gemini (gemini-3.8-flash", text)
+            self.assertIn("story of the week: G pick", text)
+            self.assertIn("not published (publish = false)", text)
+            for secret in ("SECRET-CRO-NOTE", "SECRET-PENDING"):
+                self.assertNotIn(secret, text)
+                self.assertNotIn(secret, seen[0])                 # nor sent to Gemini
+            text, err = self.call(srv, "risk_week_run", {"ranker": "keywords", "publish": False})
+            self.assertIn("Ranked by: keywords (AI off)", text)
+            def no_key():
+                raise RuntimeError("set GEMINI_API_KEY")
+            srv.gemini = no_key
+            text, err = self.call(srv, "risk_week_run", {"publish": False})
+            self.assertFalse(err)
+            self.assertIn("keywords (Gemini unavailable: set GEMINI_API_KEY)", text)
+            self.assertTrue(self.call(srv, "risk_week_run", {"ranker": "gpt"})[1])
 
     def test_shifted_ids_are_refused(self):
         with tempfile.TemporaryDirectory() as d:

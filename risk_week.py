@@ -2775,6 +2775,18 @@ MCP_TOOLS = [
                                     "radar and cro_focus, exactly as described by risk_week_prepare.",
                      "type": ["object", "string"]},
          "publish": {"type": "boolean", "description": "Publish to Confluence (default true)"}}}},
+    {"name": "risk_week_run",
+     "description": "The whole weekly report in one call, ranked on the user's computer instead of by you: "
+                    "ranker 'gemini' (Google Gemini, using the user's GEMINI_API_KEY; falls back to the "
+                    "keyword ranking if Gemini fails) or 'keywords' (no AI). Writes the slides, page and "
+                    "Markdown and publishes to Confluence, like risk_week_publish. Use this when the user asks "
+                    "for Gemini or for no AI; use risk_week_prepare + risk_week_publish when the user wants you "
+                    "(GigaCode) to rank. Gemini can take up to two minutes when it is busy.",
+     "inputSchema": {"type": "object", "properties": {
+         "ranker": {"type": "string", "enum": ["gemini", "keywords"],
+                    "description": "Who ranks the news: gemini (default) or keywords"},
+         "days": {"type": "integer", "description": "Period in days (default 7)"},
+         "publish": {"type": "boolean", "description": "Publish to Confluence (default true)"}}}},
     {"name": "risk_week_check",
      "description": "Checks the Confluence settings without changing anything: the news page it publishes "
                     "to, whether publishing is allowed, and the RBI compliance (ISE) page counts.",
@@ -2833,6 +2845,7 @@ class McpServer:
         self.week: Week | None = None
         self.pool: list[Story] = []
         self.top = 3
+        self.gemini: Callable[[], object] = lambda: GeminiProvider()
 
     # --- protocol ---------------------------------------------------------
     def handle(self, msg: dict) -> dict | None:
@@ -2845,8 +2858,10 @@ class McpServer:
             return self._ok(mid, {"protocolVersion": params.get("protocolVersion") or MCP_VERSION,
                                   "capabilities": {"tools": {}},
                                   "serverInfo": {"name": "risk-week", "version": "1.0"},
-                                  "instructions": "Call risk_week_prepare, rank the candidates as it "
-                                                  "says, then call risk_week_publish with the ranking."})
+                                  "instructions": "To rank the news yourself: call risk_week_prepare, rank "
+                                                  "the candidates as it says, then call risk_week_publish "
+                                                  "with the batch code and your ranking. If the user asks "
+                                                  "for Gemini or for no AI, call risk_week_run instead."})
         if method == "ping":
             return self._ok(mid, {})
         if method == "tools/list":
@@ -2854,7 +2869,7 @@ class McpServer:
         if method == "tools/call":
             name, args = params.get("name"), params.get("arguments") or {}
             tool = {"risk_week_prepare": self.prepare, "risk_week_publish": self.publish,
-                    "risk_week_check": self.check}.get(name)
+                    "risk_week_run": self.run_local, "risk_week_check": self.check}.get(name)
             if tool is None:
                 return {"jsonrpc": "2.0", "id": mid, "error": {"code": -32602, "message": f"unknown tool {name}"}}
             real_stdout = sys.stdout
@@ -2962,24 +2977,53 @@ class McpServer:
                     f"items (id, category, impact, headline, why_it_matters), radar and cro_focus, using "
                     f"the ids in brackets from risk_week_prepare.", True)
         picked.status = f"AI · GigaCode via MCP ({len(self.pool)} candidates)"
-        a = type("Args", (), {"confluence_config": str(self.base / CONFLUENCE_FILE),
-                              "confluence_dry_run": False, "confluence_replace": False})()
-        cfg, _ = _find_confluence_config(a)
-        compliance, comp_info = load_compliance(cfg)
-        res = finish_week(self.week, self.top, picked, picked.status,
-                          [{"request": "rank", "via": "MCP", "candidates": len(self.pool),
-                            "reply": args.get("ranking")}],
-                          load_cro_notes(self.base / "cro_desk.txt"),
-                          load_pending(self.base / "pending_items.txt"))
-        res.compliance, res.compliance_info = compliance, comp_info
-        files = write(res, self.out_dir)
-        published = (confluence_step(res, a, files) if args.get("publish", True)
-                     else "Confluence: not published (publish = false)")
+        week, n = self.week, len(self.pool)
         self.week, self.pool, self.batch = None, [], None    # one report per prepare
         try:
             self._state_file().unlink()
         except OSError:
             pass
+        return self._finish(week, picked, picked.status,
+                            [{"request": "rank", "via": "MCP", "candidates": n,
+                              "reply": args.get("ranking")}], args.get("publish", True))
+
+    def run_local(self, args: dict) -> str:
+        """The whole report ranked on this computer: Gemini (default) or the keyword ranking."""
+        ranker = str(args.get("ranker") or "gemini").lower()
+        if ranker not in ("gemini", "keywords"):
+            return "ranker must be 'gemini' or 'keywords'.", True
+        week = prepare_week(int(args.get("days") or 7), self.sources, self.fetcher, self.now,
+                            lambda m: print(m, file=sys.stderr))
+        if not week.stories:
+            return "No candidate stories this week (all feeds empty or unreachable).", True
+        ai, picked, log = "keywords (AI off)", None, []
+        if ranker == "gemini":
+            try:
+                provider = self.gemini()
+            except Exception as e:  # noqa: BLE001 — no key, no network: the keyword ranking stands
+                ai = f"keywords (Gemini unavailable: {e})"[:300]
+            else:
+                picked = explain(week.pool(), provider, self.top, week.profile.bank, log,
+                                 week.profile.guidance, list(week.profile.topics))
+                ai = picked.status
+                if picked.ok:
+                    missing = [s for s in flatten(picked.blocks) if not s.why]
+                    if missing:
+                        fill_why(missing, provider, week.profile.bank, log, week.profile.guidance)
+        return self._finish(week, picked, ai, log, args.get("publish", True))
+
+    def _finish(self, week: "Week", picked, ai: str, log: list, publish: bool = True) -> str:
+        a = type("Args", (), {"confluence_config": str(self.base / CONFLUENCE_FILE),
+                              "confluence_dry_run": False, "confluence_replace": False})()
+        cfg, _ = _find_confluence_config(a)
+        compliance, comp_info = load_compliance(cfg)
+        res = finish_week(week, self.top, picked, ai, log,
+                          load_cro_notes(self.base / "cro_desk.txt"),
+                          load_pending(self.base / "pending_items.txt"))
+        res.compliance, res.compliance_info = compliance, comp_info
+        files = write(res, self.out_dir)
+        published = (confluence_step(res, a, files) if publish
+                     else "Confluence: not published (publish = false)")
         # Only a short confirmation goes back to the client: no pending items, CRO notes or ISE rows.
         shown = sum(len(v) for v in res.blocks.values())
         story = res.cro_focus.story.as_dict()["headline"] if res.cro_focus else "none"

@@ -214,8 +214,11 @@ with an in-house model. The script runs as an MCP server that GigaCode calls:
 
 1. In GigaCode: **MCP → Add server**. Name `risk-week`, Transport **STDIO**, command `python`,
    arguments `C:\path\to\risk_week.py --mcp` (the full path to your copy).
-2. Ask GigaCode: *"Prepare this week's risk report: call risk_week_prepare, rank the candidates
-   as it instructs, then call risk_week_publish with your ranking."*
+2. Ask GigaCode, choosing who ranks the news:
+   - **GigaCode ranks:** *"Prepare this week's risk report: call risk_week_prepare, rank the
+     candidates as it instructs, then call risk_week_publish with the batch code and your ranking."*
+   - **Gemini ranks:** *"Run this week's risk report with Gemini: call risk_week_run."*
+   - **No AI:** *"Run this week's risk report without AI: call risk_week_run with ranker keywords."*
 
 The tools:
 
@@ -223,6 +226,7 @@ The tools:
 |---|---|
 | `risk_week_prepare` | Collects, filters and groups the news on your computer (about 10 seconds) and returns up to 150 numbered stories with the ranking instructions |
 | `risk_week_publish` | Takes GigaCode's ranking, writes the slides, page and Markdown to `output/` next to the script, adds pending items, CRO notes and ISE items locally, and publishes to Confluence |
+| `risk_week_run` | The whole report in one call, ranked on your computer: `ranker` `gemini` (default; falls back to keywords if Gemini fails) or `keywords` (no AI). Use it when you want Gemini or no AI from the GigaCode chat |
 | `risk_week_check` | The read-only Confluence check |
 
 **Batch codes.** `risk_week_prepare` returns a batch code with its numbered list and saves
