@@ -11,3 +11,7 @@ confluence*.txt
 *PAT*.txt
 *pat*.txt
 PA.txt
+# Borrower names (credit portfolio watch)
+top 20.txt
+top*.txt
+!top20.example.txt

@@ -1066,6 +1066,146 @@ class TestEventsAndReports(unittest.TestCase):
         self.assertTrue(rw.load_events_file(pathlib.Path(rw.__file__).with_name("events.json")))
 
 
+PF_NEWS = {
+    "Acme Steel": rss(
+        ("Acme Steel defaults on bond interest, lenders move NCLT", "https://pf/1", "", "Wed, 04 Nov 2026 08:00:00 GMT", "ET"),
+        ("Acme Steel misses interest payment; NCLT plea by lenders", "https://pf/2", "", "Wed, 04 Nov 2026 09:00:00 GMT", "BS"),
+        ("Steel prices fall in October", "https://pf/3", "Acme Steel among producers", "Wed, 04 Nov 2026 10:00:00 GMT", "ET"),
+        ("Acme Steel wins award in 2025", "https://pf/4", "", "Mon, 05 Oct 2026 10:00:00 GMT", "ET"),
+        ("Stocks to watch today: Acme Steel, Infosys", "https://pf/6", "", "Wed, 04 Nov 2026 07:00:00 GMT", "ET")),
+    "Bharat Power": rss(
+        ("Bharat Power bags ₹2,000 crore order from NTPC", "https://pf/5", "", "Tue, 03 Nov 2026 10:00:00 GMT", "Mint"),
+        ("bpl tie-up announced", "https://pf/7", "", "Tue, 03 Nov 2026 11:00:00 GMT", "Mint")),   # short alias: case
+    "Quiet Co": rss(),
+}
+
+
+def pf_fetcher(url):
+    import urllib.parse
+    if url.startswith("https://news.google.com/"):
+        q = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)["q"][0]
+        for name, body in PF_NEWS.items():
+            if f'"{name}"' in q:
+                return body
+    return fetcher(url)
+
+
+class TestPortfolio(unittest.TestCase):
+    def write_file(self, d, text="# my borrowers\n1. Acme Steel Limited\nBharat Power Ltd | BPL\nQuiet Co\nacme steel limited\n"):
+        f = pathlib.Path(d) / "top 20.txt"
+        f.write_text(text, encoding="utf-8")
+        return f
+
+    def sources(self, f):
+        return dict(SOURCES, portfolio={"file": str(f)})
+
+    def test_load_file(self):
+        with tempfile.TemporaryDirectory() as d:
+            cs = rw.load_portfolio(self.write_file(d))
+            self.assertEqual([c.name for c in cs], ["Acme Steel Limited", "Bharat Power Ltd", "Quiet Co"])
+            self.assertEqual(cs[1].aliases, ["BPL"])
+            self.assertEqual(cs[0].query, '"Acme Steel"')
+            self.assertEqual(cs[1].query, '"Bharat Power" OR "BPL"')
+            f = pathlib.Path(d) / "cp.txt"
+            f.write_bytes("Société Générale\n".encode("cp1252"))        # Notepad in the Windows code page
+            self.assertEqual(rw.load_portfolio(f)[0].name, "Société Générale")
+
+    def test_flags(self):
+        self.assertEqual(rw.ews_flags("Lenders drag X to NCLT")[0], ("Default / insolvency", "red"))
+        self.assertEqual(rw.ews_flags("CRISIL downgrades X to BB")[0][1], "red")
+        self.assertEqual(rw.ews_flags("ED raids X promoters")[0][0], "Fraud / enforcement")
+        self.assertEqual(rw.ews_flags("X auditor resigns")[0][1], "amber")
+        self.assertEqual(rw.ews_flags("X bags order worth ₹500 crore")[0][1], "green")
+        self.assertEqual(rw.ews_flags("X to hold AGM on Friday"), [])
+
+    def test_scan_render_and_never_to_gemini(self):
+        sent = []
+
+        class Spy:
+            name, model = "spy", "spy-1"
+
+            def json_call(self, system_prompt, user_content, response_schema=None, max_output_tokens=0):
+                sent.append(system_prompt + user_content)
+                return {"items": [{"id": 1, "category": "Credit risk", "impact": 6, "headline": "H",
+                                   "why_it_matters": "W"}], "radar": [], "cro_focus": {"id": 1, "message": "m"}}
+
+        with tempfile.TemporaryDirectory() as d:
+            res = rw.run(top=3, sources=self.sources(self.write_file(d)), fetcher=pf_fetcher, now=NOW, provider=Spy())
+            for text in sent:
+                for secret in ("Acme", "Bharat Power", "BPL", "Quiet Co", "https://pf/"):
+                    self.assertNotIn(secret, text)                # borrowers never reach Gemini
+            acme, bharat, quiet = res.portfolio
+            self.assertEqual(len(acme.stories), 1)                # two outlets, one story; no-name and old dropped
+            self.assertEqual(len(acme.stories[0].items), 2)
+            self.assertEqual(acme.signal, ("Default / insolvency", "red"))
+            self.assertEqual(bharat.signal[1], "green")
+            self.assertEqual(len(bharat.stories), 1)               # "bpl" is not "BPL"
+            self.assertEqual(quiet.stories, [])
+            self.assertEqual([c.name for c in rw.portfolio_order(res.portfolio)], ["Acme Steel Limited", "Bharat Power Ltd"])
+            self.assertEqual(rw._pf_counts(res.portfolio), "3 names · 2 with news · 1 red · 1 positive")
+            self.assertNotIn("https://pf/1", [s.lead.link for s in res.top])   # not in the six blocks
+            md = rw.to_markdown(res)
+            self.assertIn("## Credit portfolio watch", md)
+            self.assertIn("**Red · Default / insolvency**", md)
+            self.assertIn("No news this week: Quiet Co", md)
+            page = rw.to_html(res)
+            self.assertIn('<li class="red">', page)
+            self.assertIn("CREDIT PORTFOLIO WATCH", rw.to_console(res, {}))
+            body = rw.to_confluence(res)
+            import xml.etree.ElementTree as ET
+            ET.fromstring('<r xmlns:ac="a" xmlns:ri="b">' + body + "</r>")
+            self.assertIn("Credit portfolio watch", body)
+            try:
+                from pptx import Presentation
+            except ImportError:
+                return
+            files = rw.write(res, d)
+            text = "\n".join(sh.text_frame.text for sl in Presentation(files["pptx"]).slides
+                             for sh in sl.shapes if sh.has_text_frame)
+            self.assertIn("Credit portfolio watch", text)
+
+    def test_search_failure_and_missing_file_not_fatal(self):
+        def broken(url):
+            if "Acme" in urllib.parse.unquote_plus(url):
+                raise OSError("down")
+            return pf_fetcher(url)
+        import urllib.parse
+        with tempfile.TemporaryDirectory() as d:
+            res = rw.run(top=3, sources=self.sources(self.write_file(d)), fetcher=broken, now=NOW)
+            self.assertTrue(any("Portfolio search (Acme Steel Limited)" in e for e in res.errors))
+            self.assertEqual(res.portfolio[1].signal[1], "green")
+            res = rw.run(top=3, sources=self.sources(pathlib.Path(d) / "none.txt"), fetcher=pf_fetcher, now=NOW)
+            self.assertEqual(res.portfolio, [])
+            self.assertNotIn("Credit portfolio watch", rw.to_html(res))
+
+    def test_gigacode_notes(self):
+        with tempfile.TemporaryDirectory() as d:
+            f = self.write_file(d)
+            srv = rw.McpServer(fetcher=pf_fetcher, sources=self.sources(f), now=NOW,
+                               out_dir=pathlib.Path(d) / "out", base_dir=pathlib.Path(d))
+            r = srv.handle({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                            "params": {"name": "risk_week_prepare", "arguments": {}}})
+            text = r["result"]["content"][0]["text"]
+            self.assertIn("## Credit portfolio watch", text)
+            self.assertIn("Acme Steel misses interest payment", text)   # newest headline leads the story
+            self.assertNotIn("- Quiet Co", text)                 # only companies with news
+            batch = text.split("Batch: ")[1].split("\n")[0]
+            lines = {int(l[1:l.index("]")]): l for l in text.split("Candidates:\n")[1].splitlines() if l.startswith("[")}
+            ecl = next(k for k, v in lines.items() if "expected credit loss" in v)
+            ranking = {"items": [{"id": ecl, "category": "Credit risk", "impact": 9, "headline": "ECL draft",
+                                  "why_it_matters": "W"}], "radar": [], "cro_focus": {"id": ecl, "message": "m"},
+                       "portfolio": [{"company": "Bharat Power Ltd", "signal": "none", "note": "Routine order news."},
+                                     {"company": "Acme Steel", "signal": "red", "note": "Call the RM today."}]}
+            r = srv.handle({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {
+                "name": "risk_week_publish", "arguments": {"batch": batch, "ranking": ranking, "publish": False}}})
+            reply = r["result"]["content"][0]["text"]
+            self.assertFalse(r["result"]["isError"], reply)
+            self.assertIn("Credit portfolio watch: 3 names", reply)
+            md = next((pathlib.Path(d) / "out").glob("*.md")).read_text(encoding="utf-8")
+            self.assertIn("GigaCode: Call the RM today.", md)
+            self.assertIn("| Bharat Power Ltd | News |", md)      # GigaCode overrode the keyword flag
+
+
 class TestPrivacy(unittest.TestCase):
     def test_notes_and_pending_never_sent_to_ai(self):
         sent = []

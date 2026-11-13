@@ -10,7 +10,7 @@ web page for the weekly status meeting ("This week in risk"). The user runs it o
 ```bash
 pip install -r requirements.txt
 python risk_week.py --ai --open        # Gemini free tier; --open opens the web page
-python -m unittest test_risk_week      # 94 tests, no network or key needed
+python -m unittest test_risk_week      # 99 tests, no network or key needed
 ```
 
 Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
@@ -25,6 +25,7 @@ Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
 | `cro_desk.txt` | The user's notes for the CRO box, one per line. Git-ignored (may be internal); `cro_desk.example.txt` shows the format |
 | `pending_items.txt` | Pending items for the status meeting, `Item \| Owner \| Due \| Status` per line. Every run shows them and asks for updates first (`review_pending`: number = edit, `a` add, `d N` done, `x N` delete, Enter = carry on; saved with `save_pending`, header comments kept); skipped with `--no-prompt` or when stdin is not a terminal. Git-ignored; `pending_items.example.txt` shows the format |
 | `events.json` | Upcoming conferences and programmes (`events`, dated) and ones to watch (`watch`, no date yet). Public, committed; the user edits it |
+| `top 20.txt` | The bank's borrowers for the credit portfolio watch, `Name \| alias` per line. **Git-ignored** (`top*.txt`); `top20.example.txt` shows the format |
 | `test_risk_week.py` | unittest tests using sample feeds and fake AI replies |
 | `test_headlines.json` | One week's real headlines (6 Nov 2026), used to test the same-story grouping |
 | `.env` | `GEMINI_API_KEY=...` on the user's machine. Git-ignored |
@@ -184,8 +185,23 @@ Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
    "on or before <date>"; open or undated drafts of the last 30 days), **Upcoming** (`events.json`
    plus `read_cafral_events`: CAFRAL event pages' `atc_*` vars; within `events.window_days` (60),
    deduped by name) and **New reports** (`pick_reports`: `sources.json` `reports` feeds and
-   queries, `Item.kind == "report"`, never in the six blocks; must match a risk block). Any
+   queries, `Item.kind == "report"`, never in the six blocks; must match a risk block). Upcoming
+   is capped at `events.max` (10). events.json was filled from a research agent's validation of
+   the user's list (13 Nov 2026): 33 dated events (NIBM, IIBF, IACPM, Risk Live, GARP, IOD,
+   AIMA, Global Insight), 17 under `watch` (no 2027 date yet, or unverified). Any
    failure goes to the errors list, never fatal. Nothing here goes to the AI.
+
+13. **Credit portfolio watch** (user's request, 13 Nov 2026: "a news analyzer on my credit
+   portfolio", names in `top 20.txt`). The user's choices: Google News search per name (names
+   only, quoted; never to Gemini), a section in the weekly report (page sidebar after pending
+   items, slide after slide 1, Markdown, console, Confluence after the radar), local rules plus
+   GigaCode. `load_portfolio` (utf-8 or cp1252, numbering stripped, `|` aliases),
+   `scan_portfolio` (search + the week's raw items; headline must name the company; `PF_NOISE`
+   drops stock tips and market lists; aliases of 4 chars or fewer match case-sensitively, so
+   "Vi" is not "GTA VI"), `EWS` flags red / amber / green from the shown headline only.
+   `Company.signal`: GigaCode's `ai_level` (red/amber/green/none) wins over the keyword flag.
+   MCP prepare appends `portfolio_prompt()`; publish runs `apply_portfolio_notes()`. Live
+   check with 10 public names: ED attachment = red, Q2 loss = amber, order wins = positive.
 
 ## Decisions the user made
 
@@ -261,4 +277,4 @@ holds only a Gemini default-model fix. `yogeshthakker/RiskLens2` was emptied and
   f-string expressions: the user's Python version is unknown). Keep the tool to one file and the standard library
   (python-pptx and anthropic optional).
 - Check the slide visually after layout changes (LibreOffice can render it to PDF).
-- Never commit `cro_desk.txt`, `pending_items.txt`, `.env`, `Confluence PAT.txt` or `output/`.
+- Never commit `cro_desk.txt`, `pending_items.txt`, `top 20.txt`, `.env`, `Confluence PAT.txt` or `output/`.

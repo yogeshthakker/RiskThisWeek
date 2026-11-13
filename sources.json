@@ -79,6 +79,16 @@
       "name": "Central Banking",
       "url": "https://www.centralbanking.com/feeds/rss",
       "weight": 0.8
+    },
+    {
+      "name": "Risk.net Asia",
+      "url": "https://www.risk.net/feeds/rss/tag/asia",
+      "weight": 0.8
+    },
+    {
+      "name": "RMAI news",
+      "url": "https://rmaindia.org/feed/",
+      "weight": 0.5
     }
   ],
   "google_news": {
@@ -247,15 +257,30 @@
         "name": "BIS publications",
         "url": "https://www.bis.org/doclist/bis_fsi_publs.rss",
         "weight": 0.6
+      },
+      {
+        "name": "McKinsey insights",
+        "url": "https://www.mckinsey.com/insights/rss",
+        "weight": 0.5
+      },
+      {
+        "name": "Enterprise Risk magazine (IRM)",
+        "url": "https://enterpriseriskmag.com/feed/",
+        "weight": 0.5
+      },
+      {
+        "name": "NC State ERM Initiative",
+        "url": "https://erm.ncsu.edu/feed/",
+        "weight": 0.5
       }
     ],
     "queries": [
       "site:sebi.gov.in \"consultation paper\"",
       "IFSCA consultation paper",
-      "\"Basel Committee\" consultative document",
       "site:transunioncibil.com MSME",
       "site:careratings.com banks",
-      "site:dsci.in"
+      "site:dsci.in",
+      "site:bis.org \"Basel Committee\""
     ]
   },
   "events": {
@@ -263,6 +288,13 @@
     "file": "events.json",
     "cafral": true,
     "rbi_drafts": true,
-    "window_days": 60
+    "window_days": 60,
+    "max": 10
+  },
+  "portfolio": {
+    "_comment": "Credit portfolio watch: companies in 'top 20.txt' (git-ignored), one per line, 'Name | alias'. One Google News search per company (its name only); the results never go to Gemini, only to GigaCode via MCP. Delete this block or run with --no-portfolio to switch it off.",
+    "file": "top 20.txt",
+    "per_company": 3,
+    "search": true
   }
 }

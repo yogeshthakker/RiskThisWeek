@@ -88,6 +88,35 @@ longer need showing). `pending_items.txt` is not committed to git.
 Add, remove or edit any of them; `weight` makes a source rank higher. A source that cannot be
 read is named at the end of the page; the rest still run.
 
+## Credit portfolio watch
+
+Put the companies you lend to in **`top 20.txt`** next to `risk_week.py` (copy
+`top20.example.txt`). Write one company per line, with other names after `|` if needed, for
+example `Larsen & Toubro Limited | L&T`. The file is git-ignored and never committed.
+
+Each run searches Google News once per company, sending only the company's name in quotes. It
+also checks the week's collected news. A story counts only if its headline names the company;
+stock tips and market lists are skipped. Each company gets an early-warning flag from its
+headlines:
+
+- **Red**: default or insolvency (NCLT, IBC, NPA, missed payment, OTS), rating downgrade or
+  negative watch, fraud or enforcement (ED, CBI, SFIO, raids, money laundering).
+- **Amber**: governance (auditor or director resigns, pledges, delayed results) and
+  financial or operational stress (losses, falling profit, shutdowns, strikes, shares falling).
+- **Positive**: upgrades, order wins, profit growth, deleveraging.
+
+The section appears in the page sidebar, on a slide after slide 1, in Markdown and the console,
+and in the Confluence entry. Red names come first. Companies with no news are listed in one
+line. The flags come from keywords, so read each story.
+
+**Privacy:** the company names and their news are never sent to Gemini. With GigaCode (MCP),
+`risk_week_prepare` adds the companies that have news, and GigaCode can return its own signal
+and a one-line note for each (`"portfolio": [...]` in the ranking). The signal replaces the
+keyword flag.
+
+Use `--portfolio-file PATH` to read another file, or `--no-portfolio` to skip the section.
+`"portfolio"` in `sources.json` sets the file name and `per_company` (default 3).
+
 ## Events & reports
 
 Next to the news, the page, the last slide and Confluence show three short lists:
