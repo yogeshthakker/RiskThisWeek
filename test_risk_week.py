@@ -290,6 +290,14 @@ class TestAiFirst(unittest.TestCase):
                              [(s.lead.link, s.headline, s.impact) for s in plain.top])
         self.assertTrue(ai)
 
+    def test_longer_why_requested_and_kept(self):
+        ai = FakeAI({"items": []})
+        rw.run(top=3, sources=SOURCES, fetcher=fetcher, now=NOW, provider=ai)
+        self.assertIn("two or three sentences (at most 55 words)", ai.prompt)
+        self.assertIn("what to check, prepare or act on", ai.prompt)
+        long_why = " ".join(["word"] * 55)                        # ~280 characters
+        self.assertEqual(rw._why({"why_it_matters": long_why}), long_why)
+
     def test_india_test_in_prompt(self):
         ai = FakeAI({"items": []})
         rw.run(top=3, sources=SOURCES, fetcher=fetcher, now=NOW, provider=ai)
