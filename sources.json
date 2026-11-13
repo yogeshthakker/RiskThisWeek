@@ -238,5 +238,31 @@
       "Gazprombank"
     ],
     "penalty_threshold_crore": 10
+  },
+  "reports": {
+    "_comment": "Report sources: listed under 'Events & reports' as 'New reports' (top `max` of the week by the profile's terms), never in the six risk blocks. Verified 13 Nov 2026.",
+    "max": 5,
+    "feeds": [
+      {
+        "name": "BIS publications",
+        "url": "https://www.bis.org/doclist/bis_fsi_publs.rss",
+        "weight": 0.6
+      }
+    ],
+    "queries": [
+      "site:sebi.gov.in \"consultation paper\"",
+      "IFSCA consultation paper",
+      "\"Basel Committee\" consultative document",
+      "site:transunioncibil.com MSME",
+      "site:careratings.com banks",
+      "site:dsci.in"
+    ]
+  },
+  "events": {
+    "_comment": "Events & reports: upcoming events from events.json (hand-kept, validated) and CAFRAL's programme pages, within window_days; open RBI drafts with their comment deadlines.",
+    "file": "events.json",
+    "cafral": true,
+    "rbi_drafts": true,
+    "window_days": 60
   }
 }

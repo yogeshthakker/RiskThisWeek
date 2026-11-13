@@ -183,6 +183,7 @@ class Item:
     publisher: str = ""
     category: str = ""
     score: float = 0.0
+    kind: str = "news"          # "news" (the six blocks) or "report" (Events & reports section)
 
     def tokens(self) -> set[str]:
         words = re.findall(r"[a-z0-9₹]+", self.title.lower())
@@ -243,6 +244,9 @@ class Result:
     compliance: list["ComplianceItem"] = field(default_factory=list)  # open items from the RBI compliance page
     compliance_info: dict = field(default_factory=dict)  # source page link, counts, or why it was not read
     blocks: dict[str, list[Story]] = field(default_factory=dict)  # block name -> its items, in BLOCKS order
+    reports: list[Story] = field(default_factory=list)            # Events & reports: new reports
+    events: list["Event"] = field(default_factory=list)            # Events & reports: upcoming
+    consultations: list["Consultation"] = field(default_factory=list)  # Events & reports: comments due
     ai_log: list = field(default_factory=list)          # raw AI replies, saved next to the output
 
 
@@ -373,10 +377,21 @@ def collect(sources: dict, days: int, fetcher: Callable[[str], bytes] = fetch,
     g = sources.get("google_news") or {}
     for q in g.get("queries", []):
         jobs.append((f"Google News: {q}", google_news_url(q, days), float(g.get("weight", 1.0)), False, True))
+    rep = sources.get("reports") or {}      # report sources: listed under "New reports", not ranked
+    first_report = len(jobs)
+    for f in rep.get("feeds", []):
+        jobs.append((f["name"], f["url"], float(f.get("weight", 1.0)), bool(f.get("primary")), False))
+    for q in rep.get("queries", []):
+        jobs.append((f"Google News: {q}", google_news_url(q, days), 1.0, False, True))
+    kinds = {j[0]: ("report" if n >= first_report else "news") for n, j in enumerate(jobs)}
+
     def one(job):
         name, url, weight, primary, google = job
         try:
-            return name, parse_feed(fetcher(url), name, weight, primary, google), None
+            got = parse_feed(fetcher(url), name, weight, primary, google)
+            for it in got:
+                it.kind = kinds.get(name, "news")
+            return name, got, None
         except Exception as e:  # noqa: BLE001 — one bad feed must not stop the rest
             return name, None, e
 
@@ -1143,6 +1158,176 @@ INDIA = re.compile(r"\bindia|\brbi\b|reserve bank|\bsebi\b|rupee|₹|\bnse\b|\bb
 AI_POOL = 150      # stories sent to the AI, at most (the keyword score only trims the list)
 
 
+# ---------------------------------------------------------------------------
+# Events & reports: upcoming events, open consultations (comments due), new reports
+# ---------------------------------------------------------------------------
+
+EVENTS_FILE = Path(__file__).resolve().parent / "events.json"
+CAFRAL_EVENTS = "https://www.cafral.org.in/events"
+RBI_DRAFTS = "https://www.rbi.org.in/Scripts/DraftNotificationsGuildelines.aspx"
+
+
+@dataclass
+class Event:
+    name: str
+    start: date
+    end: date | None = None
+    place: str = ""
+    url: str = ""
+    organiser: str = ""
+    topics: str = ""
+
+    @property
+    def when(self) -> str:
+        if self.end and self.end != self.start:
+            same_month = (self.end.year, self.end.month) == (self.start.year, self.start.month)
+            return (f"{self.start.day}–{self.end.strftime('%d %b %Y').lstrip('0')}" if same_month else
+                    f"{self.start.strftime('%d %b').lstrip('0')} – {self.end.strftime('%d %b %Y').lstrip('0')}")
+        return self.start.strftime("%d %b %Y").lstrip("0")
+
+
+@dataclass
+class Consultation:
+    title: str
+    url: str
+    published: date | None = None
+    deadline: date | None = None
+    source: str = "RBI"
+
+    def days_left(self, today: date) -> int | None:
+        return (self.deadline - today).days if self.deadline else None
+
+
+def _iso_date(text: str) -> date | None:
+    m = re.search(r"(\d{4})-(\d{2})-(\d{2})", text or "")
+    if not m:
+        return _first_date(text or "")
+    try:
+        return date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+    except ValueError:
+        return None
+
+
+def load_events_file(path: Path) -> list[Event]:
+    """Hand-kept events: {"events": [{"name", "start": "YYYY-MM-DD", "end", "place", "url",
+    "organiser", "topics"}], "watch": [...]} (watch = dates not yet announced; not shown)."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    out = []
+    for e in (data.get("events") if isinstance(data, dict) else data) or []:
+        if not isinstance(e, dict) or not e.get("name"):
+            continue
+        start = _iso_date(str(e.get("start") or ""))
+        if start is None:
+            continue
+        out.append(Event(name=str(e["name"]), start=start, end=_iso_date(str(e.get("end") or "")),
+                         place=str(e.get("place") or ""), url=str(e.get("url") or ""),
+                         organiser=str(e.get("organiser") or ""), topics=str(e.get("topics") or "")))
+    return out
+
+
+def read_cafral_events(fetcher: Callable[[str], bytes], limit: int = 15) -> list[Event]:
+    """CAFRAL (RBI's College of Supervisors) programmes: the events list, then each event page's
+    add-to-calendar fields (atc_date_start, atc_date_end, atc_title, atc_location)."""
+    page = fetcher(CAFRAL_EVENTS).decode("utf-8", "replace")
+    links = list(dict.fromkeys(re.findall(r'href="(/events/[a-z0-9][a-z0-9\-]{8,})"', page)))[:limit]
+    out = []
+    for path in links:
+        try:
+            html_ = fetcher("https://www.cafral.org.in" + path).decode("utf-8", "replace")
+        except Exception:  # noqa: BLE001 — skip one unreadable event page
+            continue
+
+        def var(k: str) -> str:
+            m = re.search(rf'class="{k}"[^>]*>(.*?)</var>', html_, re.S)
+            return _clean(m.group(1), 300) if m else ""
+        start = _iso_date(var("atc_date_start"))
+        if start and var("atc_title"):
+            out.append(Event(name=var("atc_title"), start=start, end=_iso_date(var("atc_date_end")),
+                             place=var("atc_location"), url="https://www.cafral.org.in" + path,
+                             organiser="CAFRAL"))
+    return out
+
+
+_DEADLINE = re.compile(r"(?:on or before|latest by|not later than|no later than|till|until|by)\s+"
+                       r"([A-Z][a-z]+\.? \d{1,2},? \d{4}|\d{1,2} [A-Z][a-z]+,? \d{4})")
+
+
+def read_rbi_drafts(fetcher: Callable[[str], bytes], today: date, recent_days: int = 120) -> list[Consultation]:
+    """RBI's 'Draft Notifications/Guidelines' page: drafts published in the last `recent_days`,
+    each with the comment deadline read from its press release ('on or before November 26, 2026')."""
+    page = fetcher(RBI_DRAFTS).decode("utf-8", "replace")
+    out: list[Consultation] = []
+    current: date | None = None
+    for m in re.finditer(r'class="tableheader"[^>]*>\s*<b>([^<]+)</b>|'
+                         r"<a class='link2' href=(BS_PressReleaseDisplay\.aspx\?prid=\d+)>(.*?)</a>", page, re.S):
+        if m.group(1):
+            current = _first_date(m.group(1).strip())
+            continue
+        if current and (today - current).days > recent_days:
+            break                               # newest first: the rest are older
+        url = "https://www.rbi.org.in/Scripts/" + m.group(2)
+        c = Consultation(title=_clean(m.group(3), 200), url=url, published=current)
+        try:
+            text = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", fetcher(url).decode("utf-8", "replace")))
+            d = _DEADLINE.search(text)
+            c.deadline = _first_date(d.group(1)) if d else None
+        except Exception:  # noqa: BLE001 — keep it without a deadline
+            pass
+        out.append(c)
+    return out
+
+
+def gather_events(cfg: dict, fetcher: Callable[[str], bytes], today: date) -> tuple[list[Event], list[Consultation], list[str]]:
+    """Upcoming events (events.json + CAFRAL) within `window_days`, and open RBI consultations."""
+    errors: list[str] = []
+    window = int(cfg.get("window_days") or 60)
+    events = load_events_file(Path(cfg["file"]) if cfg.get("file") and Path(cfg["file"]).is_absolute()
+                              else EVENTS_FILE.with_name(cfg.get("file") or EVENTS_FILE.name))
+    if cfg.get("cafral", True):
+        try:
+            events += read_cafral_events(fetcher)
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"CAFRAL events: {type(e).__name__}: {e}"[:300])
+    seen, upcoming = set(), []
+    for e in sorted(events, key=lambda e: e.start):
+        key = re.sub(r"[^a-z0-9]", "", e.name.lower())[:40]
+        if key in seen or (e.end or e.start) < today or (e.start - today).days > window:
+            continue
+        seen.add(key)
+        upcoming.append(e)
+    consultations: list[Consultation] = []
+    if cfg.get("rbi_drafts", True):
+        try:
+            for c in read_rbi_drafts(fetcher, today):
+                if (c.deadline and c.deadline >= today) or (not c.deadline and c.published
+                                                            and (today - c.published).days <= 30):
+                    consultations.append(c)
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"RBI drafts: {type(e).__name__}: {e}"[:300])
+    consultations.sort(key=lambda c: c.deadline or date.max)
+    return upcoming, consultations, errors
+
+
+def pick_reports(items: list[Item], start: datetime, end: datetime, profile: "Profile", n: int = 5) -> list[Story]:
+    """The newest relevant reports (BIS, consultation papers, rating-agency and MSME research):
+    within the period, not routine noise, ranked by the profile's terms, then recency."""
+    keep = []
+    for i in items:
+        i.title = re.sub(r"^\s*\d+\s*\|\s*Page\s+", "", i.title)     # "1 | Page Consultation paper..." (PDF titles)
+        if (i.published and start <= i.published <= end + timedelta(hours=12) and not NOISE.search(i.title)
+                and categorise(i)[0] != "Other"):                       # must touch one of the six risks
+            keep.append(i)
+    span = max((end - start).total_seconds(), 1)
+    for i in keep:
+        rec = 1.0 - min(max((end - i.published).total_seconds() / span, 0), 1)
+        i.category, i.score = "Report", relevance(i, profile) + i.weight + rec
+    stories = [s for s in group(keep) if not (profile.exclude and profile.exclude.search(s.lead.title))]
+    return stories[:max(0, n)]
+
+
 @dataclass
 class Week:
     """The week's stories after collecting, filtering and grouping, before ranking."""
@@ -1154,6 +1339,9 @@ class Week:
     collected: int
     kept: int
     errors: list[str]
+    reports: list[Story] = field(default_factory=list)
+    events: list["Event"] = field(default_factory=list)
+    consultations: list["Consultation"] = field(default_factory=list)
 
     def pool(self) -> list[Story]:
         """The stories an AI ranks: the best AI_POOL by keyword score, shown newest first."""
@@ -1170,14 +1358,22 @@ def prepare_week(days: int = 7, sources: dict | None = None, fetcher: Callable[[
     sources = sources or load_sources()
     profile = Profile.from_sources(sources)
     raw, errors = collect(sources, days, fetcher, log)
+    report_items = [i for i in raw if i.kind == "report"]
+    raw = [i for i in raw if i.kind != "report"]
     kept = [i for i in raw if relevant(i, start, end)]
     routine = [i for i in kept if is_routine_enforcement(i, profile)]
     ranked = [i for i in kept if i not in routine]
     for i in ranked:
         score_item(i, start, end, profile)
     stories = merge_same_story(group(ranked))   # each story once, however many outlets carry it
-    return Week(start=start, end=end, profile=profile, stories=stories, routine=_dedupe_routine(routine),
+    week = Week(start=start, end=end, profile=profile, stories=stories, routine=_dedupe_routine(routine),
                 collected=len(raw), kept=len(kept), errors=errors)
+    week.reports = pick_reports(report_items, start, end, profile, int((sources.get("reports") or {}).get("max", 5)))
+    cfg = sources.get("events") or {}
+    if cfg:
+        week.events, week.consultations, more = gather_events(cfg, fetcher, end.date())
+        week.errors.extend(more)
+    return week
 
 
 # Detentions, arrests and court cases: never the story of the week; abroad, not in the blocks either.
@@ -1290,7 +1486,8 @@ def finish_week(week: Week, top: int = 3, picked: "AiPick | None" = None, ai: st
     return Result(start=week.start, end=week.end, top=flatten(blocks), radar=radar, collected=week.collected,
                   kept=week.kept, errors=week.errors, ai=ai, routine=week.routine,
                   cro_notes=list(cro_notes or []), cro_focus=focus, ai_log=ai_log,
-                  pending=list(pending or []), blocks=blocks)
+                  pending=list(pending or []), blocks=blocks, reports=week.reports, events=week.events,
+                  consultations=week.consultations)
 
 
 def run(days: int = 7, top: int = 3, provider=None, sources: dict | None = None,
@@ -1576,6 +1773,25 @@ def _compliance_markdown(res: Result) -> list[str]:
     return out
 
 
+def _place(p: str) -> str:
+    """'CAFRAL Campus, …, Dadar (West), Mumbai – 400028' -> 'Mumbai'."""
+    if re.search(r"\b(online|virtual|webex|zoom|teams)\b", p or "", re.I):
+        return "Online"
+    last = (p or "").split(",")[-1]
+    return re.sub(r"[\s–-]*\d{6}\s*$", "", last).strip()
+
+
+def _due(c: "Consultation", today: date) -> str:
+    n = c.days_left(today)
+    if n is None:
+        return "deadline not stated"
+    return f"comments due {c.deadline.strftime('%d %b').lstrip('0')} ({'today' if n == 0 else f'{n} day' + ('s' if n != 1 else '')})"
+
+
+def _has_events(res: Result) -> bool:
+    return bool(res.events or res.consultations or res.reports)
+
+
 def _when(item: Item) -> str:
     return item.published.astimezone(IST).strftime("%d %b") if item.published else ""
 
@@ -1619,6 +1835,18 @@ def to_markdown(res: Result) -> str:
         out += ["## Also on the radar", ""]
         out += [f"- [{s.as_dict()['headline']}]({s.lead.link}) — {s.category}" for s in res.radar]
         out.append("")
+    if _has_events(res):
+        today = res.end.date()
+        out += ["## Events & reports", ""]
+        if res.consultations:
+            out += ["**Comments due**", ""] + [f"- [{c.title}]({c.url}) — {c.source}, {_due(c, today)}"
+                                                for c in res.consultations] + [""]
+        if res.events:
+            out += ["**Upcoming**", ""] + [f"- [{ev.name}]({ev.url}) — {ev.when}"
+                                            + (f", {_place(ev.place)}" if ev.place else "") for ev in res.events] + [""]
+        if res.reports:
+            out += ["**New reports**", ""] + [f"- [{st.lead.title}]({st.lead.link}) — {st.lead.publisher or st.lead.source}, "
+                                               f"{_when(st.lead)}" for st in res.reports] + [""]
     if res.routine:
         out += [f"## Routine enforcement, not ranked ({len(res.routine)})", "",
                 "_Fines and directions aimed at a single bank, below the profile's threshold._", ""]
@@ -1670,6 +1898,13 @@ def to_console(res: Result, files: dict) -> str:
             if d["why_it_matters"]:
                 out.append(f"   {d['why_it_matters']}")
             out += [f"   {d['link']}", ""]
+    if _has_events(res):
+        today = res.end.date()
+        out.append("EVENTS & REPORTS")
+        out += [f"  Comments due: {c.title[:90]} ({_due(c, today)})" for c in res.consultations]
+        out += [f"  Upcoming: {ev.when} · {ev.name[:90]}" for ev in res.events]
+        out += [f"  Report: {st.lead.title[:100]}" for st in res.reports]
+        out.append("")
     if res.routine:
         out += [f"Routine enforcement left out of the ranking: {len(res.routine)} item(s), listed in the page.", ""]
     out.append("Written:")
@@ -1750,8 +1985,29 @@ def to_html(res: Result) -> str:
                     f'<span class="meta">{e(s.category)}</span></li>' for s in res.radar)
     routine = "".join(f'<li>{link(i.link, i.title)} <span class="meta">{e(i.publisher or i.source)}, {e(_when(i))}</span></li>'
                       for i in res.routine)
+    evr = ""
+    if _has_events(res):
+        today = res.end.date()
+        late_cls = ' class="late"'
+        parts = []
+        if res.consultations:
+            parts.append("<h3>Comments due</h3><ul>" + "".join(
+                f'<li{late_cls if (c.days_left(today) is not None and c.days_left(today) <= 7) else ""}>'
+                f'{link(c.url, c.title, "", c.title)} <span class="meta">{e(c.source)} · {e(_due(c, today))}</span></li>'
+                for c in res.consultations) + "</ul>")
+        if res.events:
+            parts.append("<h3>Upcoming</h3><ul>" + "".join(
+                f'<li>{link(ev.url, ev.name, "", ev.name)} <span class="meta">{e(ev.when)}'
+                + (f" · {e(_place(ev.place))}" if ev.place else "") + "</span></li>" for ev in res.events) + "</ul>")
+        if res.reports:
+            parts.append("<h3>New reports</h3><ul>" + "".join(
+                f'<li>{link(st.lead.link, st.lead.title, "", st.lead.title)} <span class="meta">'
+                f'{e(st.lead.publisher or st.lead.source)} · {e(_when(st.lead))}</span></li>' for st in res.reports)
+                + "</ul>")
+        evr = f'<section class="panel radar evr"><h2>Events &amp; reports</h2>{"".join(parts)}</section>'
     side = (cro + pending + comp
             + (f'<section class="panel radar"><h2>Also on the radar</h2><ul>{radar}</ul></section>' if radar else "")
+            + evr
             + (f'<section class="panel"><details><summary>Routine enforcement, not ranked ({len(res.routine)})</summary>'
                f'<p class="meta">Fines and directions aimed at a single bank, below the threshold set in '
                f'sources.json.</p><ul>{routine}</ul></details></section>' if routine else ""))
@@ -1781,6 +2037,8 @@ h2{{font-size:1.05rem;margin:0 0 6px}}
 .pending .pm b{{font-weight:600;color:var(--fg)}} .pending li.late .pm b{{color:var(--late)}}
 .comp .it{{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden}}
 .radar li{{padding:2px 0}}
+.evr h3{{font-size:.78rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:10px 0 2px}}
+.evr li.late .meta{{color:var(--late);font-weight:600}}
 .blocks{{display:grid;gap:14px;grid-template-columns:repeat(3,minmax(0,1fr))}}
 .block h2{{color:var(--accent);border-bottom:2px solid var(--tint);padding-bottom:5px}}
 .block ol{{list-style:none;padding:0;margin:0}} .block li{{display:flex;gap:9px;padding:8px 0;border-top:1px solid var(--line)}}
@@ -1954,8 +2212,48 @@ def to_pptx(res: Result, path: Path) -> bool:
                          f"left out of the ranking; listed in the HTML page.")
             note.paragraphs[0].runs[0].font.size = Pt(11)
             note.paragraphs[0].runs[0].font.color.rgb = grey
+    if _has_events(res):
+        _events_slide(prs, blank, header, res, navy, grey, accent)
     prs.save(str(path))
     return True
+
+
+def _events_slide(prs, layout, header, res: Result, navy, grey, accent) -> None:
+    """Events & reports: three columns (comments due, upcoming, new reports), each a linked list."""
+    from pptx.util import Inches, Pt
+    today = res.end.date()
+    slide = prs.slides.add_slide(layout)
+    header(slide, "Events & reports", "Open consultations, upcoming events and new reports")
+    cols = [("Comments due", [(c.title, c.url, f"{c.source} · {_due(c, today)}") for c in res.consultations]),
+            ("Upcoming", [(ev.name, ev.url, ev.when + (f" · {_place(ev.place)}" if ev.place else ""))
+                          for ev in res.events]),
+            ("New reports", [(st.lead.title, st.lead.link, f"{st.lead.publisher or st.lead.source} · {_when(st.lead)}")
+                             for st in res.reports])]
+    w = 3.95
+    for n, (title, rows) in enumerate(cols):
+        tf = slide.shapes.add_textbox(Inches(0.5 + n * (w + 0.25)), Inches(1.45), Inches(w), Inches(5.6)).text_frame
+        tf.word_wrap = True
+        p = tf.paragraphs[0]
+        r = p.add_run()
+        r.text = title
+        r.font.size, r.font.bold, r.font.color.rgb = Pt(18), True, accent
+        p.space_after = Pt(8)
+        if not rows:
+            q = tf.add_paragraph()
+            q.text = "None this week."
+            q.runs[0].font.size, q.runs[0].font.color.rgb = Pt(12), grey
+        for text, url, meta in rows[:7]:
+            q = tf.add_paragraph()
+            r = q.add_run()
+            r.text = _clean(text, 110)
+            r.font.size, r.font.bold, r.font.color.rgb = Pt(13), True, navy
+            if url:
+                r.hyperlink.address = url
+            q.space_after = Pt(1)
+            m = tf.add_paragraph()
+            m.text = meta
+            m.runs[0].font.size, m.runs[0].font.color.rgb = Pt(11), grey
+            m.space_after = Pt(8)
 
 
 def _compliance_slide(prs, layout, header, res: Result, period: str, navy, grey, red, white) -> None:
@@ -2212,6 +2510,22 @@ def to_confluence(res: Result) -> str:
         out.append(_macro("expand", "<ul>" + "".join(
             f"<li>{a(i.link, i.title)} · <em>{e(i.publisher or i.source)}, {e(_when(i))}</em></li>"
             for i in res.routine) + "</ul>", title=f"Routine enforcement, not ranked ({len(res.routine)})"))
+    if _has_events(res):
+        today = res.end.date()
+        parts = ["<h3>Events &amp; reports</h3>"]
+        if res.consultations:
+            parts.append("<p><strong>Comments due</strong></p><ul>" + "".join(
+                f"<li>{a(c.url, c.title)} · <em>{e(c.source)}, {e(_due(c, today))}</em></li>"
+                for c in res.consultations) + "</ul>")
+        if res.events:
+            parts.append("<p><strong>Upcoming</strong></p><ul>" + "".join(
+                f"<li>{a(ev.url, ev.name)} · <em>{e(ev.when)}" + (f", {e(_place(ev.place))}" if ev.place else "")
+                + "</em></li>" for ev in res.events) + "</ul>")
+        if res.reports:
+            parts.append("<p><strong>New reports</strong></p><ul>" + "".join(
+                f"<li>{a(st.lead.link, st.lead.title)} · <em>{e(st.lead.publisher or st.lead.source)}, "
+                f"{e(_when(st.lead))}</em></li>" for st in res.reports) + "</ul>")
+        out.append("".join(parts))
     out.append("<p><em>Machine-selected from public feeds. Check each source before quoting figures or "
                "names.</em></p>")
     # Local status last (news first): the user's pending items, then the RBI compliance (ISE) items.

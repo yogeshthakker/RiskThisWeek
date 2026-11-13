@@ -10,7 +10,7 @@ web page for the weekly status meeting ("This week in risk"). The user runs it o
 ```bash
 pip install -r requirements.txt
 python risk_week.py --ai --open        # Gemini free tier; --open opens the web page
-python -m unittest test_risk_week      # 89 tests, no network or key needed
+python -m unittest test_risk_week      # 94 tests, no network or key needed
 ```
 
 Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
@@ -24,6 +24,7 @@ Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
 | `sources.json` | Feeds, Google News searches and the bank **profile** (what ranks up or down). The user edits this to tune results |
 | `cro_desk.txt` | The user's notes for the CRO box, one per line. Git-ignored (may be internal); `cro_desk.example.txt` shows the format |
 | `pending_items.txt` | Pending items for the status meeting, `Item \| Owner \| Due \| Status` per line. Every run shows them and asks for updates first (`review_pending`: number = edit, `a` add, `d N` done, `x N` delete, Enter = carry on; saved with `save_pending`, header comments kept); skipped with `--no-prompt` or when stdin is not a terminal. Git-ignored; `pending_items.example.txt` shows the format |
+| `events.json` | Upcoming conferences and programmes (`events`, dated) and ones to watch (`watch`, no date yet). Public, committed; the user edits it |
 | `test_risk_week.py` | unittest tests using sample feeds and fake AI replies |
 | `test_headlines.json` | One week's real headlines (6 Nov 2026), used to test the same-story grouping |
 | `.env` | `GEMINI_API_KEY=...` on the user's machine. Git-ignored |
@@ -175,6 +176,16 @@ Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
    gone or a detention / court story (highest impact, India preferred; action point dropped).
    Changes go to `Result.ai` ("safety net: N change(s)") and `ai_log`. On 13 Nov 2026 live
    news the list matched 13 of 159 stories (all correct after the FEMA exemption).
+
+12. **Events & reports** (user's request, 13 Nov 2026: "not only news but upcoming seminars /
+   conferences or interesting reports"). Three lists, shown in the sidebar under the radar, on a
+   slide of their own (last), in Markdown, console and Confluence (after routine enforcement):
+   **Comments due** (`read_rbi_drafts`: RBI's draft-directions page, each press release read for
+   "on or before <date>"; open or undated drafts of the last 30 days), **Upcoming** (`events.json`
+   plus `read_cafral_events`: CAFRAL event pages' `atc_*` vars; within `events.window_days` (60),
+   deduped by name) and **New reports** (`pick_reports`: `sources.json` `reports` feeds and
+   queries, `Item.kind == "report"`, never in the six blocks; must match a risk block). Any
+   failure goes to the errors list, never fatal. Nothing here goes to the AI.
 
 ## Decisions the user made
 
