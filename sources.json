@@ -296,5 +296,10 @@
     "file": "top 20.txt",
     "per_company": 3,
     "search": true
+  },
+  "deep_dive": {
+    "_comment": "CRO deep dive: the standing analysis of the story of the week (page, slides, Markdown, Confluence). Runs whenever AI ranks: fetches up to `articles` of its links (up to `fetch_chars` characters each) and makes one more AI call. Set false (or run --no-deep-dive) to switch it off.",
+    "articles": 3,
+    "fetch_chars": 4000
   }
 }

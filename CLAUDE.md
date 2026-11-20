@@ -10,7 +10,7 @@ web page for the weekly status meeting ("This week in risk"). The user runs it o
 ```bash
 pip install -r requirements.txt
 python risk_week.py --ai --open        # Gemini free tier; --open opens the web page
-python -m unittest test_risk_week      # 100 tests, no network or key needed
+python -m unittest test_risk_week      # 111 tests, no network or key needed
 ```
 
 Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
@@ -27,6 +27,7 @@ Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
 | `events.json` | Upcoming conferences and programmes (`events`, dated) and ones to watch (`watch`, no date yet). Public, committed; the user edits it |
 | `top 20.txt` | The bank's borrowers for the credit portfolio watch, `Name \| alias` per line. **Git-ignored** (`top*.txt`); `top20.example.txt` shows the format |
 | `docs/architecture.png` / `.html` / `.mmd` | Architecture diagram (13 Nov 2026): the PNG is drawn from the HTML (Playwright screenshot of `#c` at 1740 px wide, scale 2); the Mermaid copy is in the README. Update them when the flow changes |
+| `docs/spec-cro-deep-dive.md` | The spec behind the CRO deep dive (20 Nov 2026): behaviour, data model, failure rules and the MCP contract |
 | `test_risk_week.py` | unittest tests using sample feeds and fake AI replies |
 | `test_headlines.json` | One week's real headlines (6 Nov 2026), used to test the same-story grouping |
 | `.env` | `GEMINI_API_KEY=...` on the user's machine. Git-ignored |
@@ -211,6 +212,36 @@ Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
    MCP prepare appends `portfolio_prompt()`; publish runs `apply_portfolio_notes()`. Live
    check with 10 public names: ED attachment = red, Q2 loss = amber, order wins = positive.
 
+14. **CRO deep dive** (user's request, 20 Nov 2026: "more detailed AI analysis for the CRO
+   story, a standing feature"). Spec: `docs/spec-cro-deep-dive.md`. For the settled story of
+   the week (safety net included): `fetch_story_text()` opens up to `deep_dive.articles` (3)
+   of the story's links with `extract_article()` (stdlib HTMLParser `_ArticleReader`: drops
+   script/style/nav/footer/form, block tags become lines, `fetch_chars` cap; a link that
+   fails or yields < 400 chars is skipped), then `build_deep_dive()` makes one
+   `json_call(DEEP_DIVE_SCHEMA)`: `what_happened`, `why_it_matters`, `impact_on_us` (the
+   India test restated), optional `regulatory_context`, `recommended_actions` (2–4, owner +
+   timeframe; `parse_deep_dive` caps 4 × 200 chars and needs `what_happened` +
+   `impact_on_us` or returns None), `watch_next`. Runs **after `finish_week`** in `run()`
+   (which now loads `sources` itself, for the `"deep_dive"` config) and in MCP `_finish`
+   when `risk_week_run ranker=gemini` has a provider. Output: `Result.deep_dive`
+   (`DeepDive`: story, fields, articles = "Sources consulted", note) via
+   `_deep_dive_markdown` after the CRO box, an html `<section class="panel deepdive">`
+   under the blocks row (full text on the page; the slide shortens fields to two sentences,
+   `_dd_short`), `_deep_dive_slide` right after slide 1, an info panel after the CRO panel
+   in Confluence, one console line ("Deep dive: N recommended actions — see the page." /
+   "skipped (AI off)" / "unavailable (…)" from `res.deep_dive_note`). Never fatal: fetch or
+   call failure -> no section, reason in `ai_log` (`request: "deep_dive"`); no article
+   reachable -> still analysed from headlines/summaries with a `note`. **MCP:** the server
+   never fetches for GigaCode — step 5 of `ranking_prompt(deep_dive=True)` (only in
+   `prepare`, not in Gemini's `explain`) tells GigaCode to open the story's link with its
+   own web tools and return `"deep_dive"` in the ranking; `parse_ranking` parses it (only
+   when cro_focus's id resolved), `apply_rules` carries it, and `finish_week` keeps it
+   **only when the story of the week is the same story object** (`dd_target` identity,
+   else `ai_log` "dropped: the story of the week changed"). `--no-deep-dive` /
+   `"deep_dive": false` in sources.json switch it off; no AI -> skipped with the console
+   note (user's choice: no facts-only panel). Privacy unchanged: public news text + `bank`
+   + `guidance` only (`TestPrivacy` now sees 3 requests). An AI run is 2–3 free-tier calls.
+
 ## Decisions the user made
 
 - Focus on **impact for a foreign bank**, not routine penalties, co-op banks, microfinance,
@@ -247,6 +278,11 @@ Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
   for such steering: it is never sent to the AI.
 - The "foreign banks in India as a group" guidance line was added and then rolled back at
   the user's request (6 Nov 2026); `profile.guidance` is as before.
+- **CRO deep dive** (20 Nov 2026): a standing section in every AI run, for the story of the
+  week only; built from the story's **fetched articles**, not just the candidate text.
+  Without AI it is skipped with a note (no facts-only panel). In the GigaCode path GigaCode
+  fetches the articles and writes the deep dive itself (nothing new goes to Gemini); the
+  server only validates and places it.
 
 ## Open items
 

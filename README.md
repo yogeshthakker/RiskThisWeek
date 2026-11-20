@@ -85,8 +85,8 @@ This writes three files to `./output/` (`--open` also opens the web page):
 
 | File | Use |
 |---|---|
-| `risk-week-<date>.pptx` | Slide 1: "For CRO's desk" (the story of the week) and "Pending items" side by side. Slide 2: the six blocks, three across. Slide 3: "Also on the radar" (the next 6) |
-| `risk-week-<date>.html` | The same as a web page: the six blocks in a 3 × 2 grid with the CRO box, pending items and ISE items beside them; below them the credit portfolio watch, "also on the radar", routine enforcement and Events & reports. Everything is shown in full; the page scrolls. On smaller screens it stacks into one column |
+| `risk-week-<date>.pptx` | Slide 1: "For CRO's desk" (the story of the week) and "Pending items" side by side; with AI, the "CRO deep dive" gets its own slide right after it. Then the six blocks, three across, "Also on the radar" (the next 6) and Events & reports |
+| `risk-week-<date>.html` | The same as a web page: the six blocks in a 3 × 2 grid with the CRO box, pending items and ISE items beside them; under the blocks the CRO deep dive, then the credit portfolio watch, "also on the radar", routine enforcement and Events & reports. Everything is shown in full; the page scrolls. On smaller screens it stacks into one column |
 | `risk-week-<date>.md` | The same as text notes |
 
 **Links.** Every headline links to its article. On the slide, click a headline during Slide
@@ -109,6 +109,30 @@ Below it, in smaller type:
    news or any update from the CRO's desk. You can also add a note for one run:
    `python risk_week.py --cro "RBI inspection data requests due Friday"` (repeatable).
    `cro_desk.txt` is not committed to git, so internal notes stay on your machine.
+
+## CRO deep dive
+
+A standing section in every report that uses AI. Whatever story of the week survived the
+safety net gets a **detailed analysis built from its full articles**: the run opens up to 3
+of the story's links (up to 4,000 readable characters each), then asks the AI for
+**what happened · why it matters · impact on us · regulatory context · 2–4 recommended
+actions** (each naming who does what by when) · **what to watch next**, using only facts from
+the pages it read. It appears under the six blocks on the page, on its own slide after
+"For CRO's desk", after the CRO box in the Markdown, as an info panel on the Confluence page,
+and as one line in the console.
+
+- **No AI:** skipped with a note ("deep dive skipped: AI off"). No article reachable: the
+  analysis is still written from the headlines and summaries, with a note saying so.
+- **GigaCode (MCP):** no extra call to Google — `risk_week_prepare` asks GigaCode to open the
+  story's link itself and return the `deep_dive` object in its ranking; the tool only
+  validates it, and drops it if the safety net changed the story of the week.
+- Off for one run with `--no-deep-dive`, or permanently with `"deep_dive": false` in
+  `sources.json` (which also sets `articles` and `fetch_chars`). A run with AI now makes 2–3
+  requests to the free tier instead of 1–2.
+
+Nothing private goes into the request: the same public news text as the ranking, plus the
+profile's `bank` and `guidance` — never your notes, pending items, the ISE page or the
+portfolio file. See `docs/spec-cro-deep-dive.md` for the full design.
 
 ## Pending items
 
@@ -343,9 +367,9 @@ The tools:
 
 | Tool | What it does |
 |---|---|
-| `risk_week_prepare` | Collects, filters and groups the news on your computer (about 10 seconds) and returns the ranking instructions with page 1 of up to 150 numbered stories (25 per page, so GigaCode can read every reply in full) |
+| `risk_week_prepare` | Collects, filters and groups the news on your computer (about 10 seconds) and returns the ranking instructions with page 1 of up to 150 numbered stories (25 per page, so GigaCode can read every reply in full). Step 5 of the instructions asks GigaCode to open the story of the week's link itself and write the **CRO deep dive** into its answer |
 | `risk_week_candidates` | The next page of stories (`batch`, `page`); the numbers continue across pages |
-| `risk_week_publish` | Takes GigaCode's ranking, writes the slides, page and Markdown to `output/` next to the script, adds pending items, CRO notes and ISE items locally, and publishes to Confluence |
+| `risk_week_publish` | Takes GigaCode's ranking (including its `deep_dive`), writes the slides, page and Markdown to `output/` next to the script, adds pending items, CRO notes and ISE items locally, and publishes to Confluence. A deep dive is used only while the story of the week survived the safety net |
 | `risk_week_run` | The whole report in one call, ranked on your computer: `ranker` `gemini` (default; falls back to keywords if Gemini fails) or `keywords` (no AI). Use it when you want Gemini or no AI from the GigaCode chat |
 | `risk_week_check` | The read-only Confluence check |
 
@@ -433,6 +457,7 @@ prefer `CA_BUNDLE` pointing at the bank's root certificate.
 | `--sources FILE` | `sources.json` | A different source list |
 | `--ai` | off | An AI picks and explains the items |
 | `--provider` | `gemini` | `gemini` (free tier) or `claude` |
+| `--no-deep-dive` | off | Skip the CRO deep dive on the story of the week (runs whenever AI ranks) |
 | `--json` | off | Also print the items as JSON |
 | `--open` | off | Open the web page in the browser when done |
 | `--cro TEXT` | none | A note for the "For CRO's desk" box (repeatable) |

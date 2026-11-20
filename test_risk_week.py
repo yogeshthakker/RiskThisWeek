@@ -164,7 +164,8 @@ class TestRun(unittest.TestCase):
     def test_console_has_plain_links(self):
         out = rw.to_console(self.res, {"html": "/tmp/x.html"})
         self.assertIn("\n   https://rbi/2\n", out)
-        self.assertIn("file:///tmp/x.html", out)
+        # resolve() gives /tmp/... on Unix and C:/tmp/... on Windows; the URI must follow either
+        self.assertIn(pathlib.Path("/tmp/x.html").resolve().as_uri(), out)
 
 
 PROFILE = rw.Profile.from_sources({"profile": {
@@ -1261,7 +1262,7 @@ class TestPrivacy(unittest.TestCase):
         pend = [rw.Pending(item="SECRET-PENDING-ITEM", owner="SECRET-OWNER")]
         rw.run(top=3, sources=SOURCES, fetcher=fetcher, now=NOW, provider=Spy(),
                cro_notes=["SECRET-CRO-NOTE"], pending=pend)
-        self.assertEqual(len(sent), 2)                             # rank, then fill_why
+        self.assertEqual(len(sent), 3)                             # rank, fill_why, deep dive
         for text in sent:
             for secret in ("SECRET-PENDING-ITEM", "SECRET-OWNER", "SECRET-CRO-NOTE"):
                 self.assertNotIn(secret, text)
@@ -1295,10 +1296,10 @@ class TestSummariesAndCro(unittest.TestCase):
         whys = [s.why for s in res.top]
         self.assertTrue(all(whys))
         self.assertIn("Has one.", whys)                           # an AI line is kept, not asked again
-        self.assertEqual(len(ai.prompts), 2)
+        self.assertEqual(len(ai.prompts), 3)                      # rank, fill_why, deep dive
         kept = next(s for s in res.top if s.why == "Has one.")
         self.assertNotIn(kept.lead.title, ai.prompts[1])          # only the missing ones are asked again
-        self.assertEqual([e["request"] for e in res.ai_log], ["rank", "fill_why"])
+        self.assertEqual([e["request"] for e in res.ai_log], ["rank", "fill_why", "deep_dive"])
 
     def test_other_key_names_accepted(self):
         ai = SeqAI(self.pick([{"id": 1, "headline": "A", "category": "Capital", "why": "Via 'why'."}]))
@@ -1602,8 +1603,8 @@ class TestGemini(unittest.TestCase):
                                             "impact": 8, "why_it_matters": "W"}], "radar": [],
                                  "cro_focus": {"id": 1, "message": "m"}})
 
-        res = rw.run(top=3, sources=SOURCES, fetcher=fetcher, now=NOW,
-                     provider=rw.GeminiProvider(post=post, sleep=waits.append))
+        res = rw.run(top=3, sources={**SOURCES, "deep_dive": False}, fetcher=fetcher, now=NOW,
+                     provider=rw.GeminiProvider(post=post, sleep=waits.append))   # deep dive off: count the ranking retries only
         self.assertEqual(sum("gemini-3.8-flash:" in u for u in calls), 3)
         self.assertIn("gemini-3.5-flash-lite, after gemini-3.8-flash: HTTP 503", res.ai)
         self.assertIn("tried 3 times", res.ai)
@@ -1636,6 +1637,206 @@ class TestGemini(unittest.TestCase):
                 self.assertEqual(os.environ["RW_TEST_A"], "one")
                 self.assertEqual(os.environ["GEMINI_API_KEY"], "real")
             os.environ.pop("RW_TEST_A", None)
+
+
+class TestDeepDive(unittest.TestCase):
+    """The CRO deep dive (docs/spec-cro-deep-dive.md): fetch the story of the week's articles,
+    then one analysis call; in md, html, pptx, console and Confluence; never fatal."""
+
+    DD = {"what_happened": "RBI published the draft ECL directions on 3 Nov 2026. They apply from 1 April 2027.",
+          "why_it_matters": "Models, provisioning and capital planning must change together.",
+          "impact_on_us": "MSME staging shifts and provisions rise from April 2027.",
+          "regulatory_context": "Draft directions under section 35A of the Banking Regulation Act.",
+          "recommended_actions": ["Credit team to size the MSME ECL impact by 28 Nov",
+                                  "Model risk to list affected models by 5 Dec"],
+          "watch_next": "The consultation deadline and the final direction."}
+
+    @staticmethod
+    def art_fetcher(url):
+        """Feeds as usual; every other link answers with a readable article page."""
+        try:
+            return fetcher(url)
+        except OSError:
+            return f"<html><nav>ads</nav><p>{'article detail ' * 100}</p></html>".encode()
+
+    def ai(self):
+        return SeqAI({"items": [{"id": 1, "category": "Credit risk", "impact": 7, "headline": "Deep dive story",
+                                 "why_it_matters": "W"}], "radar": [], "cro_focus": {"id": 1, "message": "m"}},
+                     self.DD)
+
+    def test_extract_article(self):
+        page = (b"<head><style>a{color}</style><script>evil()</script></head><body>"
+                b"<nav>menu</nav><h1>Headline</h1><p>First   para.</p>"
+                b"<ul><li>Point   one</li></ul><footer>ads</footer></body>")
+        text = rw.extract_article(page)
+        self.assertEqual(text, "Headline\nFirst para.\nPoint one")
+        self.assertEqual(rw.extract_article(b"<p>" + b"x" * 50 + b"</p>", cap=10), "x" * 10)
+
+    def test_fetch_story_text_lead_first_unique_and_capped(self):
+        items = [rw.Item(title=f"T{n}", link=l, source="s", published=NOW)
+                 for n, l in enumerate(["a", "b", "c", "c", "d", "e", "f"])]
+        story = rw.Story(items=items, category="Credit risk", score=1)
+        good = f"<p>{'word ' * 300}</p>".encode()
+
+        def art(url):
+            if url in ("a", "c", "e", "f"):
+                return good
+            if url == "b":
+                return b"<p>too short</p>"                    # a stub or a paywall page
+            raise OSError("403")
+
+        out = rw.fetch_story_text(story, fetcher=art)
+        self.assertEqual([it.link for it, _ in out], ["a", "c", "e"])     # lead first, max 3, bad links skipped
+
+    def test_parse_validates_and_caps(self):
+        d = rw.parse_deep_dive(dict(self.DD, recommended_actions=[f"a{n}" for n in range(6)]))
+        self.assertEqual(d["recommended_actions"], ["a0", "a1", "a2", "a3"])      # at most 4
+        self.assertIsNone(rw.parse_deep_dive({"what_happened": "x"}))             # impact_on_us missing
+        self.assertIsNone(rw.parse_deep_dive("not json"))
+        self.assertIsNone(rw.parse_deep_dive(None))
+        d = rw.parse_deep_dive(dict(self.DD, what_happened="w " * 2000,
+                                    recommended_actions="call the RM; review models"))  # a string, not a list
+        self.assertEqual(d["recommended_actions"], ["call the RM", "review models"])
+        self.assertLessEqual(len(d["what_happened"]), rw.DEEP_DIVE_CHARS)
+
+    def test_run_builds_deep_dive_into_every_output(self):
+        ai = self.ai()
+        res = rw.run(top=3, sources=SOURCES, fetcher=self.art_fetcher, now=NOW, provider=ai)
+        self.assertIsNotNone(res.deep_dive)
+        self.assertIs(res.deep_dive.story, res.cro_focus.story)
+        self.assertEqual(len(ai.prompts), 2)                        # rank, deep dive (no fill_why needed)
+        self.assertIn("Full article text", ai.prompts[1])           # the articles were fetched for it
+        self.assertIn("recommended_actions", ai.prompts[1])
+        self.assertEqual([a["link"] for a in res.deep_dive.articles][0], res.cro_focus.story.lead.link)
+        self.assertEqual(res.deep_dive.note, "")
+        self.assertEqual([e["request"] for e in res.ai_log], ["rank", "deep_dive"])
+        md = rw.to_markdown(res)
+        self.assertIn("## CRO DEEP DIVE", md)
+        self.assertIn("- [ ] Credit team to size the MSME ECL impact by 28 Nov", md)
+        self.assertIn("Sources consulted", md)
+        page = rw.to_html(res)
+        self.assertIn("CRO deep dive", page)
+        self.assertLess(page.index('<div class="blocks">'), page.index('class="panel deepdive"'))
+        self.assertIn("<ol>", page[page.index("panel deepdive"):])  # the actions as an ordered list
+        conf = rw.to_confluence(res)
+        import xml.etree.ElementTree as ET
+        ET.fromstring('<r xmlns:ac="a" xmlns:ri="b">' + conf + "</r>")
+        self.assertLess(conf.index("rtw-week-"), conf.index("CRO deep dive"))     # inside the run's entry
+        self.assertIn("Deep dive: 2 recommended actions", rw.to_console(res, {}))
+        try:
+            from pptx import Presentation
+        except ImportError:
+            return
+        with tempfile.TemporaryDirectory() as d:
+            files = rw.write(res, d)
+            slides = Presentation(files["pptx"]).slides
+            slide1 = "\n".join(sh.text_frame.text for sh in slides[0].shapes if sh.has_text_frame)
+            self.assertTrue(slide1.startswith(rw._title(res)))      # slide 1 stays 'For CRO's desk'
+            self.assertIn(rw.CRO_TITLE, slide1)
+            dd_texts = [sh.text_frame.text for sh in slides[1].shapes if sh.has_text_frame]
+        self.assertIn("CRO deep dive", dd_texts[0])                 # its own slide, right after slide 1
+        self.assertIn("Credit team to size", "\n".join(dd_texts))
+
+    def test_articles_unreachable_still_analysed_with_note(self):
+        res = rw.run(top=3, sources=SOURCES, fetcher=fetcher, now=NOW, provider=self.ai())
+        self.assertIsNotNone(res.deep_dive)                          # the plain fetcher reads no article
+        self.assertIn("not reachable", res.deep_dive.note)
+        self.assertIn("headlines and summaries", rw.to_html(res))
+
+    def test_deep_dive_failure_leaves_the_report_intact(self):
+        class Boom:
+            name, model = "boom", "b1"
+
+            def json_call(s, system, user, response_schema=None, max_output_tokens=0):
+                if "CRO deep dive" in user:
+                    raise RuntimeError("HTTP 503 busy")
+                return {"items": [{"id": 1, "category": "Credit risk", "impact": 7, "headline": "H",
+                                   "why_it_matters": "W"}], "radar": [], "cro_focus": {"id": 1, "message": "m"}}
+
+        res = rw.run(top=3, sources=SOURCES, fetcher=self.art_fetcher, now=NOW, provider=Boom())
+        self.assertTrue(res.top and res.cro_focus)                   # the report itself stands
+        self.assertIsNone(res.deep_dive)
+        self.assertIn("unavailable", res.deep_dive_note)
+        self.assertIn("Deep dive: unavailable", rw.to_console(res, {}))
+        self.assertNotIn("CRO deep dive", rw.to_html(res))
+        entry = next(e for e in res.ai_log if e.get("request") == "deep_dive")
+        self.assertIn("HTTP 503", entry["error"])
+
+    def test_switched_off_by_flag_or_sources(self):
+        ai = self.ai()
+        res = rw.run(top=3, sources=SOURCES, fetcher=self.art_fetcher, now=NOW, provider=ai, deep_dive=False)
+        self.assertIsNone(res.deep_dive)
+        self.assertEqual(len(ai.prompts), 1)                         # no deep-dive call at all
+        ai2 = self.ai()
+        res = rw.run(top=3, sources={**SOURCES, "deep_dive": False}, fetcher=self.art_fetcher, now=NOW, provider=ai2)
+        self.assertIsNone(res.deep_dive)
+        self.assertEqual(len(ai2.prompts), 1)
+
+    def test_keywords_run_skips_with_a_note(self):
+        res = rw.run(top=3, sources=SOURCES, fetcher=fetcher, now=NOW)
+        self.assertIsNone(res.deep_dive)
+        self.assertIn("Deep dive: skipped (AI off)", rw.to_console(res, {}))
+        self.assertNotIn("panel deepdive", rw.to_html(res))
+
+    def test_finish_week_attaches_it_only_while_the_story_survives(self):
+        week = rw.prepare_week(sources=TestSafetyNet.SRC, fetcher=lambda u: TestSafetyNet.NEWS, now=NOW)
+        mudra = next(s for s in week.stories if "Mudra" in s.lead.title)
+        coop = next(s for s in week.stories if "Abhyudaya" in s.lead.title)
+        dd = rw.parse_deep_dive(self.DD)
+        pick = rw.AiPick(blocks={b: ([mudra] if b == "Credit risk" else []) for b in rw.BLOCKS},
+                         focus=rw.CroFocus(mudra, "m"), deep_dive=dd)
+        res = rw.finish_week(week, 3, pick, "AI · GigaCode via MCP")
+        self.assertIs(res.deep_dive.story, mudra)                    # the story held: the dive stays
+        self.assertEqual([a["link"] for a in res.deep_dive.articles], ["https://g/mudra"])
+        pick = rw.AiPick(blocks={b: ([coop] if b == "Compliance risk" else []) for b in rw.BLOCKS},
+                         focus=rw.CroFocus(coop, "m"), deep_dive=dd)
+        res = rw.finish_week(week, 3, pick, "AI · GigaCode via MCP")
+        self.assertIsNone(res.deep_dive)                             # safety net replaced the story
+        self.assertIn({"deep_dive": "dropped: the story of the week changed"}, res.ai_log)
+
+
+class TestDeepDiveMcp(unittest.TestCase):
+    """GigaCode fetches and writes the deep dive itself; the server validates and places it."""
+
+    def call(self, srv, name, args=None):
+        r = srv.handle({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                        "params": {"name": name, "arguments": args or {}}})
+        return r["result"]["content"][0]["text"], r["result"]["isError"]
+
+    def server(self, d):
+        base = pathlib.Path(d)
+        return rw.McpServer(fetcher=fetcher, sources=SOURCES, now=NOW, out_dir=base / "out", base_dir=base)
+
+    def publish(self, d, deep_dive):
+        srv = self.server(d)
+        text, err = self.call(srv, "risk_week_prepare")
+        self.assertFalse(err)
+        self.assertIn("5. deep_dive", text)                          # step 5 is in the instructions
+        self.assertIn('"deep_dive"', text)                           # and in the answer-format example
+        batch = text.split("Batch: ")[1].split("\n")[0]
+        lead = srv.pool[0].lead.title
+        ranking = {"items": [{"id": 1, "category": "Credit risk", "impact": 7, "headline": lead,
+                              "why_it_matters": "W"}], "radar": [], "cro_focus": {"id": 1, "message": "m"}}
+        if deep_dive is not None:
+            ranking["deep_dive"] = deep_dive
+        reply, err = self.call(srv, "risk_week_publish", {"batch": batch, "ranking": ranking, "publish": False})
+        self.assertFalse(err, reply)
+        md = next((pathlib.Path(d) / "out").glob("*.md")).read_text(encoding="utf-8")
+        return reply, md
+
+    def test_gigacode_deep_dive_is_published(self):
+        with tempfile.TemporaryDirectory() as d:
+            reply, md = self.publish(d, TestDeepDive.DD)
+            self.assertIn("CRO deep dive: written", reply)
+            self.assertIn("## CRO DEEP DIVE", md)
+            self.assertIn("Credit team to size the MSME ECL impact by 28 Nov", md)
+
+    def test_missing_or_malformed_deep_dive_is_ignored(self):
+        for junk in (None, "just words", {"what_happened": "only half"}):
+            with tempfile.TemporaryDirectory() as d:
+                reply, md = self.publish(d, junk)
+                self.assertNotIn("## CRO DEEP DIVE", md)             # the report publishes as before
+                self.assertNotIn("CRO deep dive: written", reply)
 
 
 if __name__ == "__main__":
