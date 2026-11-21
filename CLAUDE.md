@@ -10,7 +10,7 @@ web page for the weekly status meeting ("This week in risk"). The user runs it o
 ```bash
 pip install -r requirements.txt
 python risk_week.py --ai --open        # Gemini free tier; --open opens the web page
-python -m unittest test_risk_week      # 142 tests, no network or key needed
+python -m unittest test_risk_week      # 147 tests, no network or key needed
 ```
 
 Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
@@ -276,7 +276,8 @@ Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
      "Our sector: …". Names never reach the AI (`TestBorrowerLink` checks the prompts).
    - **Model health.** `GeminiProvider(health=output/.gemini-health.json)`: per model `fails`
      (one per run, however many calls), `last_fail`, `last_ok`. When the main model has
-     `SKIP_AFTER` (3) failed runs in a row and its last failure is under `SKIP_HOURS` (24) old,
+     `SKIP_AFTER` (1; was 3, the user, 21 Nov 2026: "3.8 fails because of free tier… one failed run
+     is enough to switch") failed runs in a row and its last failure is under `SKIP_HOURS` (24) old,
      `json_call` goes straight to the fallback and the label says "skipped: …". A success resets
      it. `--ai-check` (`ai_check()`): one tiny `_call` per model, no retries, then "Next --ai run
      starts with: …". The MCP Gemini factory uses the same file.
@@ -333,6 +334,21 @@ Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
      BBB-, S&P on Adani Ports' Evos cost, JSW Energy's APTEL win, Vedanta's Videocon ruling);
      74 headlines left out. Known limits: a short alias ("Airtel") matches other firms; a sector
      word with two meanings ("ports") can still let in a loose story.
+
+17. **Who ranks: asked at the start** (user, 21 Nov 2026: "a user confirmation with a timeout to use
+   Gemini or GigaCode; 30 secs is enough; our first choice is Gemini"). `choose_ranker(a,
+   interactive)`: `--ranker` (gemini / gigacode / keywords) or `--ai` decide; else an interactive run
+   (tty, not `--no-prompt`) asks via `ask_with_timeout()` (`RANKER_TIMEOUT` 30 s; Windows reads
+   the console key by key with `msvcrt`, elsewhere `select`), `parse_ranker()` (Enter / timeout /
+   anything unknown = gemini); a run with no one to ask uses Gemini. **Behaviour change:** a plain
+   `python risk_week.py` now ranks with Gemini when a key exists (before: keywords unless `--ai`).
+   The question comes before the pending-items review. **GigaCode** can't be called from the CLI
+   (no API key), so `gigacode_handover()` runs `prepare_week()`, saves it as an MCP batch with
+   `McpServer.adopt()` in the folder the MCP server reads (`<script>/output` unless `--out-dir`),
+   prints the line to paste into GigaCode chat and exits. `risk_week_prepare` takes `batch`: it
+   returns that saved list (`_prepare_reply()`) without collecting again; GigaCode then pages,
+   ranks and publishes as usual. `TestGigaCodeHandover` checks the whole path with feeds that fail
+   if fetched.
 
 ## Decisions the user made
 

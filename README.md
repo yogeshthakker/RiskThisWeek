@@ -411,12 +411,12 @@ A run makes one or two requests. Nothing extra needs installing for Gemini.
 Gemini check (one short request per model, no retries):
   gemini-3.8-flash: busy or unreachable (HTTP 503 (server busy or failing))
   gemini-3.5-flash-lite: answered in 1.4 s
-Next --ai run starts with: gemini-3.8-flash
+Next --ai run starts with: gemini-3.5-flash-lite (gemini-3.8-flash skipped: failed on the last run; tried again in about 24 h)
 ```
 
-**It remembers failures.** If `gemini-3.8-flash` fails on three runs in a row, the next runs go
-straight to `gemini-3.5-flash-lite`, skipping about 40 seconds of retries, and 3.8 Flash is tried
-again 24 hours after its last failure. The memory is `output/.gemini-health.json`; delete it to
+**It remembers failures.** If `gemini-3.8-flash` fails on a run (on the free tier it often does),
+the next runs go straight to `gemini-3.5-flash-lite`, skipping about 40 seconds of retries, and 3.8
+Flash is tried again 24 hours after its last failure. The memory is `output/.gemini-health.json`; delete it to
 start afresh. The "ranked by" line says when the main model was skipped.
 
 If `gemini-3.8-flash` is busy (Google answers "high demand", or the network drops), the
@@ -437,6 +437,28 @@ documents.
 To use Claude instead: set `ANTHROPIC_API_KEY`, `pip install anthropic`, and run
 `python risk_week.py --ai --provider claude` (default model `claude-opus-5-5`).
 Change either model with `--model` or `RISK_WEEK_MODEL`.
+
+## Who ranks: Gemini or GigaCode
+
+A run started by hand asks first:
+
+```
+Rank this week's news with  [1] Gemini (default)  [2] GigaCode  [3] keywords only?  Gemini in 30 s:
+```
+
+Press Enter, type 1, or wait 30 seconds for **Gemini** (the first choice). Type **2** for
+**GigaCode**: the tool collects and filters the week's news, saves the list under a batch code and
+prints the line to paste into GigaCode chat, for example:
+
+```
+Use the risk-week tools: call risk_week_prepare with batch "3f9a1c2e", read every page with
+risk_week_candidates, rank them as instructed, then call risk_week_publish.
+```
+
+GigaCode then ranks the list and writes the report (page, slides, Confluence) when it publishes,
+without collecting the news again. Type **3** for the keyword ranking alone. To skip the question
+(for example in a scheduled run), pass `--ranker gemini`, `--ranker gigacode` or `--ranker keywords`;
+`--ai` still means Gemini. A run with no one at the keyboard uses Gemini.
 
 ## Using GigaCode instead of Gemini (MCP)
 
@@ -544,7 +566,8 @@ prefer `CA_BUNDLE` pointing at the bank's root certificate.
 | `--top N` | 3 | Items per block |
 | `--out-dir DIR` | `output` | Where the files go |
 | `--sources FILE` | `sources.json` | A different source list |
-| `--ai` | off | An AI picks and explains the items |
+| `--ai` | off | Gemini (or `--provider claude`) ranks; skips the question below |
+| `--ranker NAME` | asked | `gemini`, `gigacode` or `keywords`; skips the 30-second question |
 | `--provider` | `gemini` | `gemini` (free tier) or `claude` |
 | `--no-deep-dive` | off | Skip the CRO deep dive on the story of the week (runs whenever AI ranks) |
 | `--json` | off | Also print the items as JSON |
