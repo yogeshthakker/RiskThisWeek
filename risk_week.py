@@ -28,11 +28,15 @@ What it does, in order:
    (GEMINI_API_KEY, model gemini-3.8-flash, falling back to gemini-3.5-flash-lite)
    or Claude (--provider claude,
    ANTHROPIC_API_KEY) reads up to 150 stories (newest first, no keyword scores
-   shown), rates each pick's impact 1-10, puts it in a block, picks 3 per block,
-   the radar and the story of the week, and writes a headline and a "why it
-   matters" line, using only the candidate text. Steps 2-4 only filter and trim.
+   shown), scores each pick on a checklist (India 0-3, Business 0-3, Action 0-2,
+   Size 0-2; the impact is the total, India 0 counts at most 4), puts it in a block,
+   picks 3 per block, the radar and the story of the week, writes a headline and a
+   "why it matters" line, and gives any deadline the text states (kept only if that
+   date is in the story). Steps 2-4 only filter and trim. Then, on this computer,
+   stories naming a borrower (top 20.txt) get +2 impact and a borrower's sector +1.
    If the call fails (no key, daily limit, network, unusable reply), the keyword
-   ranking is used and the report says so.
+   ranking is used and the report says so. A main model that failed three runs in
+   a row is skipped for 24 h (output/.gemini-health.json); --ai-check tests both.
    Keys can also live in a .env file next to this script.
 6. Write.    risk-week-<date>.md, .html and, when python-pptx is installed,
    .pptx (slide 1: "For CRO's desk" (the story of the week) and the pending items from
@@ -67,6 +71,7 @@ DEFAULT_SOURCES = Path(__file__).resolve().parent / "sources.json"
 DEFAULT_OUT = Path("output")
 USER_AGENT = "Mozilla/5.0 (compatible; risk-week)"
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+HEALTH_FILE = ".gemini-health.json"     # in the output folder: each model's recent failures
 
 # ---------------------------------------------------------------------------
 # Vocabulary
@@ -198,6 +203,11 @@ class Story:
     headline: str = ""
     why: str = ""
     impact: int | None = None           # the AI's impact rating, 1-10 (None without AI)
+    checks: dict | None = None          # the AI's checklist (CHECKS), whose total is the impact
+    boost: list[str] = field(default_factory=list)      # local additions to the impact, e.g. "+2 our borrower"
+    deadline: "NewsDeadline | None" = None              # a date stated in the story (validated)
+    borrowers: list[str] = field(default_factory=list)  # our borrowers named in it (top 20.txt; local only)
+    sectors: list[str] = field(default_factory=list)    # our borrowers' sectors named in it (local only)
 
     @property
     def lead(self) -> Item:
@@ -224,6 +234,9 @@ class Story:
             "score": round(self.score, 2),
             "also_reported_by": len(self.sources) - 1,
             "impact": self.impact,
+            "impact_detail": impact_detail(self),
+            "deadline": self.deadline.text() if self.deadline else "",
+            "exposure": exposure_text(self),
         }
 
 
@@ -248,6 +261,8 @@ class Result:
     events: list["Event"] = field(default_factory=list)            # Events & reports: upcoming
     consultations: list["Consultation"] = field(default_factory=list)  # Events & reports: comments due
     portfolio: list["Company"] = field(default_factory=list)          # credit portfolio watch (top 20.txt)
+    sector_watch: list["SectorNews"] = field(default_factory=list)    # sectors we lend to, this week's news
+    economy: list[Story] = field(default_factory=list)                # India's economy, for credit quality
     events_max: int = 10                # upcoming events shown; all of them on <stem>-events.html
     events_window: int = 60
     ai_log: list = field(default_factory=list)          # raw AI replies, saved next to the output
@@ -367,7 +382,10 @@ def load_sources(path: Path | str | None = None) -> dict:
 
 
 def google_news_url(query: str, days: int) -> str:
-    q = urllib.parse.quote_plus(f"{query} when:{max(1, int(days))}d")
+    # With brackets in the query, Google honours the date limit only when it comes first (tested
+    # 21 Nov 2026: 18 of 18 results in the week, against 1 of 26 with "when:" at the end).
+    when = f"when:{max(1, int(days))}d"
+    q = urllib.parse.quote_plus(f"{when} {query}" if "(" in query else f"{query} {when}")
     return f"https://news.google.com/rss/search?q={q}&hl=en-IN&gl=IN&ceid=IN:en"
 
 
@@ -740,6 +758,51 @@ def flatten(blocks: dict[str, list[Story]]) -> list[Story]:
 # Explain (optional LLM)
 # ---------------------------------------------------------------------------
 
+# The impact checklist (suggestion 2, 21 Nov 2026): the AI scores four checks; the impact is
+# their total. A story with no direct effect on our India operations (india 0) counts at most
+# NO_INDIA_CAP, so the safety net's "4 or lower is dropped" rule also enforces the India test.
+CHECKS = (("india", "India", 3), ("business", "Business", 3), ("action", "Action", 2), ("size", "Size", 2))
+NO_INDIA_CAP = 4
+
+
+def score_checks(raw) -> dict | None:
+    """The AI's checklist, each check clamped to its range; None when any check is missing."""
+    if not isinstance(raw, dict):
+        return None
+    out = {}
+    for key, _, top in CHECKS:
+        try:
+            out[key] = max(0, min(top, int(raw.get(key))))
+        except (TypeError, ValueError):
+            return None
+    return out
+
+
+def impact_of(checks: dict) -> int:
+    total = sum(checks.values())
+    if checks.get("india") == 0:
+        total = min(total, NO_INDIA_CAP)
+    return max(1, min(10, total))
+
+
+def impact_detail(s: "Story") -> str:
+    """'India 3 · Business 2 · Action 2 · Size 1 · +2 our borrower' (empty without a checklist or boost)."""
+    parts = [f"{label} {s.checks[key]}" for key, label, _ in CHECKS] if s.checks else []
+    return " · ".join(parts + list(s.boost))
+
+
+def impact_label(d: dict) -> str:
+    """'Impact 8/10 (India 3 · Business 2 · Action 2 · Size 1)' from Story.as_dict(); '' without AI."""
+    if not d.get("impact"):
+        return ""
+    return f"Impact {d['impact']}/10" + (f" ({d['impact_detail']})" if d.get("impact_detail") else "")
+
+
+def item_tags(d: dict) -> list[str]:
+    """Extra facts shown with an item: its deadline and our exposure to it."""
+    return [x for x in (d.get("deadline", ""), d.get("exposure", "")) if x]
+
+
 AI_SYSTEM = (
     "You are the risk analyst who prepares the 'This week in risk' slot of a weekly status meeting "
     "at {bank}. You receive the week's numbered candidate news items, newest first, after only basic "
@@ -775,10 +838,19 @@ AI_SCHEMA = {
                     "id": {"type": "integer"},
                     "headline": {"type": "string"},
                     "category": {"type": "string"},
-                    "impact": {"type": "integer"},
+                    "checks": {
+                        "type": "object",
+                        "properties": {key: {"type": "integer"} for key, _, _ in CHECKS},
+                        "required": [key for key, _, _ in CHECKS],
+                    },
+                    "deadline": {
+                        "type": "object",
+                        "properties": {"date": {"type": "string"}, "kind": {"type": "string"}},
+                        "required": ["date", "kind"],
+                    },
                     "why_it_matters": {"type": "string"},
                 },
-                "required": ["id", "headline", "category", "impact", "why_it_matters"],
+                "required": ["id", "headline", "category", "checks", "why_it_matters"],
             },
         },
         "radar": {"type": "array", "items": {"type": "integer"}},
@@ -887,14 +959,26 @@ def ranking_prompt(stories: list[Story], per_block: int, bank: str = DEFAULT_PRO
         f"The report has six blocks: {', '.join(BLOCKS)}. Each candidate is a different story: the same "
         f"news from several outlets has already been merged, and 'N outlets' shows how widely it was "
         f"covered.\n"
-        f"1. Read every candidate and judge its impact for us, {bank}, on a scale of 1 (minor) to 10 "
-        f"(must reach the CRO this week).\n"
+        f"1. Read every candidate and judge its impact for us, {bank}, with four checks (whole numbers):\n"
+        f"   india 0-3: a direct effect on our India operations (0 none: abroad, another country's own "
+        f"banks or courts; 3 it changes a rule we answer to in India, an Indian market we trade in, our "
+        f"Indian clients or a corridor to or from India);\n"
+        f"   business 0-3: a link to our business lines and this week's priorities (0 none, 3 core);\n"
+        f"   action 0-2: what it asks of us (0 nothing, 1 worth checking, 2 we must act or a deadline "
+        f"applies to us);\n"
+        f"   size 0-2: how wide (0 one small firm, 1 one large firm or one segment, 2 sector- or "
+        f"market-wide).\n"
+        f"   The impact is their total, out of 10 (worked out by the report); a story with india 0 counts "
+        f"at most 4.\n"
         f"2. For each block, pick the {per_block} items with the highest impact that belong in it (fewer "
         f"only if fewer are worth showing). For each pick give: id (the number in brackets), category: "
-        f"the block (one of: {', '.join(BLOCKS)}), impact: your 1-10 rating, a headline of at most 12 "
+        f"the block (one of: {', '.join(BLOCKS)}), checks: the four scores, a headline of at most 12 "
         f"words, and why_it_matters: two or three sentences (at most {WHY_WORDS} words): what happened, "
         f"what it means for us (the risk or the opportunity), and what to check, prepare or act on. Use "
         f"only facts in the candidate text. Every pick must have a why_it_matters.\n"
+        f"   deadline: only when the candidate text states a date by which something is due or takes "
+        f"effect: date as YYYY-MM-DD and kind, one of: comments due, takes effect, compliance deadline. "
+        f"Leave it out when no date is stated; never work one out or guess it.\n"
         + (f"   Include at least one item on each of these priority topics when a candidate fits: "
            f"{', '.join(topics)}.\n" if topics else "") +
         f"3. radar: the ids of up to 6 further items worth a mention, highest impact first.\n"
@@ -948,16 +1032,22 @@ def parse_ranking(stories: list[Story], reply, per_block: int, name: str) -> "Ai
         block = r.get("category") if r.get("category") in CATEGORIES else s.category
         if block not in CATEGORIES:
             continue
-        try:
-            impact = max(1, min(10, int(r.get("impact"))))
-        except (TypeError, ValueError):
-            impact = 5
+        checks = score_checks(r.get("checks"))
+        if checks is not None:
+            impact = impact_of(checks)
+        else:                               # an older client's single rating (or none)
+            try:
+                impact = max(1, min(10, int(r.get("impact"))))
+            except (TypeError, ValueError):
+                impact = 5
         picks.append((s, block, impact, r))
     picks.sort(key=lambda x: -x[2])                      # stable: the AI's order breaks ties
     blocks: dict[str, list[Story]] = {b: [] for b in BLOCKS}
     for s, block, impact, r in picks:
         if len(blocks[block]) < per_block:
             s.category, s.impact = block, impact
+            s.checks = score_checks(r.get("checks"))
+            s.deadline = news_deadline(r.get("deadline"), s)
             s.headline = _clean(str(r.get("headline", "")), 120)
             s.why = _why(r)
             blocks[block].append(s)
@@ -1264,9 +1354,12 @@ class GeminiProvider:
     FALLBACK_MODEL = "gemini-3.5-flash-lite"
     MIN_OUTPUT_TOKENS = 16384   # on Gemini 3 this budget covers thinking as well as the answer
     RETRY_WAITS = (10, 30)      # seconds to wait before retrying a busy model (503 "high demand")
+    SKIP_AFTER = 3              # a main model that failed this many runs in a row is skipped...
+    SKIP_HOURS = 24             # ...until this long after its last failure, then tried again
 
     def __init__(self, model: str | None = None, post: Callable[..., dict] = _post_json,
-                 sleep: Callable[[float], None] | None = None):
+                 sleep: Callable[[float], None] | None = None, health: Path | str | None = None,
+                 clock: Callable[[], float] | None = None):
         self.key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
         if not self.key:
             raise RuntimeError("set GEMINI_API_KEY (free key: https://aistudio.google.com/apikey)")
@@ -1274,10 +1367,59 @@ class GeminiProvider:
         self.post = post
         self.sleep = sleep or __import__("time").sleep
         self.label = self.model          # which model answered, and why a fallback was used
+        # Model health (suggestion 6, 21 Nov 2026): failures per model across runs, in a small JSON
+        # file next to the output, so a main model that keeps failing stops costing 40 s of retries.
+        self.health = Path(health) if health else None
+        self.clock = clock or __import__("time").time
+        self._counted: set[str] = set()   # one failure per model per run, however many calls fail
+
+    def _load_health(self) -> dict:
+        if not self.health:
+            return {}
+        try:
+            data = json.loads(self.health.read_text(encoding="utf-8"))
+            return data if isinstance(data, dict) else {}
+        except (OSError, ValueError):
+            return {}
+
+    def _record(self, model: str, ok: bool, error: str = "") -> None:
+        if not self.health:
+            return
+        data = self._load_health()
+        h = data.get(model) if isinstance(data.get(model), dict) else {}
+        now = self.clock()
+        if ok:
+            h.update(fails=0, last_ok=now)
+        elif model not in self._counted:
+            self._counted.add(model)
+            h.update(fails=int(h.get("fails") or 0) + 1, last_fail=now, last_error=error[:200])
+        else:
+            return
+        data[model] = h
+        try:
+            self.health.parent.mkdir(parents=True, exist_ok=True)
+            self.health.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        except OSError:
+            pass                            # never fatal: the run goes on without the memory
+
+    def skip_reason(self, model: str) -> str:
+        """Why `model` is skipped this run ('' = try it): it failed SKIP_AFTER runs in a row and
+        its last failure is less than SKIP_HOURS old."""
+        h = self._load_health().get(model)
+        if not isinstance(h, dict) or int(h.get("fails") or 0) < self.SKIP_AFTER:
+            return ""
+        age = self.clock() - float(h.get("last_fail") or 0)
+        if age >= self.SKIP_HOURS * 3600:
+            return ""
+        left = max(1, round((self.SKIP_HOURS * 3600 - age) / 3600))
+        return f"skipped: failed {h['fails']} runs in a row; tried again in about {left} h"
 
     def json_call(self, system_prompt, user_content, response_schema=None, max_output_tokens=1500) -> dict:
         models = [self.model] + ([self.FALLBACK_MODEL] if self.model != self.FALLBACK_MODEL else [])
         errors: list[str] = []
+        if len(models) > 1 and (why := self.skip_reason(models[0])):
+            errors.append(f"{models[0]}: {why}")
+            models = models[1:]
         for model in models:
             for attempt, wait in enumerate((0, *self.RETRY_WAITS)):
                 if wait:
@@ -1289,10 +1431,13 @@ class GeminiProvider:
                     if attempt < len(self.RETRY_WAITS):
                         continue                 # same model again, after a wait
                     errors.append(f"{model}: {e} (tried {attempt + 1} times)")
+                    self._record(model, False, str(e))
                     break
                 except RuntimeError as e:
                     errors.append(f"{model}: {e}")
+                    self._record(model, False, str(e))
                     break
+                self._record(model, True)
                 tries = f" on try {attempt + 1}" if attempt else ""
                 self.label = (f"{model}{tries}" if not errors else f"{model}, after {errors[0][:120]}")
                 return out
@@ -1370,6 +1515,32 @@ class ClaudeProvider:
         return json.loads(text)
 
 
+def ai_check(provider: "GeminiProvider") -> tuple[str, bool]:
+    """`--ai-check`: one tiny call to each Gemini model, no retries; says which answered and how
+    fast, and which model the next run starts with. Only the word "ok" is sent."""
+    schema = {"type": "object", "properties": {"ok": {"type": "boolean"}}, "required": ["ok"]}
+    lines, any_ok = ["Gemini check (one short request per model, no retries):"], False
+    for model in dict.fromkeys([provider.model, provider.FALLBACK_MODEL]):
+        t0 = provider.clock()
+        try:
+            provider._call(model, "Reply with JSON.", 'Return {"ok": true}.', schema, 64)
+        except Busy as e:
+            lines.append(f"  {model}: busy or unreachable ({e})")
+            provider._record(model, False, str(e))
+            continue
+        except RuntimeError as e:
+            lines.append(f"  {model}: failed ({e})")
+            provider._record(model, False, str(e))
+            continue
+        any_ok = True
+        provider._record(model, True)
+        lines.append(f"  {model}: answered in {provider.clock() - t0:.1f} s")
+    why = provider.skip_reason(provider.model) if provider.model != provider.FALLBACK_MODEL else ""
+    lines.append(f"Next --ai run starts with: {provider.FALLBACK_MODEL if why else provider.model}"
+                 + (f" ({provider.model} {why})" if why else ""))
+    return "\n".join(lines), any_ok
+
+
 def _strict(schema):
     """Structured outputs need additionalProperties: false on every object."""
     if isinstance(schema, list):
@@ -1426,9 +1597,98 @@ class Consultation:
     published: date | None = None
     deadline: date | None = None
     source: str = "RBI"
+    kind: str = "comments due"          # or a news deadline's kind ("takes effect", ...)
 
     def days_left(self, today: date) -> int | None:
         return (self.deadline - today).days if self.deadline else None
+
+
+DEADLINE_KINDS = ("comments due", "takes effect", "compliance deadline")
+
+
+@dataclass
+class NewsDeadline:
+    """A date a news story states (suggestion 5, 21 Nov 2026): kept only when it is in the text."""
+    when: date
+    kind: str
+
+    def text(self) -> str:
+        return f"{self.kind[:1].upper()}{self.kind[1:]} {self.when.strftime('%d %b %Y').lstrip('0')}"
+
+
+def stated_dates(text: str) -> tuple[set[date], set[tuple[int, int]], set[tuple[int, int]]]:
+    """Every date written in the text: full dates, (year, month) for 'March 2027', and
+    (month, day) for '15 December' with no year."""
+    full: set[date] = set()
+    months: set[tuple[int, int]] = set()
+    days: set[tuple[int, int]] = set()
+    t = (text or "").lower()
+    t = re.sub(r"(\d)(st|nd|rd|th)\b", r"\1", t)
+    t = re.sub(r"[’'`](\d{2})\b", r" \1", t)
+    t = t.replace(",", " ")
+    for m in re.finditer(r"\b(\d{4})-(\d{1,2})-(\d{1,2})\b|\b(\d{1,2})[./-](\d{1,2})[./-](\d{4})\b", t):
+        d = (_ymd(m.group(1), int(m.group(2)), int(m.group(3))) if m.group(1)
+             else _ymd(m.group(6), int(m.group(5)), int(m.group(4))))
+        if d:
+            full.add(d)
+    for m in re.finditer(rf"\b(\d{{1,2}})[ -]+{_MON}(?:[ -]+(\d{{4}}))?\b", t):
+        mon, day = _MONTHS[m.group(2)[:3]], int(m.group(1))
+        days.add((mon, day))
+        if m.group(3) and (d := _ymd(m.group(3), mon, day)):
+            full.add(d)
+    for m in re.finditer(rf"\b{_MON}[ -]+(\d{{1,2}})(?![\d])(?:[ -]+(\d{{4}}))?", t):
+        mon, day = _MONTHS[m.group(1)[:3]], int(m.group(2))
+        days.add((mon, day))
+        if m.group(3) and (d := _ymd(m.group(3), mon, day)):
+            full.add(d)
+    for m in re.finditer(rf"\b{_MON}[ -]+(\d{{4}})\b", t):
+        months.add((int(m.group(2)), _MONTHS[m.group(1)[:3]]))
+    return full, months, days
+
+
+def news_deadline(raw, story: "Story") -> NewsDeadline | None:
+    """The AI's deadline for a story, kept only when that date is written in the story's own text
+    (title or summary of any of its items) and within three years of it. A month-only match
+    ('by March 2027') becomes the end of that month."""
+    if not isinstance(raw, dict):
+        return None
+    m = re.fullmatch(r"\s*(\d{4})-(\d{2})-(\d{2})\s*", str(raw.get("date") or ""))
+    when = _ymd(m.group(1), int(m.group(2)), int(m.group(3))) if m else None
+    if when is None:
+        return None
+    full, months, days = stated_dates(" ".join(f"{i.title} {i.summary}" for i in story.items))
+    if when not in full and (when.month, when.day) not in days:
+        if (when.year, when.month) not in months:
+            return None
+        when = _ymd(str(when.year), when.month, None)     # 'March 2027' -> 31 Mar 2027
+    pub = story.lead.published.date() if story.lead.published else None
+    if pub and not (pub - timedelta(days=31) <= when <= pub + timedelta(days=3 * 366)):
+        return None
+    kind = str(raw.get("kind") or "").strip().lower()
+    return NewsDeadline(when, kind if kind in DEADLINE_KINDS else "deadline")
+
+
+def add_news_deadlines(consultations: list["Consultation"], stories: list["Story"],
+                       today: date) -> list["Consultation"]:
+    """Events & reports 'Comments & deadlines': RBI's open drafts plus the dates stated in the shown
+    stories (not past, not already listed)."""
+    out = list(consultations)
+    added = False
+    for s in stories:
+        dl = s.deadline
+        if dl is None or dl.when < today:
+            continue
+        words = _story_words(s.lead.title)
+        if any(c.url == s.lead.link or (c.deadline == dl.when and len(_story_words(c.title) & words) >= 2)
+               for c in out):
+            continue
+        out.append(Consultation(title=s.as_dict()["headline"], url=s.lead.link,
+                                published=s.lead.published.date() if s.lead.published else None,
+                                deadline=dl.when, source=(s.sources or ["News"])[0], kind=dl.kind))
+        added = True
+    if added:
+        out.sort(key=lambda c: c.deadline or date.max)
+    return out
 
 
 def _iso_date(text: str) -> date | None:
@@ -1597,7 +1857,7 @@ EWS = [
         r"\bloss(?:es)?\b|loss[- ]making|(?:profit|revenue|sales|margin|ebitda)s? (?:fall|drop|decline|plunge|"
         r"slump|tank|shrink|dip)|shut ?down|\bstrike\b|lockout|fire (?:at|breaks|broke)|\bblaze\b|layoff|"
         r"job cuts|plant clos|halt(?:s|ed)? (?:production|operations|work)|(?:order|contract) cancel|"
-        r"penalt|litigation|lawsuit|(?:shares?|stock) (?:fall|plunge|crash|tumble|sink|slump|hit)|"
+        r"penalt|litigation|lawsuit|"
         r"cash crunch|liquidity (?:crunch|stress)|debt (?:rises|surges|swells)|working capital stress|"
         r"cut(?:s)? (?:guidance|forecast)|profit warning", re.I)),
     ("Positive", "green", re.compile(
@@ -1614,6 +1874,121 @@ PF_NOISE = re.compile(
     r"market (?:live|wrap|highlights)|price target|technical (?:pick|view)|buy or sell|share price (?:today|live)|"
     r"stock price (?:today|live)|multibagger|amfi (?:rejig|reshuffle)|large[- ]?cap upgrade|trade setup|"
     r"stocks? recommendations?|f&o ban|bulk deals?|block deals?|\(\w+\.(?:bo|ns)\)", re.I)
+# What decides a borrower's credit quality (user, 21 Nov 2026: "credit quality determinants based on
+# news, economy, sector, management", not share prices). In priority order: a story takes the first
+# driver it matches. The first four are "strong": they keep a story even when its headline is about
+# the share price ("…Supreme Court upholds rejection…; stock falls 3%").
+CREDIT_DRIVERS: list[tuple[str, bool, re.Pattern]] = [
+    ("Rating", True, re.compile(
+        r"credit rating|\bratings? (?:reaffirm|upgrad|downgrad|revis|watch|outlook|assign|withdraw|suspend)|"
+        r"(?:reaffirm|upgrad|downgrad|revis|assign)\w* (?:its |the )?(?:credit )?ratings?|"
+        r"outlook (?:to |revised |raised |cut |lowered )?(?:to )?(?:negative|positive|stable)|"
+        r"(?:negative|positive|stable) outlook|rating watch|credit watch|"
+        r"\b(?:crisil|icra|care ratings|careedge|india ratings|ind-ra|acuit[eé]|brickwork|infomerics|"
+        r"moody'?s|fitch)\b|\bs&p\b(?!\s*(?:500|bse))", re.I)),
+    ("Debt & liquidity", True, re.compile(
+        r"\bdebt\b|borrow|\bloans?\b|\blenders?\b|refinanc|\bncds?\b|debentures?|\bbonds?\b|"
+        r"commercial paper|default|repay|interest (?:payment|cost|burden|servicing)|liquidity|"
+        r"working capital|cash ?flow|delever|leverage|\bqip\b|rights issue|fund ?rais|"
+        r"raises? (?:₹|rs\.?|inr|\$|usd|us\$)|impairment|write[- ]?(?:off|down)|\bnpa\b|non[- ]performing|"
+        r"restructur|one[- ]time settlement|\bots\b|\becb\b|credit facilit|term loan|covenant", re.I)),
+    ("Legal & regulatory", True, re.compile(
+        r"\bcourt\b|\bnclt\b|\bnclat\b|\bibc\b|insolvenc|tribunal|arbitrat|\bsebi\b|enforcement directorate|"
+        r"\bed\b (?:raid|search|attach|summon|probe)|\bcbi\b|\bsfio\b|\bprobe|investigat|penalt|\bfine[ds]?\b|"
+        r"tax (?:demand|notice|dispute|raid)|\bgst\b (?:notice|demand|evasion)|show[- ]cause|litigation|"
+        r"lawsuit|\bpetition|verdict|\bruling|licen[cs]e|anti[- ]dumping|\bduty\b|tariff|\bban(?:s|ned)?\b|"
+        r"sanction|regulator|\brules?\b|\bnorms\b|regulations?|government(?:'s)? (?:decision|order|move)|"
+        r"ministry", re.I)),
+    ("Management & governance", True, re.compile(
+        r"\b(?:ceo|cfo|coo|md|managing director|chairman|chairperson|director|auditor|president)s?\b[^.;]{0,40}?"
+        r"\b(?:resign|quit|steps? down|exit|appoint|named|elevat|replac|succe)|"
+        r"\b(?:resign|quit|steps? down|appoint|names|elevat)\w*[^.;]{0,40}?"
+        r"\b(?:ceo|cfo|coo|md|managing director|chairman|director|auditor)\b|"
+        r"pledge|governance|related[- ]party|whistle[- ]?blower|promoter (?:stake|sells|exit|infus)|stake sale|"
+        r"auditors?\b|management (?:change|rejig|exit|shake)|succession|forensic audit", re.I)),
+    ("Results", False, re.compile(
+        r"\bq[1-4](?:\s?fy\s?\d{2,4})?\b|quarter|half[- ]year|\bresults?\b|\bprofit|\bloss(?:es)?\b|revenue|"
+        r"\bebitda\b|margins?\b|earnings|guidance|net (?:income|sales)|turnover|"
+        r"sales (?:volume|growth|fall|rise)|performance", re.I)),
+    ("Business & operations", False, re.compile(
+        r"capacity|expan|capex|investment plan|invest(?:s|ing)? (?:₹|rs|\$)|\bplant|factory|facilit|project|"
+        r"\borders?\b|contracts?\b|acqui|merger|amalgamat|demerger|divest|\bstake\b|joint venture|\bjv\b|"
+        r"\bdeal\b|\bbid\b|tender|shut ?down|\bstrike\b|lockout|\bfire\b|blaze|accident|outage|exports?\b|"
+        r"imports?\b|demand\b|prices?\b|supply|commission|ramp|\bmines?\b|\bblock\b|\boutput\b|production", re.I)),
+]
+# Share-price and stock-market talk: not credit news (user, 21 Nov 2026). Dropped unless a strong
+# driver is also in the headline.
+MARKET_CHATTER = re.compile(
+    r"share price|stock price|price target|target price|\btgt\b|stop[- ]?loss|"
+    r"\bshares?\b[^.;:]{0,40}?\b(?:rise|rises|rose|fall|falls|fell|gain|gains|drop|drops|jump|jumps|surge|surges|"
+    r"slide|slides|slip|slips|rally|rallies|tank|tanks|climb|climbs|plunge|plunges|zoom|zooms|soar|soars|tumble|"
+    r"tumbles|decline|declines|dip|dips|trade|trades|ends?|close[sd]?|opens?|hits?|crash|recover|rebound|sinks?|"
+    r"in focus|up \d|down \d)\b|"
+    r"\bstocks?\b[^.;:]{0,40}?\b(?:rise|rises|fall|falls|gain|gains|drop|drops|jump|jumps|surge|surges|slide|slides|"
+    r"slip|slips|rally|rallies|climb|climbs|plunge|plunges|tumble|tumbles|decline|declines|to watch|to buy|"
+    r"in focus|in news|picks?|forecast|of the day|list)\b|"
+    r"top (?:\d+ )?(?:stocks?|shares?|gainers|losers|picks)|analysts? (?:recommend|see|predict)|buy calls?|"
+    r"\brated (?:buy|sell|hold|neutral|overweight|underweight)|"
+    r"\b(?:buy|sell|hold|accumulate|reduce|neutral|overweight|underweight|outperform|underperform) "
+    r"(?:rating|call|recommendation)|"
+    r"(?:upgrade|downgrade)s?[^.]{0,30}\bto (?:buy|sell|hold|neutral|overweight|underweight|accumulate|reduce|add|"
+    r"outperform|underperform)|brokerage|\b(?:jefferies|nomura|clsa|macquarie|motilal|nuvama|emkay|bernstein)\b|"
+    r"\bupside\b|\bdownside\b|market (?:cap|value)|\bm-?cap\b|52[- ]week|sensex|nifty|\bf&o\b|"
+    r"options? (?:data|chain|trading)|technical|\bcharts?\b|share(?:holding)? pattern|"
+    r"mutual funds? (?:buy|sell|hike|cut|add)|\bfiis?\b|\bdiis?\b|dividend|bonus (?:issue|shares)|stock split|"
+    r"record date|\bipo\b|\bgmp\b|live (?:nse|bse)|\b(?:nse|bse|nsei)\s*:|\.(?:ns|bo)\)|quote and history|"
+    r"returns? (?:chart|of)|multibagger|seasonal returns|at a glance|"
+    r"\b(?:up|down|higher|lower|gains?|falls?|rises?|slips?|jumps?)\s+(?:by\s+)?\d+(?:\.\d+)?\s?%\s+(?:on|in|at|today)\b|"
+    r"\bshould you buy\b|\btechnical momentum\b|\bpostal ballot\b", re.I)
+# Sites that write about share prices and stock calls, almost never about credit (user's screenshot,
+# 21 Nov 2026). Matched against the outlet name; `portfolio.skip_publishers` in sources.json adds more.
+STOCK_SITES = ("marketsmojo", "kalkine", "stockinvest", "simply wall st", "trendlyne", "smart investello",
+               "stock titan", "marketbeat", "investing.com", "tipranks", "zacks", "stockanalysis")
+
+
+def stock_site(publisher: str, extra: tuple[str, ...] = ()) -> bool:
+    p = (publisher or "").lower()
+    return any(x and x.lower() in p for x in (*STOCK_SITES, *extra))
+# The search for each company: its names plus the topics above (tested live on 21 Nov 2026: 16
+# relevant items for Vedanta instead of 70 that were mostly price pages and broker calls).
+CREDIT_QUERY = ("(debt OR rating OR lenders OR loan OR bonds OR default OR court OR NCLT OR probe OR penalty "
+                "OR results OR profit OR loss OR CEO OR CFO OR resigns OR auditor OR pledge OR plant OR capacity "
+                "OR capex OR acquisition OR merger OR order OR impairment OR insolvency)")
+SECTOR_DRIVERS = re.compile(
+    r"demand|prices?\b|outlook|capacity|utili[sz]ation|imports?|exports?|dumping|\bduty\b|tariff|policy|"
+    r"regulat|slowdown|stress|default|rating|margins?|inventor|oversupply|glut|subsid|incentive|\bpli\b|"
+    r"monsoon|consolidat|credit growth|\bnpa\b|delinquen|order book|production|output|sales", re.I)
+SECTOR_QUERY = "(demand OR prices OR imports OR duty OR capacity OR outlook OR margins OR policy OR slowdown)"
+MACRO = re.compile(
+    r"\bgdp\b|inflation|\bcpi\b|\bwpi\b|\biip\b|industrial (?:output|production)|\bpmi\b|fiscal deficit|"
+    r"current account|trade deficit|credit growth|bank credit|deposit growth|repo rate|interest rates?|"
+    r"rate (?:hike|cut)|\bmpc\b|rupee|forex reserves|crude|oil prices|monsoon|\beconomy\b|economic growth|"
+    r"slowdown|recession|core sector|gst collection|private (?:capex|investment)", re.I)
+MACRO_QUERY = 'India (GDP OR inflation OR "credit growth" OR IIP OR PMI OR "fiscal deficit" OR "interest rates")'
+MACRO_NOISE = re.compile(r"sensex|nifty|\bstocks?\b|\bshares?\b|market (?:live|wrap|today)|\bipo\b|"
+                         r"\bgold (?:price|rate)|newsletter|live updates", re.I)
+
+
+def credit_driver(title: str) -> tuple[str, bool] | None:
+    """The first credit driver a headline matches, and whether it is a strong one; None if none."""
+    for label, strong, pat in CREDIT_DRIVERS:
+        if pat.search(title):
+            return label, strong
+    return None
+
+
+def credit_news(title: str) -> str:
+    """The driver label when a borrower headline is credit news, '' when it is not: market chatter
+    without a strong driver, or no driver at all."""
+    d = credit_driver(title)
+    if d is None:
+        return ""
+    if (MARKET_CHATTER.search(title) or PF_NOISE.search(title)) and not any(
+            strong and pat.search(title) for _, strong, pat in CREDIT_DRIVERS):
+        return ""
+    return d[0]
+
+
 _SUFFIX = re.compile(r"[\s,.]+(?:limited|ltd|pvt|private|plc|inc|llp|corporation|corp|company|co)\.?\s*$", re.I)
 
 
@@ -1643,6 +2018,8 @@ class Company:
     name: str
     aliases: list[str] = field(default_factory=list)
     stories: list[Story] = field(default_factory=list)   # this week's news on it, worst signal first
+    sectors: list[str] = field(default_factory=list)     # "sector: steel, power" in top 20.txt (local only)
+    dropped: int = 0                                     # this week's headlines on it that were not credit news
     note: str = ""                                       # GigaCode's view (MCP), optional
     ai_level: str = ""                                   # GigaCode's signal ("red/amber/green/none"), overrides
 
@@ -1672,6 +2049,11 @@ class Company:
         return " OR ".join(f'"{s}"' for s in short)
 
     @property
+    def search_query(self) -> str:
+        """The Google News search: the names, limited to credit topics (CREDIT_QUERY)."""
+        return f"({self.query}) {CREDIT_QUERY}"
+
+    @property
     def signal(self) -> tuple[str, str]:
         """(label, level) for the company: GigaCode's level if given, else the worst local flag."""
         worst = max((_story_signal(s) for s in self.stories), key=lambda f: LEVELS[f[1]], default=("", ""))
@@ -1683,7 +2065,8 @@ class Company:
 
 
 def load_portfolio(path: Path | str) -> list[Company]:
-    """One company per line: 'Name' or 'Name | alias | alias'. '#' comments and numbering allowed."""
+    """One company per line: 'Name' or 'Name | alias | alias | sector: steel, power'. '#' comments and
+    numbering allowed. Sectors link the week's news to our exposure (`link_portfolio`)."""
     p = Path(path)
     data = p.read_bytes()
     try:
@@ -1701,13 +2084,16 @@ def load_portfolio(path: Path | str) -> list[Company]:
         if not parts or parts[0].lower() in seen:
             continue
         seen.add(parts[0].lower())
-        out.append(Company(parts[0], parts[1:]))
+        sectors = [x.strip() for p in parts[1:] if re.match(r"sectors?\s*:", p, re.I)
+                   for x in re.split(r"[,;]", p.split(":", 1)[1]) if x.strip()]
+        aliases = [p for p in parts[1:] if not re.match(r"sectors?\s*:", p, re.I)]
+        out.append(Company(parts[0], aliases, sectors=sectors))
     return out
 
 
 def scan_portfolio(companies: list[Company], items: list[Item], start: datetime, end: datetime, days: int,
                    fetcher: Callable[[str], bytes], per_company: int = PORTFOLIO_MAX,
-                   search: bool = True) -> list[str]:
+                   search: bool = True, skip_publishers: tuple[str, ...] = ()) -> list[str]:
     """Fill each company's `stories`: one Google News search per company (its names only, in quotes)
     plus the week's collected news, kept when the headline names the company. Returns errors."""
     errors: list[str] = []
@@ -1716,7 +2102,7 @@ def scan_portfolio(companies: list[Company], items: list[Item], start: datetime,
         if not search:
             return c, [], None
         try:
-            return c, parse_feed(fetcher(google_news_url(c.query, days)), "Google News", 1.0, False, True), None
+            return c, parse_feed(fetcher(google_news_url(c.search_query, days)), "Google News", 1.0, False, True), None
         except Exception as e:  # noqa: BLE001 — one failed search must not stop the rest
             return c, [], e
 
@@ -1726,22 +2112,186 @@ def scan_portfolio(companies: list[Company], items: list[Item], start: datetime,
     for c, got, err in found:
         if err is not None:
             errors.append(f"Portfolio search ({c.name}): {type(err).__name__}: {err}"[:300])
-        pat, links, mine = c.pattern, set(), []
+        pat, links, mine, dropped = c.pattern, set(), [], set()
         for it in [*got, *items]:
             if (it.link in links or not it.published or not (start <= it.published <= end + timedelta(hours=12))
-                    or not pat.search(it.title) or PF_NOISE.search(it.title)):
+                    or not pat.search(it.title)):
                 continue
             links.add(it.link)
+            if not credit_news(it.title) or stock_site(it.publisher, skip_publishers):
+                # share prices, broker calls, stock-tip sites, or nothing about credit
+                dropped.add(it.title.lower())
+                continue
             new = Item(it.title, it.link, it.source, it.published, it.summary, it.weight, it.primary,
                        it.publisher, kind="portfolio")
             new.score = it.published.timestamp() / 1e9      # newest first within a signal level
             mine.append(new)
         stories = group(mine)
-        stories.sort(key=lambda s: (-LEVELS[_story_signal(s)[1]], -max(i.published.timestamp() for i in s.items)))
+        order = [label for label, _, _ in CREDIT_DRIVERS]
         for s in stories:
-            s.category = "Credit portfolio"
+            s.category = credit_news(s.lead.title)
+        # Worst signal first, then the stronger driver (rating, debt, legal, management), then newest.
+        stories.sort(key=lambda s: (-LEVELS[_story_signal(s)[1]], order.index(s.category),
+                                    -max(i.published.timestamp() for i in s.items)))
         c.stories = stories[:max(1, per_company)]
+        c.dropped = len(dropped)
     return errors
+
+
+@dataclass
+class SectorNews:
+    """This week's news on a sector we lend to (top 20.txt 'sector:'), with the borrowers in it."""
+    name: str
+    companies: list[str]
+    stories: list[Story]
+
+
+_INDUSTRY = (SECTOR_DRIVERS.pattern + r"|sector|industry|makers|producers|manufacturers|companies|firms|"
+             r"plants?|mills?|ministry|minister|association")
+
+
+def sector_hit(title: str, sector: str) -> bool:
+    """The sector word next to an industry term (at most one word between): 'Chinese steel imports',
+    'cement demand', 'aluminium P1020 prices' count; 'Mumbai man ports his mediclaim policy' does not."""
+    sec = rf"(?<!\w){re.escape(sector)}s?(?!\w)"
+    drv = rf"\w*(?:{_INDUSTRY})\w*"
+    gap = r"(?:\W+\w+)?\W+"
+    return bool(re.search(rf"{sec}{gap}{drv}|{drv}{gap}{sec}", title, re.I))
+
+
+def scan_sectors(companies: list[Company], items: list[Item], start: datetime, end: datetime, days: int,
+                 fetcher: Callable[[str], bytes], per_sector: int = 3,
+                 search: bool = True) -> tuple[list[SectorNews], list[str]]:
+    """One Google News search per sector (the sector word plus SECTOR_QUERY), plus the week's
+    collected news: headlines that name the sector and a sector driver, not market chatter, and
+    not already shown under a company."""
+    sectors: dict[str, SectorNews] = {}
+    for c in companies:
+        for sec in c.sectors:
+            entry = sectors.setdefault(sec.lower(), SectorNews(sec, [], []))
+            short = _short_name(c.name) or c.name
+            if short not in entry.companies:
+                entry.companies.append(short)
+    shown = {i.link for c in companies for s in c.stories for i in s.items}
+    errors: list[str] = []
+    for key, entry in sectors.items():
+        got: list[Item] = []
+        if search:
+            try:
+                got = parse_feed(fetcher(google_news_url(f'"{entry.name}" India {SECTOR_QUERY}', days)),
+                                 "Google News", 1.0, False, True)
+            except Exception as e:  # noqa: BLE001
+                errors.append(f"Sector search ({entry.name}): {type(e).__name__}: {e}"[:300])
+        pat, links, mine = _sector_pattern(entry.name), set(), []
+        for it in [*got, *items]:
+            t = it.title
+            if (it.link in links or it.link in shown or not it.published
+                    or not (start <= it.published <= end + timedelta(hours=12)) or not pat.search(t)
+                    or not sector_hit(t, entry.name) or MARKET_CHATTER.search(t) or PF_NOISE.search(t)):
+                continue
+            links.add(it.link)
+            new = Item(t, it.link, it.source, it.published, it.summary, it.weight, it.primary, it.publisher,
+                       kind="portfolio")
+            mine.append(new)
+        stories = group(mine)
+        stories.sort(key=lambda s: (-len(s.sources), -max(i.published.timestamp() for i in s.items)))
+        for s in stories:
+            s.category = f"Sector: {entry.name}"
+        entry.stories = stories[:max(1, per_sector)]
+    return [e for e in sectors.values() if e.stories], errors
+
+
+def scan_economy(items: list[Item], start: datetime, end: datetime, days: int, fetcher: Callable[[str], bytes],
+                 n: int = 4, search: bool = True) -> tuple[list[Story], list[str]]:
+    """India's economy this week, as it bears on borrowers: GDP, inflation, rates, credit growth,
+    the rupee, crude. Widest coverage first."""
+    errors: list[str] = []
+    got: list[Item] = []
+    if search:
+        try:
+            got = parse_feed(fetcher(google_news_url(MACRO_QUERY, days)), "Google News", 1.0, False, True)
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"Economy search: {type(e).__name__}: {e}"[:300])
+    links, mine = set(), []
+    for it in [*got, *items]:
+        t = it.title
+        if (it.link in links or not it.published or not (start <= it.published <= end + timedelta(hours=12))
+                or not MACRO.search(t) or not INDIA.search(t) or MACRO_NOISE.search(t)):
+            continue
+        links.add(it.link)
+        mine.append(Item(t, it.link, it.source, it.published, it.summary, it.weight, it.primary, it.publisher,
+                         kind="portfolio"))
+    stories = merge_same_story(group(mine), min_stories=2)
+    stories.sort(key=lambda s: (-len(s.sources), -max(i.published.timestamp() for i in s.items)))
+    # The same release in other words ("CPI inflation rises to 6.1%" / "inflation climbs to 6.1%"):
+    # one indicator and one figure in common is one story.
+    merged: list[tuple[set[str], set[str], Story]] = []
+    for st in stories:
+        terms = {m.lower() for m in MACRO.findall(st.lead.title)}
+        nums = set(re.findall(r"\d+\.\d+%?|\d+%", st.lead.title))
+        same = next((m for m in merged if terms & m[0] and nums & m[1]), None)
+        if same:
+            same[2].items.extend(st.items)
+        else:
+            merged.append((terms, nums, st))
+    stories = [m[2] for m in merged]
+    stories.sort(key=lambda s: (-len(s.sources), -max(i.published.timestamp() for i in s.items)))
+    for s in stories:
+        s.category = "Economy"
+    return stories[:max(1, n)], errors
+
+
+BORROWER_IMPACT, SECTOR_IMPACT = 2, 1          # added to an AI impact (capped at 10)
+BORROWER_SCORE, SECTOR_SCORE = 3.0, 1.5        # added to a keyword score (no AI)
+
+
+def _sector_pattern(sector: str) -> re.Pattern:
+    return re.compile(rf"(?<!\w){re.escape(sector)}s?(?!\w)", re.I)
+
+
+def link_portfolio(stories: list[Story], companies: list[Company]) -> None:
+    """Tag each story with the borrowers (top 20.txt) it names and the borrowers' sectors it
+    mentions. Runs on this computer after any AI ranking: the names never reach the AI."""
+    if not companies:
+        return
+    for s in stories:
+        text = " ".join(f"{i.title} {i.summary}" for i in s.items)
+        s.borrowers = [_short_name(c.name) or c.name for c in companies if c.pattern.search(text)]
+        secs: list[str] = []
+        for c in companies:
+            for sec in c.sectors:
+                if sec.lower() not in [x.lower() for x in secs] and _sector_pattern(sec).search(text):
+                    secs.append(sec)
+        s.sectors = secs
+
+
+def boost_for_portfolio(stories: list[Story], ai: bool) -> None:
+    """Raise stories that touch our book: a named borrower adds BORROWER_IMPACT to the AI's impact
+    (or BORROWER_SCORE to the keyword score), a borrower's sector adds the smaller SECTOR_* amount.
+    Once per story."""
+    for s in stories:
+        if s.boost or not (s.borrowers or s.sectors):
+            continue
+        if s.borrowers:
+            impact_add, score_add, label = BORROWER_IMPACT, BORROWER_SCORE, f"+{BORROWER_IMPACT} our borrower"
+        else:
+            impact_add, score_add, label = SECTOR_IMPACT, SECTOR_SCORE, f"+{SECTOR_IMPACT} our sector"
+        if ai:
+            if s.impact is None:
+                continue
+            s.impact = min(10, s.impact + impact_add)
+        else:
+            s.score += score_add
+        s.boost = [label]
+
+
+def exposure_text(s: Story) -> str:
+    parts = []
+    if s.borrowers:
+        parts.append(f"Our borrower: {', '.join(s.borrowers[:3])}")
+    if s.sectors:
+        parts.append(f"Our sector: {', '.join(s.sectors[:3])}")
+    return " · ".join(parts)
 
 
 def portfolio_order(companies: list[Company]) -> list[Company]:
@@ -1756,7 +2306,16 @@ def _pf_counts(companies: list[Company]) -> str:
     parts += [f"{n['red']} red"] if n["red"] else []
     parts += [f"{n['amber']} amber"] if n["amber"] else []
     parts += [f"{n['green']} positive"] if n["green"] else []
+    left = sum(c.dropped for c in companies)
+    parts += [f"{left} share-price or non-credit headline{'s' if left != 1 else ''} left out"] if left else []
     return " · ".join(parts)
+
+
+def _pf_meta(s: Story) -> str:
+    """'Debt & liquidity · ET Markets, 20 Nov' for a borrower, sector or economy story."""
+    who = f"{s.lead.publisher or s.lead.source}, {_when(s.lead)}"
+    label = "" if s.category.startswith(("Sector:", "Economy", "Credit portfolio")) else s.category
+    return f"{label} · {who}" if label else who
 
 
 def _pf_quiet(companies: list[Company]) -> list[str]:
@@ -1803,7 +2362,9 @@ def portfolio_prompt(companies: list[Company]) -> str:
         return ""
     out = ["## Credit portfolio watch (optional, the bank's own borrowers)",
            "For each company below, judge whether this week's news is an early-warning signal for a "
-           "lender to it. Add to your ranking a key \"portfolio\": a list of {\"company\": name exactly as "
+           "lender to it: what changes its credit quality (debt and liquidity, ratings, results, management "
+           "and governance, legal or regulatory action, operations, its sector and the economy), not its "
+           "share price. Add to your ranking a key \"portfolio\": a list of {\"company\": name exactly as "
            "written, \"signal\": \"red\" (default, insolvency, downgrade, fraud), \"amber\" (stress worth a "
            "call), \"green\" (positive) or \"none\" (not about the company or not credit-relevant), "
            "\"note\": at most 25 words: what happened and what the credit team should check}.", ""]
@@ -1811,7 +2372,7 @@ def portfolio_prompt(companies: list[Company]) -> str:
         label, level = c.signal
         out.append(f"- {c.name} (local flag: {LEVEL_LABEL[level]}{' · ' + label if label else ''})")
         for s in c.stories:
-            out.append(f"  · {s.lead.title} — {s.lead.publisher or s.lead.source}, {_when(s.lead)}")
+            out.append(f"  · {s.lead.title} — {_pf_meta(s)}")
     return "\n".join(out)
 
 
@@ -1830,6 +2391,8 @@ class Week:
     events: list["Event"] = field(default_factory=list)
     consultations: list["Consultation"] = field(default_factory=list)
     portfolio: list["Company"] = field(default_factory=list)    # credit portfolio watch (never sent to Gemini)
+    sector_watch: list["SectorNews"] = field(default_factory=list)  # sectors we lend to (top 20.txt)
+    economy: list[Story] = field(default_factory=list)              # India's economy, for credit quality
     events_max: int = 10                # upcoming events shown; the rest are on the events page
     events_window: int = 60
 
@@ -1877,7 +2440,16 @@ def prepare_week(days: int = 7, sources: dict | None = None, fetcher: Callable[[
             log(f"  Portfolio: {len(week.portfolio)} names from {path.name}")
             week.errors.extend(scan_portfolio(week.portfolio, raw, start, end, days, fetcher,
                                               int(pf.get("per_company", PORTFOLIO_MAX)),
-                                              bool(pf.get("search", True))))
+                                              bool(pf.get("search", True)),
+                                              tuple(pf.get("skip_publishers") or ())))
+            if pf.get("sectors", True):
+                week.sector_watch, more = scan_sectors(week.portfolio, raw, start, end, days, fetcher,
+                                                       int(pf.get("per_sector", 3)), bool(pf.get("search", True)))
+                week.errors.extend(more)
+            if pf.get("economy", True):
+                week.economy, more = scan_economy(raw, start, end, days, fetcher, int(pf.get("economy_max", 4)),
+                                                  bool(pf.get("search", True)))
+                week.errors.extend(more)
     return week
 
 
@@ -1976,7 +2548,14 @@ def finish_week(week: Week, top: int = 3, picked: "AiPick | None" = None, ai: st
     dd = None
     if picked is not None and picked.ok:
         dd_target = picked.focus.story if picked.deep_dive and picked.focus else None
+        # Our book, on this computer: borrowers and sectors raise the AI's impact before the
+        # safety net, so a borrower story at 3/10 is kept at 5/10.
+        link_portfolio(flatten(picked.blocks) + picked.radar, week.portfolio)
+        boost_for_portfolio(flatten(picked.blocks), ai=True)
         picked, notes = apply_rules(picked, week, top)
+        link_portfolio(flatten(picked.blocks), week.portfolio)      # replacements from the keyword list
+        for b in picked.blocks:                                     # highest impact first, after boosts
+            picked.blocks[b].sort(key=lambda st: -(st.impact or 0))
         if notes:
             ai += f"; safety net: {len(notes)} change(s)"
             ai_log.append({"safety_net": notes})
@@ -1989,6 +2568,9 @@ def finish_week(week: Week, top: int = 3, picked: "AiPick | None" = None, ai: st
             else:
                 ai_log.append({"deep_dive": "dropped: the story of the week changed"})
     else:                                       # keyword ranking: no AI, or the AI failed
+        link_portfolio(stories, week.portfolio)
+        boost_for_portfolio(stories, ai=False)
+        stories = sorted(stories, key=lambda st: -st.score)
         blocks, _ = pick(stories, top)
         blocks = reserve(blocks, stories, profile, top)
         radar = radar_of(blocks, stories)
@@ -2001,7 +2583,8 @@ def finish_week(week: Week, top: int = 3, picked: "AiPick | None" = None, ai: st
                   kept=week.kept, errors=week.errors, ai=ai, routine=week.routine,
                   cro_notes=list(cro_notes or []), cro_focus=focus, ai_log=ai_log,
                   pending=list(pending or []), blocks=blocks, reports=week.reports, events=week.events,
-                  consultations=week.consultations, portfolio=week.portfolio,
+                  consultations=add_news_deadlines(week.consultations, flatten(blocks), week.end.date()),
+                  portfolio=week.portfolio, sector_watch=week.sector_watch, economy=week.economy,
                   events_max=week.events_max, events_window=week.events_window, deep_dive=dd)
 
 
@@ -2332,7 +2915,8 @@ def _due(c: "Consultation", today: date) -> str:
     n = c.days_left(today)
     if n is None:
         return "deadline not stated"
-    return f"comments due {c.deadline.strftime('%d %b').lstrip('0')} ({'today' if n == 0 else f'{n} day' + ('s' if n != 1 else '')})"
+    left = "today" if n == 0 else f"{n} day" + ("s" if n != 1 else "")
+    return f"{c.kind} {c.deadline.strftime('%d %b').lstrip('0')} ({left})"
 
 
 PF_TITLE = "Credit portfolio watch"
@@ -2395,7 +2979,7 @@ def to_markdown(res: Result) -> str:
             out += ["| Company | Signal | This week |", "|---|---|---|"]
             for c in rows:
                 news = "<br>".join(f"[{s.lead.title.replace('|', '/')}]({s.lead.link}) "
-                                   f"({s.lead.publisher or s.lead.source}, {_when(s.lead)})" for s in c.stories)
+                                   f"({_pf_meta(s)})" for s in c.stories)
                 if c.note:
                     news += f"<br>_GigaCode: {c.note.replace('|', '/')}_"
                 sig = _sig_text(c)
@@ -2403,7 +2987,13 @@ def to_markdown(res: Result) -> str:
             out.append("")
         quiet = _pf_quiet(res.portfolio)
         if quiet:
-            out += [f"_No news this week: {', '.join(quiet)}._", ""]
+            out += [f"_No credit news this week: {', '.join(quiet)}._", ""]
+        for sw in res.sector_watch:
+            out += [f"**Sector: {sw.name}** ({', '.join(sw.companies)})", ""]
+            out += [f"- [{s.lead.title}]({s.lead.link}) ({_pf_meta(s)})" for s in sw.stories] + [""]
+        if res.economy:
+            out += ["**Economy**", ""]
+            out += [f"- [{s.lead.title}]({s.lead.link}) ({_pf_meta(s)})" for s in res.economy] + [""]
     if res.compliance or res.compliance_info:
         out += _compliance_markdown(res)
     for block, stories in _blocks(res):
@@ -2413,8 +3003,9 @@ def to_markdown(res: Result) -> str:
         for n, s in enumerate(stories, 1):
             d = s.as_dict()
             out += [f"### {n}. [{d['headline']}]({d['link']})",
-                    (f"Impact {d['impact']}/10 · " if d["impact"] else "") + f"{d['source']} · {d['date']}"
-                    + (f" · also reported by {d['also_reported_by']} more" if d["also_reported_by"] else ""), ""]
+                    " · ".join(x for x in (impact_label(d), d["source"], d["date"]) if x)
+                    + (f" · also reported by {d['also_reported_by']} more" if d["also_reported_by"] else "")
+                    + "".join(f" · **{t}**" for t in item_tags(d)), ""]
             if d["why_it_matters"]:
                 out += [d["why_it_matters"], ""]
     if res.radar:
@@ -2425,7 +3016,7 @@ def to_markdown(res: Result) -> str:
         today = res.end.date()
         out += ["## Events & reports", ""]
         if res.consultations:
-            out += ["**Comments due**", ""] + [f"- [{c.title}]({c.url}) — {c.source}, {_due(c, today)}"
+            out += ["**Comments & deadlines**", ""] + [f"- [{c.title}]({c.url}) — {c.source}, {_due(c, today)}"
                                                 for c in res.consultations] + [""]
         if res.events:
             out += ["**Upcoming**", ""] + [f"- [{ev.name}]({ev.url}) — {ev.when}"
@@ -2478,11 +3069,16 @@ def to_console(res: Result, files: dict) -> str:
         out.append(f"{PF_TITLE.upper()} ({_pf_counts(res.portfolio)})")
         for c in portfolio_order(res.portfolio):
             out.append(f"  • {c.name}: {_sig_text(c)}")
-            out += [f"      {s.lead.title[:110]} ({s.lead.publisher or s.lead.source}, {_when(s.lead)})"
-                    for s in c.stories]
+            out += [f"      {s.lead.title[:110]} ({_pf_meta(s)})" for s in c.stories]
             out += [f"      GigaCode: {c.note}"] if c.note else []
         quiet = _pf_quiet(res.portfolio)
-        out += [f"  No news: {', '.join(quiet)}"] if quiet else []
+        out += [f"  No credit news: {', '.join(quiet)}"] if quiet else []
+        for sw in res.sector_watch:
+            out.append(f"  Sector: {sw.name} ({', '.join(sw.companies)})")
+            out += [f"      {s.lead.title[:110]} ({_pf_meta(s)})" for s in sw.stories]
+        if res.economy:
+            out.append("  Economy")
+            out += [f"      {s.lead.title[:110]} ({_pf_meta(s)})" for s in res.economy]
         out.append("")
     info = res.compliance_info
     if info:
@@ -2501,14 +3097,14 @@ def to_console(res: Result, files: dict) -> str:
         for n, s in enumerate(stories, 1):
             d = s.as_dict()
             out += [f"{n}. {d['headline']}",
-                    "   " + (f"Impact {d['impact']}/10 · " if d["impact"] else "") + f"{d['source']} · {d['date']}"]
+                    "   " + " · ".join(x for x in (impact_label(d), d["source"], d["date"], *item_tags(d)) if x)]
             if d["why_it_matters"]:
                 out.append(f"   {d['why_it_matters']}")
             out += [f"   {d['link']}", ""]
     if _has_events(res):
         today = res.end.date()
         out.append("EVENTS & REPORTS")
-        out += [f"  Comments due: {c.title[:90]} ({_due(c, today)})" for c in res.consultations]
+        out += [f"  Deadline: {c.title[:90]} ({_due(c, today)})" for c in res.consultations]
         out += [f"  Upcoming: {ev.when} · {ev.name[:90]}" for ev in _shown_events(res)]
         if len(res.events) > res.events_max and files.get("events"):
             out.append(f"  {_all_events_label(res)}: {Path(files['events']).resolve().as_uri()}")
@@ -2543,8 +3139,11 @@ def to_html(res: Result) -> str:
                 f'<li><span class="n">{n}</span><div>'
                 f'<h3>{link(d["link"], d["headline"], "", d["headline"])}</h3><p class="meta">'
                 + (f'<span class="star">★ {e(STORY_LABEL)}</span> · ' if _is_story(res, st) else "")
-                + (f'<span class="imp">Impact {d["impact"]}/10</span> · ' if d["impact"] else "")
+                + (f'<span class="imp">Impact {d["impact"]}/10</span>'
+                   + (f' <span class="checks">({e(d["impact_detail"])})</span>' if d["impact_detail"] else "")
+                   + ' · ' if d["impact"] else "")
                 + f'{e(d["source"])} · {e(d["date"])}{e(more)}</p>'
+                + "".join(f'<p class="tag">{e(t)}</p>' for t in item_tags(d))
                 + (f'<p class="why" title="{e(why)}">{e(why)}</p>' if why else "")
                 + f'<p class="readp">{link(d["link"], "Read the article ↗", "read")}</p></div></li>')
         body = f'<ol>{"".join(items)}</ol>' if items else f'<p class="empty">{EMPTY_BLOCK}</p>'
@@ -2596,7 +3195,7 @@ def to_html(res: Result) -> str:
             lv = c.signal[1]
             show = c.stories
             news = "".join(f'<p class="pfn">{link(s.lead.link, s.lead.title, "", s.lead.title)} <span class="pm">'
-                           f'{e(s.lead.publisher or s.lead.source)} · {e(_when(s.lead))}</span></p>' for s in show)
+                           f'{e(_pf_meta(s))}</span></p>' for s in show)
             rows.append(f'<li class="{lv or "news"}"><span class="it"><b>{e(c.name)}</b> '
                         f'<span class="sig">{e(_sig_text(c))}</span></span>{news}'
                         + (f'<p class="pm">GigaCode: {e(c.note)}</p>' if c.note else "") + "</li>")
@@ -2604,7 +3203,16 @@ def to_html(res: Result) -> str:
         pf = (f'<section class="panel pending pf"><h2>{e(PF_TITLE)} <span class="meta">'
               f'{e(_pf_counts(res.portfolio))}</span></h2>'
               + (f'<ul>{"".join(rows)}</ul>' if rows else "")
-              + (f'<p class="meta">No news this week: {e(", ".join(quiet))}</p>' if quiet else "") + "</section>")
+              + (f'<p class="meta">No credit news this week: {e(", ".join(quiet))}</p>' if quiet else "")
+              + "".join(f'<h3 class="pfh">Sector: {e(sw.name)} <span class="meta">{e(", ".join(sw.companies))}'
+                        f'</span></h3><ul class="pfs">'
+                        + "".join(f'<li>{link(s.lead.link, s.lead.title, "", s.lead.title)} <span class="pm">'
+                                  f'{e(_pf_meta(s))}</span></li>' for s in sw.stories) + "</ul>"
+                        for sw in res.sector_watch)
+              + ('<h3 class="pfh">Economy</h3><ul class="pfs">'
+                 + "".join(f'<li>{link(s.lead.link, s.lead.title, "", s.lead.title)} <span class="pm">'
+                           f'{e(_pf_meta(s))}</span></li>' for s in res.economy) + "</ul>" if res.economy else "")
+              + "</section>")
     comp = ""
     info = res.compliance_info
     if info:
@@ -2633,7 +3241,7 @@ def to_html(res: Result) -> str:
         late_cls = ' class="late"'
         parts = []
         if res.consultations:
-            parts.append("<h3>Comments due</h3><ul>" + "".join(
+            parts.append("<h3>Comments &amp; deadlines</h3><ul>" + "".join(
                 f'<li{late_cls if (c.days_left(today) is not None and c.days_left(today) <= 7) else ""}>'
                 f'{link(c.url, c.title, "", c.title)} <span class="meta">{e(c.source)} · {e(_due(c, today))}</span></li>'
                 for c in res.consultations) + "</ul>")
@@ -2683,14 +3291,16 @@ h2{{font-size:1.05rem;margin:0 0 6px}}
 .deepdive h3{{font-size:.78rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:10px 0 2px}}
 .deepdive ol{{margin:4px 0 0;padding-left:20px}} .deepdive li{{margin:3px 0}}
 .deepdive .ddsrc{{margin-top:10px;padding-top:6px;border-top:1px solid var(--line)}}
-.imp{{font-weight:700;color:var(--fg)}} .star{{color:var(--accent);font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.04em}}
+.imp{{font-weight:700;color:var(--fg)}} .checks{{font-size:.72rem}}
+.tag{{display:inline-block;font-size:.74rem;font-weight:600;color:var(--fg);background:var(--line);border-radius:4px;padding:1px 6px;margin:2px 6px 2px 0}} .star{{color:var(--accent);font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.04em}}
 .pending ul,.radar ul{{list-style:none;margin:0;padding:0}} .pending li{{padding:5px 0;border-top:1px solid var(--line)}}
 .pending li:first-child{{border-top:0}} .pending .it{{display:block}} .pending .pm{{color:var(--muted);font-size:.8rem}}
 .pending .pm b{{font-weight:600;color:var(--fg)}} .pending li.late .pm b{{color:var(--late)}}
 .radar li{{padding:2px 0}}
 .pf .sig{{font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--muted)}}
 .pf li.red .sig{{color:var(--late)}} .pf li.amber .sig{{color:var(--amber)}} .pf li.green .sig{{color:var(--ok)}}
-.pf .pfn{{font-size:.85rem}} .pf .pfn .pm{{white-space:nowrap}}
+.pf .pfn{{font-size:.85rem}} .pf .pfh{{font-size:.9rem;margin:12px 0 4px}}
+.pf .pfs{{margin:0;padding-left:18px}} .pf .pfs li{{display:list-item;border:0;padding:2px 0;font-size:.85rem}} .pf .pfn .pm{{white-space:nowrap}}
 .evr h3{{font-size:.78rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:10px 0 2px}}
 .evr li.late .meta{{color:var(--late);font-weight:600}}
 .mainc{{display:flex;flex-direction:column;gap:14px;min-width:0}} .below{{display:grid;gap:14px}}
@@ -2819,6 +3429,8 @@ def to_pptx(res: Result, path: Path) -> bool:
         _compliance_slide(prs, blank, header, res, period, navy, grey, red, white)
     if res.portfolio:
         _portfolio_slide(prs, blank, header, res, period, navy, grey, red, white)
+    if res.sector_watch or res.economy:
+        _sector_slide(prs, blank, header, res, period, navy, grey)
 
     # Slide 2: the six blocks, three across
     s2 = prs.slides.add_slide(blank)
@@ -2840,6 +3452,8 @@ def to_pptx(res: Result, path: Path) -> bool:
             d = st.as_dict()
             star = "★ " if _is_story(res, st) else ""
             para(tf, f"{n}. {star}{_clean(d['headline'], 95)}", 11, True, navy, link=d["link"] or None, space=1)
+            if item_tags(d):                     # deadline / our exposure: short, so the grid still fits
+                para(tf, _clean(" · ".join(item_tags(d)), 90), 8.5, True, accent, space=1)
             if d["why_it_matters"]:
                 para(tf, _clean(d["why_it_matters"], 125), 9, False, grey, space=6)
 
@@ -2918,7 +3532,7 @@ def _events_slide(prs, layout, header, res: Result, navy, grey, accent) -> None:
     today = res.end.date()
     slide = prs.slides.add_slide(layout)
     header(slide, "Events & reports", "Open consultations, upcoming events and new reports")
-    cols = [("Comments due", [(c.title, c.url, f"{c.source} · {_due(c, today)}") for c in res.consultations]),
+    cols = [("Comments & deadlines", [(c.title, c.url, f"{c.source} · {_due(c, today)}") for c in res.consultations]),
             ("Upcoming", [(ev.name, ev.url, ev.when + (f" · {_place(ev.place)}" if ev.place else ""))
                           for ev in _shown_events(res)]),
             ("New reports", [(st.lead.title, st.lead.link, f"{st.lead.publisher or st.lead.source} · {_when(st.lead)}")
@@ -2985,6 +3599,40 @@ the report shows the nearest {res.events_max}</p>
 </main></body></html>"""
 
 
+def _sector_slide(prs, layout, header, res: Result, period: str, navy, grey) -> None:
+    """Sector & economy watch: the sectors we lend to, then India's economy (credit drivers)."""
+    from pptx.util import Inches, Pt
+    slide = prs.slides.add_slide(layout)
+    header(slide, "Sector & economy watch", f"What moves our borrowers' credit quality · {period}")
+    tf = slide.shapes.add_textbox(Inches(0.5), Inches(1.4), Inches(12.3), Inches(5.6)).text_frame
+    tf.word_wrap = True
+    groups = [(f"Sector: {sw.name}", ", ".join(sw.companies), sw.stories) for sw in res.sector_watch]
+    groups += [("Economy", "", res.economy)] if res.economy else []
+    size = 13 if sum(len(g[2]) for g in groups) <= 10 else 11
+    first = True
+    for title, who, stories in groups:
+        p = tf.paragraphs[0] if first else tf.add_paragraph()
+        first = False
+        r = p.add_run()
+        r.text = title
+        r.font.size, r.font.bold, r.font.color.rgb = Pt(size + 2), True, navy
+        if who:
+            m = p.add_run()
+            m.text = f"   {who}"
+            m.font.size, m.font.color.rgb = Pt(size - 1), grey
+        p.space_before = Pt(6)
+        for st in stories:
+            q = tf.add_paragraph()
+            r = q.add_run()
+            r.text = f"• {_clean(st.lead.title, 130)}"
+            r.font.size, r.font.color.rgb = Pt(size), navy
+            if st.lead.link:
+                r.hyperlink.address = st.lead.link
+            m = q.add_run()
+            m.text = f"   {_pf_meta(st)}"
+            m.font.size, m.font.color.rgb = Pt(size - 2), grey
+
+
 def _portfolio_slide(prs, layout, header, res: Result, period: str, navy, grey, red, white) -> None:
     """Credit portfolio watch: one row per company with news, worst signal first."""
     from pptx.dml.color import RGBColor
@@ -3033,7 +3681,7 @@ def _portfolio_slide(prs, layout, header, res: Result, period: str, navy, grey, 
                         if st.lead.link:
                             run.hyperlink.address = st.lead.link
                         m = q.add_run()
-                        m.text = f"  {st.lead.publisher or st.lead.source}, {_when(st.lead)}"
+                        m.text = f"  {_pf_meta(st)}"
                         m.font.size, m.font.color.rgb = Pt(size - 1.5), grey
                     continue
                 text = (co.name, _sig_text(co), "", _clean(co.note, 160))[c]
@@ -3046,7 +3694,7 @@ def _portfolio_slide(prs, layout, header, res: Result, period: str, navy, grey, 
     note.word_wrap = True
     more = len(portfolio_order(res.portfolio)) - len(shown)
     note.text = ((f"{more} more company(ies) with news in the HTML page. " if more > 0 else "")
-                 + (f"No news this week: {', '.join(quiet)}" if quiet else "")) or " "
+                 + (f"No credit news this week: {', '.join(quiet)}" if quiet else "")) or " "
     for run in note.paragraphs[0].runs:
         run.font.size, run.font.color.rgb = Pt(10), grey
 
@@ -3306,7 +3954,7 @@ def to_confluence(res: Result) -> str:
         for st in stories:
             d = st.as_dict()
             star = "★ " if _is_story(res, st) else ""
-            meta = (f"Impact {d['impact']}/10 · " if d["impact"] else "") + f"{d['source']} · {d['date']}"
+            meta = " · ".join(x for x in (impact_label(d), d["source"], d["date"], *item_tags(d)) if x)
             items.append(f"<li><p><strong>{star}{a(d['link'], d['headline'])}</strong><br/>"
                          f"<em>{e(meta)}</em></p>"
                          + (f"<p>{e(_clean(d['why_it_matters'], WHY_CHARS))}</p>" if d["why_it_matters"] else "")
@@ -3329,8 +3977,7 @@ def to_confluence(res: Result) -> str:
         for c in portfolio_order(res.portfolio):
             lv = c.signal[1]
             colour = {"red": "Red", "amber": "Yellow", "green": "Green"}.get(lv, "Grey")
-            news = "".join(f"<p>{a(s.lead.link, s.lead.title)} · <em>{e(s.lead.publisher or s.lead.source)}, "
-                           f"{e(_when(s.lead))}</em></p>" for s in c.stories)
+            news = "".join(f"<p>{a(s.lead.link, s.lead.title)} · <em>{e(_pf_meta(s))}</em></p>" for s in c.stories)
             rows.append(f"<tr><td><strong>{e(c.name)}</strong></td><td>{_status_macro(LEVEL_LABEL[lv], colour)}"
                         f"{(' ' + e(c.signal[0])) if c.signal[0] else ''}</td><td>{news}</td>"
                         f"<td>{e(c.note)}</td></tr>")
@@ -3338,7 +3985,13 @@ def to_confluence(res: Result) -> str:
         out.append(f"<h3>{e(PF_TITLE)}</h3><p><em>{e(_pf_counts(res.portfolio))}</em></p>"
                    + ("<table><tbody><tr><th>Company</th><th>Signal</th><th>This week</th><th>GigaCode</th></tr>"
                       + "".join(rows) + "</tbody></table>" if rows else "")
-                   + (f"<p><em>No news this week: {e(', '.join(quiet))}</em></p>" if quiet else ""))
+                   + (f"<p><em>No credit news this week: {e(', '.join(quiet))}</em></p>" if quiet else "")
+                   + "".join(f"<p><strong>Sector: {e(sw.name)}</strong> <em>({e(', '.join(sw.companies))})</em></p><ul>"
+                             + "".join(f"<li>{a(s.lead.link, s.lead.title)} · <em>{e(_pf_meta(s))}</em></li>"
+                                       for s in sw.stories) + "</ul>" for sw in res.sector_watch)
+                   + ("<p><strong>Economy</strong></p><ul>" + "".join(
+                       f"<li>{a(s.lead.link, s.lead.title)} · <em>{e(_pf_meta(s))}</em></li>" for s in res.economy)
+                      + "</ul>" if res.economy else ""))
     if res.routine:
         out.append(_macro("expand", "<ul>" + "".join(
             f"<li>{a(i.link, i.title)} · <em>{e(i.publisher or i.source)}, {e(_when(i))}</em></li>"
@@ -3357,7 +4010,8 @@ def to_confluence(res: Result) -> str:
             n = c.days_left(today)
             badge = (_status_macro(f"{n} days left" if n else "today", "Red" if n <= 7 else "Yellow") + " "
                      if n is not None else "")
-            when = (f"due {c.deadline.strftime('%d %b %Y').lstrip('0')}" if c.deadline else _due(c, today))
+            when = ((f"due {c.deadline.strftime('%d %b %Y').lstrip('0')}" if c.kind == "comments due" else
+                     f"{c.kind} {c.deadline.strftime('%d %b %Y').lstrip('0')}") if c.deadline else _due(c, today))
             due.append(entry(c.url, c.title, f"{c.source} · {when}", badge))
         upcoming = [entry(ev.url, ev.name, ev.when + (f" · {_place(ev.place)}" if ev.place else "")
                           + (f" · {ev.organiser}" if ev.organiser else "")) for ev in _shown_events(res)]
@@ -3365,7 +4019,7 @@ def to_confluence(res: Result) -> str:
             upcoming.append(f"<p><em>Nearest {res.events_max} of {len(res.events)}; all of them below.</em></p>")
         reports = [entry(st.lead.link, st.lead.title, f"{st.lead.publisher or st.lead.source} · {_when(st.lead)}")
                    for st in res.reports]
-        parts = ["<h3>Events &amp; reports</h3><table><tbody><tr><th>Comments due</th><th>Upcoming</th>"
+        parts = ["<h3>Events &amp; reports</h3><table><tbody><tr><th>Comments &amp; deadlines</th><th>Upcoming</th>"
                  "<th>New reports</th></tr><tr>" + cell(due) + cell(upcoming) + cell(reports)
                  + "</tr></tbody></table>"]
         if len(res.events) > res.events_max:
@@ -4006,8 +4660,11 @@ def ranking_mismatches(pool: list[Story], ranking) -> list[str]:
 
 
 _EXAMPLE_REPLY = {
-    "items": [{"id": 12, "category": "Credit risk", "impact": 8, "headline": "Twelve words at most",
-               "why_it_matters": "One or two sentences on what it means for us."}],
+    "items": [{"id": 12, "category": "Credit risk",
+               "checks": {"india": 3, "business": 2, "action": 2, "size": 1},
+               "deadline": {"date": "2026-12-15", "kind": "comments due"},
+               "headline": "Twelve words at most",
+               "why_it_matters": "Two or three sentences on what happened, what it means for us, what to do."}],
     "radar": [3, 41],
     "cro_focus": {"id": 12, "message": "The action point for the CRO, at most 35 words."},
     "deep_dive": {"what_happened": "Three to five sentences, facts only from the pages you read.",
@@ -4041,7 +4698,8 @@ class McpServer:
         self.pool: list[Story] = []
         self.top = 3
         self.page = MCP_PAGE
-        self.gemini: Callable[[], object] = lambda: GeminiProvider()
+        self.gemini: Callable[[], object] = lambda: GeminiProvider(
+            health=Path(out_dir) / HEALTH_FILE if out_dir else None)
 
     # --- protocol ---------------------------------------------------------
     def handle(self, msg: dict) -> dict | None:
@@ -4217,7 +4875,8 @@ class McpServer:
                                f"GigaCode via MCP, {len(self.pool)} candidates")
         if not picked.ok:
             return (f"The ranking could not be used ({picked.status}). Send it again as an object with "
-                    f"items (id, category, impact, headline, why_it_matters), radar and cro_focus, using "
+                    f"items (id, category, checks, headline, why_it_matters, optional deadline), radar and "
+                    f"cro_focus, using "
                     f"the ids in brackets from risk_week_prepare.", True)
         picked.status = f"AI · GigaCode via MCP ({len(self.pool)} candidates)"
         week, n = self.week, len(self.pool)
@@ -4351,6 +5010,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--no-deep-dive", action="store_true",
                    help="skip the CRO deep dive on the story of the week (the extra fetch and AI call; "
                         "it runs whenever AI ranks)")
+    p.add_argument("--ai-check", action="store_true",
+                   help="check which Gemini models answer (one tiny request each), then stop")
     p.add_argument("--no-prompt", action="store_true",
                    help="do not ask for pending-item updates at the start (also skipped when not run "
                         "from a terminal)")
@@ -4363,6 +5024,15 @@ def main(argv: list[str] | None = None) -> int:
     if a.confluence_check:
         print(confluence_check(a))
         return 0
+    if a.ai_check:
+        load_dotenv(Path(__file__).resolve().parent / ".env", Path.cwd() / ".env")
+        try:
+            report, ok = ai_check(GeminiProvider(a.model, health=Path(a.out_dir) / HEALTH_FILE))
+        except RuntimeError as e:
+            print(f"Gemini check: {e}")
+            return 1
+        print(report)
+        return 0 if ok else 1
 
     load_dotenv(Path(__file__).resolve().parent / ".env", Path.cwd() / ".env")
     pending_path = Path(a.pending_file)
@@ -4373,7 +5043,8 @@ def main(argv: list[str] | None = None) -> int:
     provider = None
     if a.ai:
         try:
-            provider = GeminiProvider(a.model) if a.provider == "gemini" else ClaudeProvider(a.model)
+            provider = (GeminiProvider(a.model, health=Path(a.out_dir) / HEALTH_FILE) if a.provider == "gemini"
+                        else ClaudeProvider(a.model))
         except Exception as e:  # noqa: BLE001 — missing package or key: keep going without AI
             print(f"[risk-week] AI unavailable ({type(e).__name__}: {e}); using keyword ranking", file=sys.stderr)
     compliance, comp_info = [], {}

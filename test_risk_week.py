@@ -1085,7 +1085,7 @@ class TestEventsAndReports(unittest.TestCase):
         self.assertEqual(rw.to_html(res).count("Programme on KYC/AML"), 0)
         self.assertIn('ac:parameter ac:name="title">All 2 events', rw.to_confluence(res))
         conf = rw.to_confluence(res)
-        self.assertIn("<th>Comments due</th><th>Upcoming</th><th>New reports</th>", conf)   # grouped in blocks
+        self.assertIn("<th>Comments &amp; deadlines</th><th>Upcoming</th><th>New reports</th>", conf)   # grouped in blocks
         self.assertIn("13 days left", conf)
         ET.fromstring('<r xmlns:ac="a" xmlns:ri="b">' + conf + "</r>")
         with tempfile.TemporaryDirectory() as d:
@@ -1183,12 +1183,13 @@ class TestPortfolio(unittest.TestCase):
             self.assertEqual(len(bharat.stories), 1)               # "bpl" is not "BPL"
             self.assertEqual(quiet.stories, [])
             self.assertEqual([c.name for c in rw.portfolio_order(res.portfolio)], ["Acme Steel Limited", "Bharat Power Ltd"])
-            self.assertEqual(rw._pf_counts(res.portfolio), "3 names · 2 with news · 1 red · 1 positive")
+            self.assertEqual(rw._pf_counts(res.portfolio),
+                             "3 names · 2 with news · 1 red · 1 positive · 1 share-price or non-credit headline left out")
             self.assertNotIn("https://pf/1", [s.lead.link for s in res.top])   # not in the six blocks
             md = rw.to_markdown(res)
             self.assertIn("## Credit portfolio watch", md)
             self.assertIn("**Red · Default / insolvency**", md)
-            self.assertIn("No news this week: Quiet Co", md)
+            self.assertIn("No credit news this week: Quiet Co", md)
             page = rw.to_html(res)
             self.assertIn('<li class="red">', page)
             self.assertIn("CREDIT PORTFOLIO WATCH", rw.to_console(res, {}))
@@ -1837,6 +1838,386 @@ class TestDeepDiveMcp(unittest.TestCase):
                 reply, md = self.publish(d, junk)
                 self.assertNotIn("## CRO DEEP DIVE", md)             # the report publishes as before
                 self.assertNotIn("CRO deep dive: written", reply)
+
+
+def ids_by_title(user):
+    """{title prefix: id} from a ranking prompt's candidate lines."""
+    lines = user.split("Candidates:\n")[1].splitlines()
+    return {l.split(") ", 1)[1]: int(l[1:l.index("]")]) for l in lines if l.startswith("[")}
+
+
+class TitleAI:
+    """Answers the ranking request with picks named by title prefix: (prefix, block, checks[, deadline])."""
+    name, model = "fake", "f"
+
+    def __init__(self, picks, focus=None):
+        self.picks, self.focus, self.sent = picks, focus, []
+
+    def json_call(self, system, user, response_schema=None, max_output_tokens=0):
+        self.sent.append(system + user)
+        if "Candidates:" not in user:
+            return {"items": []}
+        ids = ids_by_title(user)
+        i = lambda pre: next(v for k, v in ids.items() if k.startswith(pre))  # noqa: E731
+        items = []
+        for pick in self.picks:
+            pre, block, checks = pick[:3]
+            r = {"id": i(pre), "category": block, "headline": pre, "why_it_matters": "w", "checks": checks}
+            if len(pick) > 3:
+                r["deadline"] = pick[3]
+            items.append(r)
+        return {"items": items, "radar": [],
+                "cro_focus": {"id": i(self.focus or self.picks[0][0]), "message": "m"}}
+
+
+CHK = lambda india, business, action, size: {"india": india, "business": business,  # noqa: E731
+                                             "action": action, "size": size}
+
+
+class TestChecklist(unittest.TestCase):
+    def test_impact_is_the_total_and_india_zero_is_capped(self):
+        self.assertEqual(rw.impact_of(CHK(3, 2, 2, 1)), 8)
+        self.assertEqual(rw.impact_of(CHK(0, 3, 2, 2)), 4)          # the India test, built in
+        self.assertEqual(rw.impact_of(CHK(0, 0, 0, 0)), 1)
+        self.assertEqual(rw.score_checks({"india": 9, "business": -1, "action": "2", "size": 1}),
+                         CHK(3, 0, 2, 1))                           # clamped to each range
+        self.assertIsNone(rw.score_checks({"india": 3, "business": 2}))   # a missing check
+        self.assertEqual(rw.AI_SCHEMA["properties"]["items"]["items"]["required"],
+                         ["id", "headline", "category", "checks", "why_it_matters"])
+
+    def test_ranking_uses_the_checklist_and_shows_it(self):
+        ai = TitleAI([("RBI issues draft", "Compliance risk", CHK(3, 2, 2, 2)),
+                      ("Major private bank", "Cyber security risk", CHK(2, 1, 1, 1)),
+                      ("Bank NPA", "Credit risk", CHK(0, 2, 1, 2))])      # india 0 -> 4 -> dropped
+        res = rw.run(top=3, sources=SOURCES, fetcher=fetcher, now=NOW, provider=ai, deep_dive=False)
+        self.assertIn("india 0-3", ai.sent[0])
+        ecl = res.blocks["Compliance risk"][0]
+        self.assertEqual((ecl.impact, ecl.checks), (9, CHK(3, 2, 2, 2)))
+        self.assertEqual(res.blocks["Cyber security risk"][0].impact, 5)
+        self.assertEqual(res.blocks["Credit risk"], [])                   # capped at 4, then dropped
+        d = ecl.as_dict()
+        self.assertEqual(rw.impact_label(d), "Impact 9/10 (India 3 · Business 2 · Action 2 · Size 2)")
+        self.assertIn("Impact 9/10 (India 3 · Business 2 · Action 2 · Size 2)", rw.to_markdown(res))
+        self.assertIn('<span class="checks">(India 3 · Business 2 · Action 2 · Size 2)</span>', rw.to_html(res))
+        self.assertIn("Impact 9/10 (India 3", rw.to_console(res, {}))
+        self.assertIn("Impact 9/10 (India 3", rw.to_confluence(res))
+
+    def test_old_single_rating_still_works(self):
+        ai = FakeAI({"items": [{"id": 1, "category": "Credit risk", "impact": 7, "headline": "H",
+                                "why_it_matters": "w"}], "radar": [], "cro_focus": {"id": 1, "message": "m"}})
+        res = rw.run(top=3, sources=SOURCES, fetcher=fetcher, now=NOW, provider=ai, deep_dive=False)
+        st = res.blocks["Credit risk"][0]
+        self.assertEqual((st.impact, st.checks), (7, None))
+        self.assertEqual(rw.impact_label(st.as_dict()), "Impact 7/10")
+
+
+class TestNewsDeadlines(unittest.TestCase):
+    def story(self, title, summary=""):
+        return rw.Story([rw.Item(title, "https://x/1", "RBI", NOW, summary)], "Compliance risk", 1.0)
+
+    def test_dates_written_in_text(self):
+        full, months, days = rw.stated_dates("comments by December 15, 2026; effective 1st April 2027; "
+                                             "by 31.03.2027; phased in from March 2028; on 20 Dec")
+        from datetime import date
+        self.assertTrue({date(2026, 12, 15), date(2027, 4, 1), date(2027, 3, 31)} <= full)
+        self.assertIn((2028, 3), months)
+        self.assertIn((12, 20), days)
+
+    def test_only_a_stated_date_is_kept(self):
+        from datetime import date
+        s = self.story("RBI draft on ECL", "Comments by December 15, 2026. Effective from March 2027.")
+        dl = rw.news_deadline({"date": "2026-12-15", "kind": "comments due"}, s)
+        self.assertEqual((dl.when, dl.kind, dl.text()), (date(2026, 12, 15), "comments due", "Comments due 15 Dec 2026"))
+        self.assertIsNone(rw.news_deadline({"date": "2026-12-16", "kind": "comments due"}, s))   # not in the text
+        self.assertEqual(rw.news_deadline({"date": "2027-03-01", "kind": "takes effect"}, s).when,
+                         date(2027, 3, 31))                        # 'March 2027' -> end of March
+        self.assertEqual(rw.news_deadline({"date": "2026-12-15", "kind": "soon"}, s).kind, "deadline")
+        self.assertIsNone(rw.news_deadline({"date": "15 Dec 2026", "kind": "comments due"}, s))  # not ISO
+        old = self.story("Old rule", "issued on 10 January 2020")
+        self.assertIsNone(rw.news_deadline({"date": "2020-01-10", "kind": "takes effect"}, old))  # too far back
+
+    def test_deadlines_reach_the_item_and_events(self):
+        ai = TitleAI([("RBI issues draft", "Compliance risk", CHK(3, 2, 2, 2),
+                       {"date": "2027-04-01", "kind": "takes effect"}),          # stated: 'April 1, 2027'
+                      ("Major private bank", "Cyber security risk", CHK(2, 1, 1, 1),
+                       {"date": "2026-12-01", "kind": "compliance deadline"})])   # invented: dropped
+        res = rw.run(top=3, sources=SOURCES, fetcher=fetcher, now=NOW, provider=ai, deep_dive=False)
+        ecl, cyber = res.blocks["Compliance risk"][0], res.blocks["Cyber security risk"][0]
+        self.assertEqual(ecl.as_dict()["deadline"], "Takes effect 1 Apr 2027")
+        self.assertIsNone(cyber.deadline)
+        self.assertEqual([(c.kind, c.url) for c in res.consultations], [("takes effect", "https://rbi/2")])
+        md = rw.to_markdown(res)
+        self.assertIn("**Takes effect 1 Apr 2027**", md)
+        self.assertIn("**Comments & deadlines**", md)
+        self.assertIn("takes effect 1 Apr (", md)
+        self.assertIn('<p class="tag">Takes effect 1 Apr 2027</p>', rw.to_html(res))
+
+    def test_listed_draft_is_not_repeated(self):
+        from datetime import date
+        st = self.story("RBI draft directions on priority sector lending", "Comments by December 15, 2026.")
+        st.deadline = rw.NewsDeadline(date(2026, 12, 15), "comments due")
+        rbi = rw.Consultation("Priority Sector Lending – Draft Directions", "https://rbi/psl",
+                              deadline=date(2026, 12, 15))
+        self.assertEqual(rw.add_news_deadlines([rbi], [st], NOW.date()), [rbi])
+
+
+class TestBorrowerLink(unittest.TestCase):
+    PORTFOLIO = ("Major Private Bank Ltd | Major private bank\n"
+                 "Example Finance Ltd | sector: microfinance, gold loan\n")
+
+    def sources(self, d):
+        f = pathlib.Path(d) / "top 20.txt"
+        f.write_text(self.PORTFOLIO, encoding="utf-8")
+        return dict(SOURCES, portfolio={"file": str(f), "search": False})
+
+    def test_sectors_read_from_the_file(self):
+        with tempfile.TemporaryDirectory() as d:
+            f = pathlib.Path(d) / "top 20.txt"
+            f.write_text("Acme Steel Ltd | Acme | Sector: steel; power\nPlain Co\n", encoding="utf-8")
+            acme, plain = rw.load_portfolio(f)
+            self.assertEqual((acme.aliases, acme.sectors), (["Acme"], ["steel", "power"]))
+            self.assertEqual((plain.aliases, plain.sectors), ([], []))
+
+    def test_ai_impact_raised_and_tagged_on_this_computer(self):
+        ai = TitleAI([("Major private bank", "Cyber security risk", CHK(1, 1, 0, 1)),     # 3: kept only as our borrower
+                      ("Bank NPA", "Credit risk", CHK(2, 1, 1, 1)),               # 5 + 1 (our sector)
+                      ("RBI issues draft", "Compliance risk", CHK(3, 2, 2, 2))],
+                     focus="RBI issues draft")
+        with tempfile.TemporaryDirectory() as d:
+            res = rw.run(top=3, sources=self.sources(d), fetcher=fetcher, now=NOW, provider=ai, deep_dive=False)
+        for text in ai.sent:                                             # names and sectors stay here
+            for secret in ("Major Private Bank Ltd", "Example Finance", "gold loan"):
+                self.assertNotIn(secret, text)
+        cyber, npa = res.blocks["Cyber security risk"][0], res.blocks["Credit risk"][0]
+        self.assertEqual((cyber.impact, cyber.boost), (5, ["+2 our borrower"]))
+        self.assertEqual(cyber.as_dict()["exposure"], "Our borrower: Major Private Bank")
+        self.assertEqual((npa.impact, npa.boost, npa.sectors), (6, ["+1 our sector"], ["microfinance"]))
+        self.assertEqual(rw.impact_label(npa.as_dict()),
+                         "Impact 6/10 (India 2 · Business 1 · Action 1 · Size 1 · +1 our sector)")
+        self.assertIn("**Our borrower: Major Private Bank**", rw.to_markdown(res))
+
+    def test_keyword_ranking_raised(self):
+        with tempfile.TemporaryDirectory() as d:
+            plain = rw.run(top=3, sources=SOURCES, fetcher=fetcher, now=NOW)
+            linked = rw.run(top=3, sources=self.sources(d), fetcher=fetcher, now=NOW)
+        score = lambda res, pre: next(s.score for s in res.top if s.lead.title.startswith(pre))  # noqa: E731
+        self.assertAlmostEqual(score(linked, "Major private bank") - score(plain, "Major private bank"), rw.BORROWER_SCORE)
+        self.assertAlmostEqual(score(linked, "Bank NPA") - score(plain, "Bank NPA"), rw.SECTOR_SCORE)
+
+    def test_boost_once(self):
+        st = rw.Story([rw.Item("Acme wins order", "l", "s", NOW)], "Credit risk", 1.0, impact=9)
+        st.borrowers = ["Acme"]
+        rw.boost_for_portfolio([st], ai=True)
+        rw.boost_for_portfolio([st], ai=True)
+        self.assertEqual(st.impact, 10)                                  # capped, and added once
+
+
+class TestModelHealth(unittest.TestCase):
+    def setUp(self):
+        self.env = mock.patch.dict(os.environ, {"GEMINI_API_KEY": "k"}, clear=False)
+        self.env.start()
+        os.environ.pop("RISK_WEEK_MODEL", None)
+        self.dir = tempfile.TemporaryDirectory()
+        self.health = pathlib.Path(self.dir.name) / rw.HEALTH_FILE
+        self.now = 1_800_000_000.0
+        self.calls = []
+
+    def tearDown(self):
+        self.env.stop()
+        self.dir.cleanup()
+
+    def provider(self, main_up=False):
+        def post(url, body, headers):
+            self.calls.append(url)
+            if "3.8-flash" in url and not main_up:
+                raise urllib.error.HTTPError(url, 503, "busy", {}, io.BytesIO(b"high demand"))
+            return gemini_reply({"ok": True})
+        return rw.GeminiProvider(post=post, sleep=lambda s: None, health=self.health, clock=lambda: self.now)
+
+    def one_run(self, main_up=False):
+        p = self.provider(main_up)
+        p.json_call("s", "u")
+        p.json_call("s", "u")                 # a run makes several calls: one failure counted
+        return p
+
+    def test_main_model_skipped_after_three_failed_runs_then_retried(self):
+        for _ in range(3):
+            self.one_run()
+        self.assertEqual(json.loads(self.health.read_text())["gemini-3.8-flash"]["fails"], 3)
+        self.calls.clear()
+        p = self.one_run()
+        self.assertFalse(any("3.8-flash" in u for u in self.calls))       # no 40 s of retries
+        self.assertIn("skipped: failed 3 runs in a row", p.label)
+        self.now += 25 * 3600                                             # a day later: try it again
+        self.calls.clear()
+        p = self.one_run(main_up=True)
+        self.assertTrue(any("3.8-flash" in u for u in self.calls))
+        self.assertEqual(p.label, "gemini-3.8-flash")
+        self.assertEqual(json.loads(self.health.read_text())["gemini-3.8-flash"]["fails"], 0)
+
+    def test_no_file_no_memory(self):
+        p = rw.GeminiProvider(post=lambda u, b, h: gemini_reply({"ok": True}), sleep=lambda s: None)
+        self.assertEqual(p.skip_reason("gemini-3.8-flash"), "")
+        p.json_call("s", "u")
+
+    def test_ai_check(self):
+        report, ok = rw.ai_check(self.provider())
+        self.assertTrue(ok)
+        self.assertIn("gemini-3.8-flash: busy or unreachable (HTTP 503", report)
+        self.assertIn("gemini-3.5-flash-lite: answered in", report)
+        self.assertEqual(len(self.calls), 2)                              # one request each, no retries
+        self.assertIn("Next --ai run starts with: gemini-3.8-flash", report)
+        for _ in range(2):
+            rw.ai_check(self.provider())
+        report, _ = rw.ai_check(self.provider())
+        self.assertIn("Next --ai run starts with: gemini-3.5-flash-lite (gemini-3.8-flash skipped", report)
+
+
+class TestCreditDrivers(unittest.TestCase):
+    """Real headlines from the 21 Nov 2026 company searches (Vedanta, Tata Steel, Adani Ports)."""
+    KEPT = {
+        "ONGC takes charge of Cambay block as Vedanta records ₹379 crore impairment": "Debt & liquidity",
+        "India's Supreme Court Sends Vedanta's $358 Million Videocon Deal Back to Lenders": "Debt & liquidity",
+        "Setback for Vedanta as Supreme Court upholds rejection of Twin Star's Videocon plan; stock falls nearly 3%":
+            "Legal & regulatory",
+        "Adani Ports ADANIPORTS Credit Rating Reaffirmed AAA": "Rating",
+        "S&P says Adani Ports can absorb INR 27,000 crore Evos acquisition costs": "Rating",
+        "Tata Steel shares slide nearly 2% as EU anti-dumping duty and bearish technicals weigh": "Legal & regulatory",
+        "Vedanta Aluminium posts record Q2FY27 output, alumina up 37%": "Results",
+        "Tata Steel and Utility Global Join Forces for Hydrogen Production at Kalinganagar": "Business & operations",
+        "Tata Steel eyes 50 MT capacity, to direct 75% capex to India: TV Narendran": "Business & operations",
+        "Adani Ports to acquire 100% stake in Evos in €2.56 billion deal": "Business & operations",
+        "Chinese steel imports remain a threat to Indian industry, Tata Steel CEO says": "Business & operations",
+        "Acme Infra CFO resigns with immediate effect": "Management & governance",
+        "Finolex Cables maintains 12-12.5% margin outlook, expects competition from UltraTech to intensify": "Results",
+        "Fitch Affirms UltraTech Cement's BBB- Ratings, Maintains Stable Outlook": "Rating",
+        "UltraTech moves Supreme Court against BAI's role in CCI cement cartel probe": "Legal & regulatory",
+    }
+    DROPPED = [
+        "Vedanta Share Price - Live NSE: VEDL Stock Price & Chart",
+        "Vedanta shares fall over 3%, lead Nifty 100 losses as Citi cuts target price, flags zinc demand concerns",
+        "Vedanta Aluminium, Hindustan Zinc: All 6 Vedanta Group stocks slide as global metal prices tumble; here is why",
+        "Adani Ports & Special Economic Zone Ltd is Rated Hold",
+        "Top stock picks: Analysts recommend Adani Ports, HDFC Bank, Reliance, M&M and 2 more stocks",
+        "Billionaire Gautam Adani's group gets Jefferies buy calls",
+        "Adani Ports and Special Economic Zone (NSEI:ADANIPORTS) Stock Forecast & Analyst Predictions",
+        "Tata Steel Limited (TATASTEEL.NS) stock price, news, quote and history",
+        "Vedanta Group Grants Additional 10% Salary to Nearly One Lakh Employees",
+        "Vedanta Aluminium increases renewable energy use by 63% in FY26",
+        "Adani: the billionaire at the heart of Modi’s India",
+        # the user's Confluence screenshot, 21 Nov 2026 (run on the old code)
+        "Dabur India (NSE:DABUR): What Is the Postal Ballot Notice Dispatched in November 2026 About?",
+        "Dabur India Ltd. is Rated Sell by MarketsMOJO",
+        "Dabur India (NSE:DABUR) in Focus in the Consumer Space",
+        "Dixon Technologies (India) Ltd: Technical Momentum Shifts Signal Cautious Optimism",
+        "Dixon Technologies (India) down 3.56% on Wednesday",
+        "Dixon Technologies (india) Stock Price Forecast. Should You Buy DIXON.NS?",
+        "Dixon Technologies down 3.56% on Wednesday after Q2 profit dips",   # a price move, not results news
+    ]
+
+    def test_stock_tip_sites_skipped(self):
+        self.assertTrue(rw.stock_site("MarketsMojo"))
+        self.assertTrue(rw.stock_site("Kalkine India"))
+        self.assertTrue(rw.stock_site("StockInvest.us"))
+        self.assertFalse(rw.stock_site("Business Standard"))
+        self.assertTrue(rw.stock_site("Some Blog", ("some blog",)))
+
+    def test_credit_news_kept_with_its_driver(self):
+        for title, driver in self.KEPT.items():
+            self.assertEqual(rw.credit_news(title), driver, title)
+
+    def test_market_chatter_and_non_credit_news_dropped(self):
+        for title in self.DROPPED:
+            self.assertEqual(rw.credit_news(title), "", title)
+
+    def test_share_price_fall_is_not_an_amber_flag(self):
+        self.assertEqual(rw.ews_flags("Acme Steel shares fall 5% in weak market"), [])
+        self.assertEqual(rw.ews_flags("Acme Steel posts Q2 loss")[0][1], "amber")
+
+    def test_sector_word_must_sit_next_to_an_industry_term(self):
+        self.assertTrue(rw.sector_hit("Are Chinese steel imports a threat to India?", "steel"))
+        self.assertTrue(rw.sector_hit("India: NALCO cuts aluminium P1020 prices", "aluminium"))
+        self.assertTrue(rw.sector_hit("Infrastructure spending driving robust cement demand", "cement"))
+        self.assertFalse(rw.sector_hit("Mumbai man ports 26-year-old mediclaim policy", "ports"))
+        self.assertFalse(rw.sector_hit("Adani Cement Deploys Heavy-Duty Electric Trucks", "cement"))
+
+    def test_date_limit_first_when_the_query_has_brackets(self):
+        import urllib.parse
+        q = lambda url: urllib.parse.parse_qs(urllib.parse.urlparse(url).query)["q"][0]  # noqa: E731
+        self.assertTrue(q(rw.google_news_url('("Acme") (debt OR rating)', 7)).startswith("when:7d "))
+        self.assertTrue(q(rw.google_news_url("bank risk", 7)).endswith(" when:7d"))
+
+    def test_search_asks_for_credit_topics(self):
+        c = rw.Company("Acme Steel Limited", ["ASL"])
+        self.assertTrue(c.search_query.startswith('("Acme Steel" OR "ASL") ('))
+        self.assertIn("lenders", c.search_query)
+
+
+SW_NEWS = {
+    "steel": rss(
+        ("Steel prices fall as Chinese imports surge", "https://sw/1", "", "Wed, 04 Nov 2026 08:00:00 GMT", "ET"),
+        ("Steel stocks to watch as Nifty Metal rises", "https://sw/2", "", "Wed, 04 Nov 2026 08:00:00 GMT", "ET"),
+        ("Steel ministry plans safeguard duty on imports", "https://sw/3", "", "Tue, 03 Nov 2026 08:00:00 GMT", "BS")),
+    "economy": rss(
+        ("India's CPI inflation rises to 6.1% in October", "https://ec/1", "", "Wed, 04 Nov 2026 08:00:00 GMT", "Mint"),
+        ("India inflation climbs to 6.1%, above RBI band", "https://ec/2", "", "Wed, 04 Nov 2026 09:00:00 GMT", "ET"),
+        ("Sensex, Nifty fall as inflation worries weigh", "https://ec/3", "", "Wed, 04 Nov 2026 09:00:00 GMT", "ET"),
+        ("US inflation cools in October", "https://ec/4", "", "Wed, 04 Nov 2026 09:00:00 GMT", "Reuters")),
+}
+
+
+def sw_fetcher(url):
+    import urllib.parse
+    if url.startswith("https://news.google.com/"):
+        q = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)["q"][0]
+        if '"steel"' in q:
+            return SW_NEWS["steel"]
+        if "GDP" in q:
+            return SW_NEWS["economy"]
+    return pf_fetcher(url)
+
+
+class TestSectorAndEconomy(unittest.TestCase):
+    def run_it(self, d, provider=None):
+        f = pathlib.Path(d) / "top 20.txt"
+        f.write_text("Acme Steel Limited | sector: steel\nBharat Power Ltd | BPL\n", encoding="utf-8")
+        return rw.run(top=3, sources=dict(SOURCES, portfolio={"file": str(f)}), fetcher=sw_fetcher, now=NOW,
+                      provider=provider, deep_dive=False)
+
+    def test_sector_and_economy_found_and_shown(self):
+        with tempfile.TemporaryDirectory() as d:
+            res = self.run_it(d)
+            (steel,) = res.sector_watch
+            self.assertEqual((steel.name, steel.companies), ("steel", ["Acme Steel"]))
+            self.assertEqual({s.lead.link for s in steel.stories}, {"https://sw/1", "https://sw/3"})  # no stock tip
+            self.assertEqual(len(res.economy), 1)                     # two outlets, one story; no Sensex, no US
+            self.assertEqual(len(res.economy[0].items), 2)
+            md = rw.to_markdown(res)
+            self.assertIn("**Sector: steel** (Acme Steel)", md)
+            self.assertIn("**Economy**", md)
+            self.assertIn("Debt & liquidity · BS, 04 Nov", md)          # the driver on a borrower's story
+            self.assertIn("Sector: steel", rw.to_html(res))
+            self.assertIn("  Economy", rw.to_console(res, {}))
+            body = rw.to_confluence(res)
+            import xml.etree.ElementTree as ET
+            ET.fromstring('<r xmlns:ac="a" xmlns:ri="b">' + body + "</r>")
+            self.assertIn("<strong>Sector: steel</strong>", body)
+            try:
+                from pptx import Presentation
+            except ImportError:
+                return
+            files = rw.write(res, d)
+            titles = [sh.text_frame.text for sl in Presentation(files["pptx"]).slides for sh in sl.shapes
+                      if sh.has_text_frame and sh.text_frame.text.startswith("Sector & economy watch")]
+            self.assertEqual(len(titles), 1)
+
+    def test_never_sent_to_the_ai(self):
+        ai = TitleAI([("RBI issues draft", "Compliance risk", CHK(3, 2, 2, 2))])
+        with tempfile.TemporaryDirectory() as d:
+            self.run_it(d, provider=ai)
+        for text in ai.sent:
+            for secret in ("Steel prices fall as Chinese", "safeguard duty", "Acme Steel", "CPI inflation rises"):
+                self.assertNotIn(secret, text)
 
 
 if __name__ == "__main__":

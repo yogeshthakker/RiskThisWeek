@@ -292,10 +292,15 @@
     "max": 10
   },
   "portfolio": {
-    "_comment": "Credit portfolio watch: companies in 'top 20.txt' (git-ignored), one per line, 'Name | alias'. One Google News search per company (its name only); the results never go to Gemini, only to GigaCode via MCP. Delete this block or run with --no-portfolio to switch it off.",
+    "_comment": "Credit portfolio watch: companies in 'top 20.txt' (git-ignored), one per line, 'Name | alias | sector: steel, power'. One Google News search per company, its names plus credit topics (debt, rating, lenders, court, results, management, plant…); share-price and broker-call headlines are left out unless they carry credit news, and each story is labelled with its credit driver. 'sectors': one search per sector named in the file; 'economy': India's GDP, inflation, rates and credit growth. Nothing here goes to Gemini, only to GigaCode via MCP. Stories in the six blocks that name a company get +2 impact, its sector +1 (on this computer, after the AI). Delete this block or run with --no-portfolio to switch it off. 'skip_publishers': outlet names to ignore, on top of the built-in stock-tip sites (MarketsMojo, Kalkine, StockInvest.us, Simply Wall St…).",
     "file": "top 20.txt",
     "per_company": 3,
-    "search": true
+    "skip_publishers": [],
+    "search": true,
+    "sectors": true,
+    "per_sector": 3,
+    "economy": true,
+    "economy_max": 4
   },
   "deep_dive": {
     "_comment": "CRO deep dive: the standing analysis of the story of the week (page, slides, Markdown, Confluence). Runs whenever AI ranks: fetches up to `articles` of its links (up to `fetch_chars` characters each) and makes one more AI call. Set false (or run --no-deep-dive) to switch it off.",
