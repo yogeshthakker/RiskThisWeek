@@ -411,12 +411,12 @@ A run makes one or two requests. Nothing extra needs installing for Gemini.
 Gemini check (one short request per model, no retries):
   gemini-3.8-flash: busy or unreachable (HTTP 503 (server busy or failing))
   gemini-3.5-flash-lite: answered in 1.4 s
-Next --ai run starts with: gemini-3.8-flash
+Next --ai run starts with: gemini-3.5-flash-lite (gemini-3.8-flash skipped: failed on the last run; tried again in about 24 h)
 ```
 
-**It remembers failures.** If `gemini-3.8-flash` fails on three runs in a row, the next runs go
-straight to `gemini-3.5-flash-lite`, skipping about 40 seconds of retries, and 3.8 Flash is tried
-again 24 hours after its last failure. The memory is `output/.gemini-health.json`; delete it to
+**It remembers failures.** If `gemini-3.8-flash` fails on a run (on the free tier it often does),
+the next runs go straight to `gemini-3.5-flash-lite`, skipping about 40 seconds of retries, and 3.8
+Flash is tried again 24 hours after its last failure. The memory is `output/.gemini-health.json`; delete it to
 start afresh. The "ranked by" line says when the main model was skipped.
 
 If `gemini-3.8-flash` is busy (Google answers "high demand", or the network drops), the

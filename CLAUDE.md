@@ -276,7 +276,8 @@ Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
      "Our sector: …". Names never reach the AI (`TestBorrowerLink` checks the prompts).
    - **Model health.** `GeminiProvider(health=output/.gemini-health.json)`: per model `fails`
      (one per run, however many calls), `last_fail`, `last_ok`. When the main model has
-     `SKIP_AFTER` (3) failed runs in a row and its last failure is under `SKIP_HOURS` (24) old,
+     `SKIP_AFTER` (1; was 3, the user, 21 Nov 2026: "3.8 fails because of free tier… one failed run
+     is enough to switch") failed runs in a row and its last failure is under `SKIP_HOURS` (24) old,
      `json_call` goes straight to the fallback and the label says "skipped: …". A success resets
      it. `--ai-check` (`ai_check()`): one tiny `_call` per model, no retries, then "Next --ai run
      starts with: …". The MCP Gemini factory uses the same file.

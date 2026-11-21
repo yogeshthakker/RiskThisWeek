@@ -1370,7 +1370,7 @@ class GeminiProvider:
     FALLBACK_MODEL = "gemini-3.5-flash-lite"
     MIN_OUTPUT_TOKENS = 16384   # on Gemini 3 this budget covers thinking as well as the answer
     RETRY_WAITS = (10, 30)      # seconds to wait before retrying a busy model (503 "high demand")
-    SKIP_AFTER = 3              # a main model that failed this many runs in a row is skipped...
+    SKIP_AFTER = 1              # a main model that failed this many runs in a row is skipped (user: one is enough)...
     SKIP_HOURS = 24             # ...until this long after its last failure, then tried again
 
     def __init__(self, model: str | None = None, post: Callable[..., dict] = _post_json,
@@ -1428,7 +1428,8 @@ class GeminiProvider:
         if age >= self.SKIP_HOURS * 3600:
             return ""
         left = max(1, round((self.SKIP_HOURS * 3600 - age) / 3600))
-        return f"skipped: failed {h['fails']} runs in a row; tried again in about {left} h"
+        failed = "failed on the last run" if int(h["fails"]) == 1 else f"failed {h['fails']} runs in a row"
+        return f"skipped: {failed}; tried again in about {left} h"
 
     def json_call(self, system_prompt, user_content, response_schema=None, max_output_tokens=1500) -> dict:
         models = [self.model] + ([self.FALLBACK_MODEL] if self.model != self.FALLBACK_MODEL else [])

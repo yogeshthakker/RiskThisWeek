@@ -2105,14 +2105,18 @@ class TestModelHealth(unittest.TestCase):
         p.json_call("s", "u")                 # a run makes several calls: one failure counted
         return p
 
-    def test_main_model_skipped_after_three_failed_runs_then_retried(self):
-        for _ in range(3):
-            self.one_run()
-        self.assertEqual(json.loads(self.health.read_text())["gemini-3.8-flash"]["fails"], 3)
+    def test_main_model_skipped_after_one_failed_run_then_retried(self):
+        self.one_run()                                                    # one failed run is enough
+        self.assertEqual(json.loads(self.health.read_text())["gemini-3.8-flash"]["fails"], 1)
         self.calls.clear()
         p = self.one_run()
         self.assertFalse(any("3.8-flash" in u for u in self.calls))       # no 40 s of retries
-        self.assertIn("skipped: failed 3 runs in a row", p.label)
+        self.assertIn("skipped: failed on the last run", p.label)
+        self.now += 25 * 3600                                             # a day later: it fails again
+        self.one_run()
+        self.calls.clear()
+        p = self.one_run()
+        self.assertIn("skipped: failed 2 runs in a row", p.label)
         self.now += 25 * 3600                                             # a day later: try it again
         self.calls.clear()
         p = self.one_run(main_up=True)
@@ -2131,11 +2135,8 @@ class TestModelHealth(unittest.TestCase):
         self.assertIn("gemini-3.8-flash: busy or unreachable (HTTP 503", report)
         self.assertIn("gemini-3.5-flash-lite: answered in", report)
         self.assertEqual(len(self.calls), 2)                              # one request each, no retries
-        self.assertIn("Next --ai run starts with: gemini-3.8-flash", report)
-        for _ in range(2):
-            rw.ai_check(self.provider())
-        report, _ = rw.ai_check(self.provider())
-        self.assertIn("Next --ai run starts with: gemini-3.5-flash-lite (gemini-3.8-flash skipped", report)
+        self.assertIn("Next --ai run starts with: gemini-3.5-flash-lite (gemini-3.8-flash skipped: failed on "
+                      "the last run", report)
 
 
 class TestCreditDrivers(unittest.TestCase):
