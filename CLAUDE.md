@@ -10,7 +10,7 @@ web page for the weekly status meeting ("This week in risk"). The user runs it o
 ```bash
 pip install -r requirements.txt
 python risk_week.py --ai --open        # Gemini free tier; --open opens the web page
-python -m unittest test_risk_week      # 111 tests, no network or key needed
+python -m unittest test_risk_week      # 125 tests, no network or key needed
 ```
 
 Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
@@ -242,6 +242,39 @@ Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
    note (user's choice: no facts-only panel). Privacy unchanged: public news text + `bank`
    + `guidance` only (`TestPrivacy` now sees 3 requests). An AI run is 2–3 free-tier calls.
 
+15. **Checklist, deadlines, our book, model health** (user's choice of suggestions 2, 5 and 6,
+   21 Nov 2026).
+   - **Checklist scoring.** The AI no longer gives one 1–10 number: each pick has `checks`
+     (`CHECKS`: india 0–3, business 0–3, action 0–2, size 0–2; `score_checks` clamps, None if
+     one is missing). `impact_of` = the total, and **india 0 counts at most `NO_INDIA_CAP` (4)**,
+     so `MAX_DROPPED_IMPACT` drops it: the India test is now in the score. `Story.checks`;
+     `impact_label(d)` = "Impact 8/10 (India 3 · Business 2 · Action 2 · Size 1)" on the page,
+     Markdown, console and Confluence (the slide keeps it short). A reply with only `impact`
+     (an older GigaCode prompt) still works. `AI_SCHEMA` requires `checks`; the MCP example
+     reply shows them.
+   - **Deadlines.** Optional `deadline {date YYYY-MM-DD, kind}` per pick (`DEADLINE_KINDS`:
+     comments due, takes effect, compliance deadline; anything else becomes "deadline").
+     `news_deadline()` keeps it only when `stated_dates()` finds that date in the story's own
+     title or summary (any item), within −31 days / +3 years of the story; a month-only match
+     ("March 2027") becomes the month's end. Shown as an item tag (`item_tags`) and added by
+     `add_news_deadlines()` to `Result.consultations` (`Consultation.kind`), unless the same
+     link or same date with 2+ shared title words is listed. The Events & reports column is now
+     "Comments & deadlines"; `_due()` prints the kind.
+   - **Our book.** `top 20.txt` lines take `| sector: steel, power` (`Company.sectors`).
+     `link_portfolio()` (in `finish_week`, on this computer, after the AI) sets
+     `Story.borrowers` / `Story.sectors` from all the story's titles and summaries;
+     `boost_for_portfolio()` adds `BORROWER_IMPACT` (2) or `SECTOR_IMPACT` (1) to the AI impact
+     **before** `apply_rules` (so a borrower story at 3 survives at 5), or `BORROWER_SCORE` (3.0)
+     / `SECTOR_SCORE` (1.5) to the keyword score; once per story (`Story.boost`, shown in the
+     impact line). Blocks are re-sorted by impact afterwards. Tag: "Our borrower: …",
+     "Our sector: …". Names never reach the AI (`TestBorrowerLink` checks the prompts).
+   - **Model health.** `GeminiProvider(health=output/.gemini-health.json)`: per model `fails`
+     (one per run, however many calls), `last_fail`, `last_ok`. When the main model has
+     `SKIP_AFTER` (3) failed runs in a row and its last failure is under `SKIP_HOURS` (24) old,
+     `json_call` goes straight to the fallback and the label says "skipped: …". A success resets
+     it. `--ai-check` (`ai_check()`): one tiny `_call` per model, no retries, then "Next --ai run
+     starts with: …". The MCP Gemini factory uses the same file.
+
 ## Decisions the user made
 
 - Focus on **impact for a foreign bank**, not routine penalties, co-op banks, microfinance,
@@ -286,6 +319,10 @@ Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
 
 ## Open items
 
+- **Checklist, deadlines, borrower boost and model memory (21 Nov 2026)** are tested only with
+  fake replies and a stand-in layout run on live news. The first real `--ai` run should show
+  "Impact n/10 (India … )" on every pick; check `ai-reply.json` for `checks` and any `deadline`.
+  `python risk_week.py --ai-check` tells whether 3.8 Flash answers at all.
 - **First real AI-first run (6 Nov 2026):** `gemini-3.8-flash` answered 503 "high demand";
   `gemini-3.5-flash-lite` then ranked all 18 items well (every item had a "why it matters",
   so the old missing-"why" issue did not recur). The action point came back at ~50 words

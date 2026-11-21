@@ -1085,7 +1085,7 @@ class TestEventsAndReports(unittest.TestCase):
         self.assertEqual(rw.to_html(res).count("Programme on KYC/AML"), 0)
         self.assertIn('ac:parameter ac:name="title">All 2 events', rw.to_confluence(res))
         conf = rw.to_confluence(res)
-        self.assertIn("<th>Comments due</th><th>Upcoming</th><th>New reports</th>", conf)   # grouped in blocks
+        self.assertIn("<th>Comments &amp; deadlines</th><th>Upcoming</th><th>New reports</th>", conf)   # grouped in blocks
         self.assertIn("13 days left", conf)
         ET.fromstring('<r xmlns:ac="a" xmlns:ri="b">' + conf + "</r>")
         with tempfile.TemporaryDirectory() as d:
@@ -1837,6 +1837,239 @@ class TestDeepDiveMcp(unittest.TestCase):
                 reply, md = self.publish(d, junk)
                 self.assertNotIn("## CRO DEEP DIVE", md)             # the report publishes as before
                 self.assertNotIn("CRO deep dive: written", reply)
+
+
+def ids_by_title(user):
+    """{title prefix: id} from a ranking prompt's candidate lines."""
+    lines = user.split("Candidates:\n")[1].splitlines()
+    return {l.split(") ", 1)[1]: int(l[1:l.index("]")]) for l in lines if l.startswith("[")}
+
+
+class TitleAI:
+    """Answers the ranking request with picks named by title prefix: (prefix, block, checks[, deadline])."""
+    name, model = "fake", "f"
+
+    def __init__(self, picks, focus=None):
+        self.picks, self.focus, self.sent = picks, focus, []
+
+    def json_call(self, system, user, response_schema=None, max_output_tokens=0):
+        self.sent.append(system + user)
+        if "Candidates:" not in user:
+            return {"items": []}
+        ids = ids_by_title(user)
+        i = lambda pre: next(v for k, v in ids.items() if k.startswith(pre))  # noqa: E731
+        items = []
+        for pick in self.picks:
+            pre, block, checks = pick[:3]
+            r = {"id": i(pre), "category": block, "headline": pre, "why_it_matters": "w", "checks": checks}
+            if len(pick) > 3:
+                r["deadline"] = pick[3]
+            items.append(r)
+        return {"items": items, "radar": [],
+                "cro_focus": {"id": i(self.focus or self.picks[0][0]), "message": "m"}}
+
+
+CHK = lambda india, business, action, size: {"india": india, "business": business,  # noqa: E731
+                                             "action": action, "size": size}
+
+
+class TestChecklist(unittest.TestCase):
+    def test_impact_is_the_total_and_india_zero_is_capped(self):
+        self.assertEqual(rw.impact_of(CHK(3, 2, 2, 1)), 8)
+        self.assertEqual(rw.impact_of(CHK(0, 3, 2, 2)), 4)          # the India test, built in
+        self.assertEqual(rw.impact_of(CHK(0, 0, 0, 0)), 1)
+        self.assertEqual(rw.score_checks({"india": 9, "business": -1, "action": "2", "size": 1}),
+                         CHK(3, 0, 2, 1))                           # clamped to each range
+        self.assertIsNone(rw.score_checks({"india": 3, "business": 2}))   # a missing check
+        self.assertEqual(rw.AI_SCHEMA["properties"]["items"]["items"]["required"],
+                         ["id", "headline", "category", "checks", "why_it_matters"])
+
+    def test_ranking_uses_the_checklist_and_shows_it(self):
+        ai = TitleAI([("RBI issues draft", "Compliance risk", CHK(3, 2, 2, 2)),
+                      ("Major private bank", "Cyber security risk", CHK(2, 1, 1, 1)),
+                      ("Bank NPA", "Credit risk", CHK(0, 2, 1, 2))])      # india 0 -> 4 -> dropped
+        res = rw.run(top=3, sources=SOURCES, fetcher=fetcher, now=NOW, provider=ai, deep_dive=False)
+        self.assertIn("india 0-3", ai.sent[0])
+        ecl = res.blocks["Compliance risk"][0]
+        self.assertEqual((ecl.impact, ecl.checks), (9, CHK(3, 2, 2, 2)))
+        self.assertEqual(res.blocks["Cyber security risk"][0].impact, 5)
+        self.assertEqual(res.blocks["Credit risk"], [])                   # capped at 4, then dropped
+        d = ecl.as_dict()
+        self.assertEqual(rw.impact_label(d), "Impact 9/10 (India 3 · Business 2 · Action 2 · Size 2)")
+        self.assertIn("Impact 9/10 (India 3 · Business 2 · Action 2 · Size 2)", rw.to_markdown(res))
+        self.assertIn('<span class="checks">(India 3 · Business 2 · Action 2 · Size 2)</span>', rw.to_html(res))
+        self.assertIn("Impact 9/10 (India 3", rw.to_console(res, {}))
+        self.assertIn("Impact 9/10 (India 3", rw.to_confluence(res))
+
+    def test_old_single_rating_still_works(self):
+        ai = FakeAI({"items": [{"id": 1, "category": "Credit risk", "impact": 7, "headline": "H",
+                                "why_it_matters": "w"}], "radar": [], "cro_focus": {"id": 1, "message": "m"}})
+        res = rw.run(top=3, sources=SOURCES, fetcher=fetcher, now=NOW, provider=ai, deep_dive=False)
+        st = res.blocks["Credit risk"][0]
+        self.assertEqual((st.impact, st.checks), (7, None))
+        self.assertEqual(rw.impact_label(st.as_dict()), "Impact 7/10")
+
+
+class TestNewsDeadlines(unittest.TestCase):
+    def story(self, title, summary=""):
+        return rw.Story([rw.Item(title, "https://x/1", "RBI", NOW, summary)], "Compliance risk", 1.0)
+
+    def test_dates_written_in_text(self):
+        full, months, days = rw.stated_dates("comments by December 15, 2026; effective 1st April 2027; "
+                                             "by 31.03.2027; phased in from March 2028; on 20 Dec")
+        from datetime import date
+        self.assertTrue({date(2026, 12, 15), date(2027, 4, 1), date(2027, 3, 31)} <= full)
+        self.assertIn((2028, 3), months)
+        self.assertIn((12, 20), days)
+
+    def test_only_a_stated_date_is_kept(self):
+        from datetime import date
+        s = self.story("RBI draft on ECL", "Comments by December 15, 2026. Effective from March 2027.")
+        dl = rw.news_deadline({"date": "2026-12-15", "kind": "comments due"}, s)
+        self.assertEqual((dl.when, dl.kind, dl.text()), (date(2026, 12, 15), "comments due", "Comments due 15 Dec 2026"))
+        self.assertIsNone(rw.news_deadline({"date": "2026-12-16", "kind": "comments due"}, s))   # not in the text
+        self.assertEqual(rw.news_deadline({"date": "2027-03-01", "kind": "takes effect"}, s).when,
+                         date(2027, 3, 31))                        # 'March 2027' -> end of March
+        self.assertEqual(rw.news_deadline({"date": "2026-12-15", "kind": "soon"}, s).kind, "deadline")
+        self.assertIsNone(rw.news_deadline({"date": "15 Dec 2026", "kind": "comments due"}, s))  # not ISO
+        old = self.story("Old rule", "issued on 10 January 2020")
+        self.assertIsNone(rw.news_deadline({"date": "2020-01-10", "kind": "takes effect"}, old))  # too far back
+
+    def test_deadlines_reach_the_item_and_events(self):
+        ai = TitleAI([("RBI issues draft", "Compliance risk", CHK(3, 2, 2, 2),
+                       {"date": "2027-04-01", "kind": "takes effect"}),          # stated: 'April 1, 2027'
+                      ("Major private bank", "Cyber security risk", CHK(2, 1, 1, 1),
+                       {"date": "2026-12-01", "kind": "compliance deadline"})])   # invented: dropped
+        res = rw.run(top=3, sources=SOURCES, fetcher=fetcher, now=NOW, provider=ai, deep_dive=False)
+        ecl, cyber = res.blocks["Compliance risk"][0], res.blocks["Cyber security risk"][0]
+        self.assertEqual(ecl.as_dict()["deadline"], "Takes effect 1 Apr 2027")
+        self.assertIsNone(cyber.deadline)
+        self.assertEqual([(c.kind, c.url) for c in res.consultations], [("takes effect", "https://rbi/2")])
+        md = rw.to_markdown(res)
+        self.assertIn("**Takes effect 1 Apr 2027**", md)
+        self.assertIn("**Comments & deadlines**", md)
+        self.assertIn("takes effect 1 Apr (", md)
+        self.assertIn('<p class="tag">Takes effect 1 Apr 2027</p>', rw.to_html(res))
+
+    def test_listed_draft_is_not_repeated(self):
+        from datetime import date
+        st = self.story("RBI draft directions on priority sector lending", "Comments by December 15, 2026.")
+        st.deadline = rw.NewsDeadline(date(2026, 12, 15), "comments due")
+        rbi = rw.Consultation("Priority Sector Lending – Draft Directions", "https://rbi/psl",
+                              deadline=date(2026, 12, 15))
+        self.assertEqual(rw.add_news_deadlines([rbi], [st], NOW.date()), [rbi])
+
+
+class TestBorrowerLink(unittest.TestCase):
+    PORTFOLIO = ("Major Private Bank Ltd | Major private bank\n"
+                 "Example Finance Ltd | sector: microfinance, gold loan\n")
+
+    def sources(self, d):
+        f = pathlib.Path(d) / "top 20.txt"
+        f.write_text(self.PORTFOLIO, encoding="utf-8")
+        return dict(SOURCES, portfolio={"file": str(f), "search": False})
+
+    def test_sectors_read_from_the_file(self):
+        with tempfile.TemporaryDirectory() as d:
+            f = pathlib.Path(d) / "top 20.txt"
+            f.write_text("Acme Steel Ltd | Acme | Sector: steel; power\nPlain Co\n", encoding="utf-8")
+            acme, plain = rw.load_portfolio(f)
+            self.assertEqual((acme.aliases, acme.sectors), (["Acme"], ["steel", "power"]))
+            self.assertEqual((plain.aliases, plain.sectors), ([], []))
+
+    def test_ai_impact_raised_and_tagged_on_this_computer(self):
+        ai = TitleAI([("Major private bank", "Cyber security risk", CHK(1, 1, 0, 1)),     # 3: kept only as our borrower
+                      ("Bank NPA", "Credit risk", CHK(2, 1, 1, 1)),               # 5 + 1 (our sector)
+                      ("RBI issues draft", "Compliance risk", CHK(3, 2, 2, 2))],
+                     focus="RBI issues draft")
+        with tempfile.TemporaryDirectory() as d:
+            res = rw.run(top=3, sources=self.sources(d), fetcher=fetcher, now=NOW, provider=ai, deep_dive=False)
+        for text in ai.sent:                                             # names and sectors stay here
+            for secret in ("Major Private Bank Ltd", "Example Finance", "gold loan"):
+                self.assertNotIn(secret, text)
+        cyber, npa = res.blocks["Cyber security risk"][0], res.blocks["Credit risk"][0]
+        self.assertEqual((cyber.impact, cyber.boost), (5, ["+2 our borrower"]))
+        self.assertEqual(cyber.as_dict()["exposure"], "Our borrower: Major Private Bank")
+        self.assertEqual((npa.impact, npa.boost, npa.sectors), (6, ["+1 our sector"], ["microfinance"]))
+        self.assertEqual(rw.impact_label(npa.as_dict()),
+                         "Impact 6/10 (India 2 · Business 1 · Action 1 · Size 1 · +1 our sector)")
+        self.assertIn("**Our borrower: Major Private Bank**", rw.to_markdown(res))
+
+    def test_keyword_ranking_raised(self):
+        with tempfile.TemporaryDirectory() as d:
+            plain = rw.run(top=3, sources=SOURCES, fetcher=fetcher, now=NOW)
+            linked = rw.run(top=3, sources=self.sources(d), fetcher=fetcher, now=NOW)
+        score = lambda res, pre: next(s.score for s in res.top if s.lead.title.startswith(pre))  # noqa: E731
+        self.assertAlmostEqual(score(linked, "Major private bank") - score(plain, "Major private bank"), rw.BORROWER_SCORE)
+        self.assertAlmostEqual(score(linked, "Bank NPA") - score(plain, "Bank NPA"), rw.SECTOR_SCORE)
+
+    def test_boost_once(self):
+        st = rw.Story([rw.Item("Acme wins order", "l", "s", NOW)], "Credit risk", 1.0, impact=9)
+        st.borrowers = ["Acme"]
+        rw.boost_for_portfolio([st], ai=True)
+        rw.boost_for_portfolio([st], ai=True)
+        self.assertEqual(st.impact, 10)                                  # capped, and added once
+
+
+class TestModelHealth(unittest.TestCase):
+    def setUp(self):
+        self.env = mock.patch.dict(os.environ, {"GEMINI_API_KEY": "k"}, clear=False)
+        self.env.start()
+        os.environ.pop("RISK_WEEK_MODEL", None)
+        self.dir = tempfile.TemporaryDirectory()
+        self.health = pathlib.Path(self.dir.name) / rw.HEALTH_FILE
+        self.now = 1_800_000_000.0
+        self.calls = []
+
+    def tearDown(self):
+        self.env.stop()
+        self.dir.cleanup()
+
+    def provider(self, main_up=False):
+        def post(url, body, headers):
+            self.calls.append(url)
+            if "3.8-flash" in url and not main_up:
+                raise urllib.error.HTTPError(url, 503, "busy", {}, io.BytesIO(b"high demand"))
+            return gemini_reply({"ok": True})
+        return rw.GeminiProvider(post=post, sleep=lambda s: None, health=self.health, clock=lambda: self.now)
+
+    def one_run(self, main_up=False):
+        p = self.provider(main_up)
+        p.json_call("s", "u")
+        p.json_call("s", "u")                 # a run makes several calls: one failure counted
+        return p
+
+    def test_main_model_skipped_after_three_failed_runs_then_retried(self):
+        for _ in range(3):
+            self.one_run()
+        self.assertEqual(json.loads(self.health.read_text())["gemini-3.8-flash"]["fails"], 3)
+        self.calls.clear()
+        p = self.one_run()
+        self.assertFalse(any("3.8-flash" in u for u in self.calls))       # no 40 s of retries
+        self.assertIn("skipped: failed 3 runs in a row", p.label)
+        self.now += 25 * 3600                                             # a day later: try it again
+        self.calls.clear()
+        p = self.one_run(main_up=True)
+        self.assertTrue(any("3.8-flash" in u for u in self.calls))
+        self.assertEqual(p.label, "gemini-3.8-flash")
+        self.assertEqual(json.loads(self.health.read_text())["gemini-3.8-flash"]["fails"], 0)
+
+    def test_no_file_no_memory(self):
+        p = rw.GeminiProvider(post=lambda u, b, h: gemini_reply({"ok": True}), sleep=lambda s: None)
+        self.assertEqual(p.skip_reason("gemini-3.8-flash"), "")
+        p.json_call("s", "u")
+
+    def test_ai_check(self):
+        report, ok = rw.ai_check(self.provider())
+        self.assertTrue(ok)
+        self.assertIn("gemini-3.8-flash: busy or unreachable (HTTP 503", report)
+        self.assertIn("gemini-3.5-flash-lite: answered in", report)
+        self.assertEqual(len(self.calls), 2)                              # one request each, no retries
+        self.assertIn("Next --ai run starts with: gemini-3.8-flash", report)
+        for _ in range(2):
+            rw.ai_check(self.provider())
+        report, _ = rw.ai_check(self.provider())
+        self.assertIn("Next --ai run starts with: gemini-3.5-flash-lite (gemini-3.8-flash skipped", report)
 
 
 if __name__ == "__main__":

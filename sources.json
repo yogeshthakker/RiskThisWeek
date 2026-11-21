@@ -292,7 +292,7 @@
     "max": 10
   },
   "portfolio": {
-    "_comment": "Credit portfolio watch: companies in 'top 20.txt' (git-ignored), one per line, 'Name | alias'. One Google News search per company (its name only); the results never go to Gemini, only to GigaCode via MCP. Delete this block or run with --no-portfolio to switch it off.",
+    "_comment": "Credit portfolio watch: companies in 'top 20.txt' (git-ignored), one per line, 'Name | alias'. One Google News search per company (its name only); the results never go to Gemini, only to GigaCode via MCP. Delete this block or run with --no-portfolio to switch it off. Optional '| sector: steel, power' per line: stories in the six blocks that name a company get +2 impact, its sector +1 (on this computer, after the AI).",
     "file": "top 20.txt",
     "per_company": 3,
     "search": true

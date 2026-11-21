@@ -1,5 +1,7 @@
 # Credit portfolio watch: copy to "top 20.txt" (next to risk_week.py) and list your companies.
 # One per line. Optional other names after "|" (short names, brand names, old names).
+# Optional sectors you lend to: "| sector: steel, power". A story in the six blocks that names a
+# company gets +2 impact, one that mentions its sector +1 (on this computer; never sent to Gemini).
 # Lines starting with # are ignored. This file is never committed (see .gitignore).
-Example Steel Limited | Example Steel
+Example Steel Limited | Example Steel | sector: steel
 Example Power Ltd

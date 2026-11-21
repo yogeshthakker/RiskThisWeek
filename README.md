@@ -208,6 +208,14 @@ line. The flags come from keywords, so read each story.
 and a one-line note for each (`"portfolio": [...]` in the ranking). The signal replaces the
 keyword flag.
 
+**News that touches our book.** The same file also raises the week's news in the six blocks.
+Add the sectors you lend to after a company's names, for example
+`Example Steel Limited | Example Steel | sector: steel, power`. A story in the blocks that names
+one of your borrowers gets **+2** on its AI impact (and is tagged "Our borrower: …"); one that
+mentions a borrower's sector gets **+1** ("Our sector: steel"). Without AI, the keyword score
+is raised instead. This happens on your computer after the AI has ranked, so the names never
+reach Gemini, and the boost shows in the impact line ("… · +2 our borrower").
+
 Use `--portfolio-file PATH` to read another file, or `--no-portfolio` to skip the section.
 `"portfolio"` in `sources.json` sets the file name and `per_company` (default 3).
 
@@ -215,8 +223,9 @@ Use `--portfolio-file PATH` to read another file, or `--no-portfolio` to skip th
 
 Next to the news, the page, the last slide and Confluence show three short lists:
 
-- **Comments due**: RBI draft directions still open for comments, with the deadline read from
-  the press release ("comments due 26 Nov (13 days)"; red when 7 days or fewer are left).
+- **Comments & deadlines**: RBI draft directions still open for comments, with the deadline read
+  from the press release ("comments due 26 Nov (13 days)"; red when 7 days or fewer are left),
+  plus the dates the AI found in the week's shown stories ("takes effect 1 Apr (131 days)").
 - **Upcoming**: conferences and programmes in the next 60 days, from `events.json` (edit it:
   one entry per event with `name`, `start`, optional `end`, `place`, `url`, `organiser`) and
   from CAFRAL's events page. Put events without a date yet under `watch`. The report shows the
@@ -249,9 +258,25 @@ Terms are regular expressions and ignore case, so `co-?operative` matches both s
 
 **With `--ai` the AI does the ranking; the keyword ranking below is the fallback.** The AI
 receives up to 150 of the week's stories (after the noise filters in steps 1–3 below), newest
-first and without any keyword scores, and judges them itself: an **impact rating from 1 to 10**
-for each pick (shown as "Impact 8/10"), the block it belongs in, the 3 highest-impact items per
-block, "also on the radar", and the story of the week with its action point. A block it leaves
+first and without any keyword scores, and judges them itself. It scores each pick on a
+**four-point checklist**, and the impact is the total, out of 10:
+
+| Check | Range | Question |
+|---|---|---|
+| India | 0–3 | Does it directly affect our India operations (a rule we answer to, a market we trade in, our clients, a corridor to or from India)? |
+| Business | 0–3 | Does it touch our business lines and the CRO's priorities? |
+| Action | 0–2 | Must we act, or does a deadline apply to us? |
+| Size | 0–2 | One small firm, one large firm or segment, or the whole sector or market? |
+
+The page shows the breakdown: "Impact 8/10 (India 3 · Business 2 · Action 2 · Size 1)". A story
+scoring **India 0** counts at most 4, so the safety net drops it: the India test is built into
+the score. The AI also gives the block each pick belongs in, the 3 highest-impact items per
+block, "also on the radar", and the story of the week with its action point.
+
+**Deadlines.** When a story states a date (comments due, takes effect, compliance deadline),
+the AI returns it. The tool keeps it only if that date is written in the story's own text,
+so a guessed date never appears. Kept dates show on the item ("Takes effect 1 Apr 2027") and
+in Events & reports. A block it leaves
 empty shows "Nothing significant this week". If the AI call fails or its reply is unusable,
 the keyword ranking is used and the page's "ranked by" line says why. Without `--ai`, the
 keyword ranking is used on its own.
@@ -329,6 +354,21 @@ items. It is told which bank it writes for (the profile's `bank` sentence and `g
 The default model is **`gemini-3.8-flash`**, Google's strongest Flash model, which is on the
 free tier (reportedly about 20 requests a day; your project's limit is shown in AI Studio).
 A run makes one or two requests. Nothing extra needs installing for Gemini.
+
+**Check the models:** `python risk_week.py --ai-check` sends one tiny request to each model
+(only the word "ok"), with no retries, and says which answered and how fast:
+
+```
+Gemini check (one short request per model, no retries):
+  gemini-3.8-flash: busy or unreachable (HTTP 503 (server busy or failing))
+  gemini-3.5-flash-lite: answered in 1.4 s
+Next --ai run starts with: gemini-3.8-flash
+```
+
+**It remembers failures.** If `gemini-3.8-flash` fails on three runs in a row, the next runs go
+straight to `gemini-3.5-flash-lite`, skipping about 40 seconds of retries, and 3.8 Flash is tried
+again 24 hours after its last failure. The memory is `output/.gemini-health.json`; delete it to
+start afresh. The "ranked by" line says when the main model was skipped.
 
 If `gemini-3.8-flash` is busy (Google answers "high demand", or the network drops), the
 tool waits and tries it again, after 10 and then 30 seconds. If it is still busy, or it hits
@@ -464,6 +504,7 @@ prefer `CA_BUNDLE` pointing at the bank's root certificate.
 | `--cro-file FILE` | `cro_desk.txt` | File with CRO notes, one per line |
 | `--pending-file FILE` | `pending_items.txt` | Pending items: `Item \| Owner \| Due \| Status` per line |
 | `--no-prompt` | off | Don't ask for pending-item updates at the start |
+| `--ai-check` | off | Only check which Gemini models answer (one tiny request each) |
 | `--confluence-check` | off | Only check the Confluence settings (reads the page; changes nothing) |
 | `--no-confluence` | off | Don't publish to Confluence on this run |
 | `--confluence-dry-run` | off | Write the Confluence page content to a file instead of uploading |
