@@ -10,7 +10,7 @@ web page for the weekly status meeting ("This week in risk"). The user runs it o
 ```bash
 pip install -r requirements.txt
 python risk_week.py --ai --open        # Gemini free tier; --open opens the web page
-python -m unittest test_risk_week      # 136 tests, no network or key needed
+python -m unittest test_risk_week      # 142 tests, no network or key needed
 ```
 
 Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
@@ -304,6 +304,19 @@ Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
      StockInvest.us, Simply Wall St, Trendlyne…) plus `portfolio.skip_publishers`, and
      `MARKET_CHATTER` also catches a bare "% move on/in/at/today", "should you buy", "technical
      momentum", "postal ballot". Live after: Dabur 2 kept / 11 out, Dixon 2 kept / 11 out.
+   - **`--portfolio-only`** (user, 21 Nov 2026: "instead of running the whole pipeline, just check
+     the credit portfolio"): `run_portfolio()` builds an empty `Week` and calls `scan_book()` (the
+     portfolio step, shared with `prepare_week`) with no feed items; `write_portfolio()` writes
+     `<stem>-portfolio.html` (`portfolio_page()`) and `.md`; console via `_portfolio_console()`.
+     `_portfolio_markdown/_console/_html` are shared with the full report. No AI, no Confluence,
+     no pending prompt. Live on the user's 30 names: 17 s.
+   - From that live run: `price_move(title, company_pattern)` drops "<company> falls 7%" style
+     headlines unless a business figure (`_METRIC`: profit, revenue, margin…) sits between the
+     name and the percentage; daily gold/silver rate pages are chatter; `STOCK_SITES` gained
+     openPR, FXStreet, TMGM and also filters sector and economy items; sector items that name
+     another country (`ABROAD`) are dropped unless they also match `INDIA` (China is not in
+     `ABROAD`: Chinese imports are a core Indian sector topic). A bare short name like "VTB"
+     matched "Bank VTB (Azerbaijan)": keep aliases specific.
    - **Sector watch:** `scan_sectors()` (per sector in `top 20.txt`, `SECTOR_QUERY`, plus the
      week's items): `sector_hit()` needs the sector word within one word of an industry term
      (`_INDUSTRY` = `SECTOR_DRIVERS` + sector, industry, makers, ministry…); not chatter, not a link

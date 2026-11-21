@@ -1955,11 +1955,39 @@ MARKET_CHATTER = re.compile(
     r"record date|\bipo\b|\bgmp\b|live (?:nse|bse)|\b(?:nse|bse|nsei)\s*:|\.(?:ns|bo)\)|quote and history|"
     r"returns? (?:chart|of)|multibagger|seasonal returns|at a glance|"
     r"\b(?:up|down|higher|lower|gains?|falls?|rises?|slips?|jumps?)\s+(?:by\s+)?\d+(?:\.\d+)?\s?%\s+(?:on|in|at|today)\b|"
-    r"\bshould you buy\b|\btechnical momentum\b|\bpostal ballot\b", re.I)
+    r"\bshould you buy\b|\btechnical momentum\b|\bpostal ballot\b|"
+    r"\b(?:gold|silver) (?:prices?|rates?)\b[^.;:]{0,30}?\b(?:today|in india|on (?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w* \d)", re.I)
 # Sites that write about share prices and stock calls, almost never about credit (user's screenshot,
 # 21 Nov 2026). Matched against the outlet name; `portfolio.skip_publishers` in sources.json adds more.
 STOCK_SITES = ("marketsmojo", "kalkine", "stockinvest", "simply wall st", "trendlyne", "smart investello",
-               "stock titan", "marketbeat", "investing.com", "tipranks", "zacks", "stockanalysis")
+               "stock titan", "marketbeat", "investing.com", "tipranks", "zacks", "stockanalysis",
+               "openpr", "fxstreet", "tmgm")
+_MOVE_VERBS = (r"falls?|fell|dips?|dipped|surges?|surged|jumps?|jumped|slides?|slid|slumps?|slumped|tumbles?|"
+               r"tumbled|soars?|soared|plunges?|plunged|gains?|gained|rises?|rose|climbs?|climbed|drops?|dropped|"
+               r"rall(?:y|ies|ied)|tanks?|tanked|zooms?|zoomed|crash(?:es|ed)?|sinks?|sank|declines?|declined|"
+               r"slips?|slipped|rebounds?|rebounded|recovers?|recovered")
+_METRIC = re.compile(r"\b(?:profit|revenue|sales|ebitda|margin|income|loss|output|exports?|imports?|production|"
+                     r"volume|orders?|debt|npa|earnings|turnover|demand)", re.I)
+
+
+def price_move(title: str, company: re.Pattern) -> bool:
+    """'Amber Enterprises Falls 7% Despite…', 'Acme dips 8%': the company's share price moving, with no
+    business metric between the name and the figure ('Emerald Tyre H1 profit fell 74%' is results news)."""
+    for m in company.finditer(title):
+        rest = title[m.end():m.end() + 60]
+        mv = re.match(rf"\W+(?:\w+\W+){{0,3}}?(?:{_MOVE_VERBS})\s+(?:up to |nearly |over |as much as |about )?"
+                      rf"\d+(?:\.\d+)?\s?%", rest, re.I)
+        if mv and not _METRIC.search(mv.group(0)):
+            return True
+    return False
+
+
+# Sector news about another country's own industry (a Saudi pipe contract, a plant in Vietnam), unless it
+# also names India. China is left out on purpose: Chinese imports are a core Indian sector topic.
+ABROAD = re.compile(r"\b(?:saudi|aramco|vietnam|indonesia|malaysia|thailand|japan|korea|taiwan|"
+                    r"brazil|mexico|africa|nigeria|kenya|turkey|swiss|switzerland|germany|german|france|french|"
+                    r"italy|spain|uk|britain|british|us|u\.s\.|usa|american|canada|australia|europe|european|"
+                    r"dubai|uae|qatar|oman|bangladesh|pakistan|sri lanka|nepal)\b", re.I)
 
 
 def stock_site(publisher: str, extra: tuple[str, ...] = ()) -> bool:
@@ -2134,7 +2162,8 @@ def scan_portfolio(companies: list[Company], items: list[Item], start: datetime,
                     or not pat.search(it.title)):
                 continue
             links.add(it.link)
-            if not credit_news(it.title) or stock_site(it.publisher, skip_publishers):
+            if (not credit_news(it.title) or stock_site(it.publisher, skip_publishers)
+                    or price_move(it.title, pat)):
                 # share prices, broker calls, stock-tip sites, or nothing about credit
                 dropped.add(it.title.lower())
                 continue
@@ -2203,7 +2232,8 @@ def scan_sectors(companies: list[Company], items: list[Item], start: datetime, e
             t = it.title
             if (it.link in links or it.link in shown or not it.published
                     or not (start <= it.published <= end + timedelta(hours=12)) or not pat.search(t)
-                    or not sector_hit(t, entry.name) or MARKET_CHATTER.search(t) or PF_NOISE.search(t)):
+                    or not sector_hit(t, entry.name) or MARKET_CHATTER.search(t) or PF_NOISE.search(t)
+                    or stock_site(it.publisher) or (ABROAD.search(t) and not INDIA.search(t))):
                 continue
             links.add(it.link)
             new = Item(t, it.link, it.source, it.published, it.summary, it.weight, it.primary, it.publisher,
@@ -2232,7 +2262,7 @@ def scan_economy(items: list[Item], start: datetime, end: datetime, days: int, f
     for it in [*got, *items]:
         t = it.title
         if (it.link in links or not it.published or not (start <= it.published <= end + timedelta(hours=12))
-                or not MACRO.search(t) or not INDIA.search(t) or MACRO_NOISE.search(t)):
+                or not MACRO.search(t) or not INDIA.search(t) or MACRO_NOISE.search(t) or stock_site(it.publisher)):
             continue
         links.add(it.link)
         mine.append(Item(t, it.link, it.source, it.published, it.summary, it.weight, it.primary, it.publisher,
@@ -2444,6 +2474,16 @@ def prepare_week(days: int = 7, sources: dict | None = None, fetcher: Callable[[
         week.events_max = max(1, int(cfg.get("max") or 10))
         week.events_window = int(cfg.get("window_days") or 60)
         week.errors.extend(more)
+    scan_book(week, sources, raw, fetcher, log)
+    return week
+
+
+def scan_book(week: "Week", sources: dict, raw: list[Item], fetcher: Callable[[str], bytes],
+              log: Callable[[str], None] = lambda s: None) -> None:
+    """The credit portfolio watch: load top 20.txt, then the company, sector and economy searches.
+    Fills week.portfolio / sector_watch / economy; problems go to week.errors. Nothing goes to an AI."""
+    start, end = week.start, week.end
+    days = max(1, round((end - start).total_seconds() / 86400))
     pf = sources.get("portfolio") or {}
     if pf.get("file"):
         path = Path(pf["file"])
@@ -2466,7 +2506,23 @@ def prepare_week(days: int = 7, sources: dict | None = None, fetcher: Callable[[
                 week.economy, more = scan_economy(raw, start, end, days, fetcher, int(pf.get("economy_max", 4)),
                                                   bool(pf.get("search", True)))
                 week.errors.extend(more)
-    return week
+
+
+def run_portfolio(days: int = 7, sources: dict | None = None, fetcher: Callable[[str], bytes] = fetch,
+                  now: datetime | None = None, log: Callable[[str], None] = lambda s: None) -> "Result":
+    """Only the credit portfolio watch (`--portfolio-only`): no news feeds, no ranking, no AI. The
+    company, sector and economy searches run on their own, so a check takes under a minute."""
+    end = now or datetime.now(IST)
+    start = end - timedelta(days=days)
+    sources = sources or load_sources()
+    week = Week(start=start, end=end, profile=Profile.from_sources(sources), stories=[], routine=[],
+                collected=0, kept=0, errors=[])
+    scan_book(week, sources, [], fetcher, log)
+    if not week.portfolio:
+        week.errors.append("No borrowers loaded: put top 20.txt next to risk_week.py (see top20.example.txt)")
+    return Result(start=start, end=end, top=[], radar=[], collected=0, kept=0, errors=week.errors,
+                  ai="portfolio only", portfolio=week.portfolio, sector_watch=week.sector_watch,
+                  economy=week.economy)
 
 
 # Detentions, arrests and court cases: never the story of the week; abroad, not in the blocks either.
@@ -2967,6 +3023,123 @@ def _when(item: Item) -> str:
     return item.published.astimezone(IST).strftime("%d %b") if item.published else ""
 
 
+def _portfolio_markdown(res: Result) -> list[str]:
+    """The credit portfolio watch (companies, sectors, economy) as Markdown lines."""
+    out: list[str] = []
+    if res.portfolio:
+        out += [f"## {PF_TITLE}", "", f"_{_pf_counts(res.portfolio)}. Early-warning flags are keyword-based; "
+                f"check each story._", ""]
+        rows = portfolio_order(res.portfolio)
+        if rows:
+            out += ["| Company | Signal | This week |", "|---|---|---|"]
+            for c in rows:
+                news = "<br>".join(f"[{s.lead.title.replace('|', '/')}]({s.lead.link}) "
+                                   f"({_pf_meta(s)})" for s in c.stories)
+                if c.note:
+                    news += f"<br>_GigaCode: {c.note.replace('|', '/')}_"
+                sig = _sig_text(c)
+                out.append(f"| {c.name} | {'**' + sig + '**' if c.signal[1] == 'red' else sig} | {news} |")
+            out.append("")
+        quiet = _pf_quiet(res.portfolio)
+        if quiet:
+            out += [f"_No credit news this week: {', '.join(quiet)}._", ""]
+        for sw in res.sector_watch:
+            out += [f"**Sector: {sw.name}** ({', '.join(sw.companies)})", ""]
+            out += [f"- [{s.lead.title}]({s.lead.link}) ({_pf_meta(s)})" for s in sw.stories] + [""]
+        if res.economy:
+            out += ["**Economy**", ""]
+            out += [f"- [{s.lead.title}]({s.lead.link}) ({_pf_meta(s)})" for s in res.economy] + [""]
+    return out
+
+
+def _portfolio_console(res: Result) -> list[str]:
+    """The credit portfolio watch for the terminal (plain web addresses are added by the caller)."""
+    out: list[str] = []
+    if res.portfolio:
+        out.append(f"{PF_TITLE.upper()} ({_pf_counts(res.portfolio)})")
+        for c in portfolio_order(res.portfolio):
+            out.append(f"  • {c.name}: {_sig_text(c)}")
+            out += [f"      {s.lead.title[:110]} ({_pf_meta(s)})" for s in c.stories]
+            out += [f"      GigaCode: {c.note}"] if c.note else []
+        quiet = _pf_quiet(res.portfolio)
+        out += [f"  No credit news: {', '.join(quiet)}"] if quiet else []
+        for sw in res.sector_watch:
+            out.append(f"  Sector: {sw.name} ({', '.join(sw.companies)})")
+            out += [f"      {s.lead.title[:110]} ({_pf_meta(s)})" for s in sw.stories]
+        if res.economy:
+            out.append("  Economy")
+            out += [f"      {s.lead.title[:110]} ({_pf_meta(s)})" for s in res.economy]
+        out.append("")
+    return out
+
+
+def _portfolio_html(res: Result, link, e) -> str:
+    """The credit portfolio watch panel (companies, sectors, economy) for a web page."""
+    if res.portfolio:
+        rows = []
+        for c in portfolio_order(res.portfolio):
+            lv = c.signal[1]
+            show = c.stories
+            news = "".join(f'<p class="pfn">{link(s.lead.link, s.lead.title, "", s.lead.title)} <span class="pm">'
+                           f'{e(_pf_meta(s))}</span></p>' for s in show)
+            rows.append(f'<li class="{lv or "news"}"><span class="it"><b>{e(c.name)}</b> '
+                        f'<span class="sig">{e(_sig_text(c))}</span></span>{news}'
+                        + (f'<p class="pm">GigaCode: {e(c.note)}</p>' if c.note else "") + "</li>")
+        quiet = _pf_quiet(res.portfolio)
+        return (f'<section class="panel pending pf"><h2>{e(PF_TITLE)} <span class="meta">'
+              f'{e(_pf_counts(res.portfolio))}</span></h2>'
+              + (f'<ul>{"".join(rows)}</ul>' if rows else "")
+              + (f'<p class="meta">No credit news this week: {e(", ".join(quiet))}</p>' if quiet else "")
+              + "".join(f'<h3 class="pfh">Sector: {e(sw.name)} <span class="meta">{e(", ".join(sw.companies))}'
+                        f'</span></h3><ul class="pfs">'
+                        + "".join(f'<li>{link(s.lead.link, s.lead.title, "", s.lead.title)} <span class="pm">'
+                                  f'{e(_pf_meta(s))}</span></li>' for s in sw.stories) + "</ul>"
+                        for sw in res.sector_watch)
+              + ('<h3 class="pfh">Economy</h3><ul class="pfs">'
+                 + "".join(f'<li>{link(s.lead.link, s.lead.title, "", s.lead.title)} <span class="pm">'
+                           f'{e(_pf_meta(s))}</span></li>' for s in res.economy) + "</ul>" if res.economy else "")
+              + "</section>")
+    return ""
+
+
+def portfolio_page(res: Result) -> str:
+    """A small web page with only the credit portfolio watch (`--portfolio-only`)."""
+    e = html.escape
+
+    def link(url: str, text: str, cls: str = "", title: str = "") -> str:
+        c = f' class="{cls}"' if cls else ""
+        t = f' title="{e(title)}"' if title else ""
+        return f'<a{c}{t} href="{e(url)}" target="_blank" rel="noopener">{e(text)}</a>'
+
+    period = f"{res.start.strftime('%d %b')} – {res.end.strftime('%d %b %Y')}"
+    errors = "".join(f"<li>{e(x)}</li>" for x in res.errors)
+    return f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>{e(PF_TITLE)}</title>
+<style>
+:root{{--bg:#F7F6F2;--card:#FDFDFB;--fg:#14213D;--muted:#4A5568;--accent:#0B5CAD;--line:#D5DAE3;
+--red:#B42318;--amber:#9A5A00;--green:#1E7B34}}
+@media (prefers-color-scheme:dark){{:root{{--bg:#14171b;--card:#1b2027;--fg:#e8eaed;--muted:#9aa3ad;
+--accent:#7fb3f0;--line:#2a2f36;--red:#f2a29b;--amber:#f0c27a;--green:#8fd19e}}}}
+body{{background:var(--bg);color:var(--fg);font:16px/1.5 system-ui,sans-serif;margin:0;padding:24px 16px}}
+main{{max-width:1100px;margin:auto}} h1{{font-size:1.5rem;margin:0}} .sub{{color:var(--muted);margin:4px 0 20px}}
+.panel{{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px 20px}}
+.panel h2{{font-size:1.15rem;margin:0 0 10px}} .meta,.pm{{color:var(--muted);font-size:.85rem}}
+a{{color:var(--accent);text-decoration:none}} a:hover{{text-decoration:underline}}
+.pf>ul{{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:repeat(auto-fill,minmax(420px,1fr));gap:0 28px}}
+.pf>ul>li{{border-top:1px solid var(--line);padding:10px 0}} .pf .it{{display:block}}
+.pf .sig{{font-size:.75rem;font-weight:700;text-transform:uppercase;letter-spacing:.03em;color:var(--muted);margin-left:6px}}
+.pf li.red .sig{{color:var(--red)}} .pf li.amber .sig{{color:var(--amber)}} .pf li.green .sig{{color:var(--green)}}
+.pf .pfn{{margin:4px 0;font-size:.9rem}} .pf .pfh{{font-size:1rem;margin:18px 0 4px}}
+.pf .pfs{{margin:0;padding-left:20px}} .pf .pfs li{{padding:2px 0;font-size:.9rem}}
+.err{{color:var(--muted);font-size:.85rem;margin-top:16px}}
+@media (max-width:520px){{.pf>ul{{grid-template-columns:1fr}}}}
+</style></head><body><main>
+<h1>{e(PF_TITLE)}</h1><p class="sub">{e(period)} · credit drivers, sectors and the economy · keyword flags, check each story</p>
+{_portfolio_html(res, link, e)}
+{f'<ul class="err">{errors}</ul>' if errors else ''}
+</main></body></html>"""
+
+
 def to_markdown(res: Result) -> str:
     out = [f"# {_title(res)}", "",
            f"_Indian banking risk management, {res.start.strftime('%d %b')} – {res.end.strftime('%d %b %Y')}. "
@@ -2991,29 +3164,7 @@ def to_markdown(res: Result) -> str:
         out += [f"| {p.item} | {p.owner} | {p.due} | {'**' + _status(p) + '**' if p.overdue else _status(p)} |"
                 for p in res.pending]
         out.append("")
-    if res.portfolio:
-        out += [f"## {PF_TITLE}", "", f"_{_pf_counts(res.portfolio)}. Early-warning flags are keyword-based; "
-                f"check each story._", ""]
-        rows = portfolio_order(res.portfolio)
-        if rows:
-            out += ["| Company | Signal | This week |", "|---|---|---|"]
-            for c in rows:
-                news = "<br>".join(f"[{s.lead.title.replace('|', '/')}]({s.lead.link}) "
-                                   f"({_pf_meta(s)})" for s in c.stories)
-                if c.note:
-                    news += f"<br>_GigaCode: {c.note.replace('|', '/')}_"
-                sig = _sig_text(c)
-                out.append(f"| {c.name} | {'**' + sig + '**' if c.signal[1] == 'red' else sig} | {news} |")
-            out.append("")
-        quiet = _pf_quiet(res.portfolio)
-        if quiet:
-            out += [f"_No credit news this week: {', '.join(quiet)}._", ""]
-        for sw in res.sector_watch:
-            out += [f"**Sector: {sw.name}** ({', '.join(sw.companies)})", ""]
-            out += [f"- [{s.lead.title}]({s.lead.link}) ({_pf_meta(s)})" for s in sw.stories] + [""]
-        if res.economy:
-            out += ["**Economy**", ""]
-            out += [f"- [{s.lead.title}]({s.lead.link}) ({_pf_meta(s)})" for s in res.economy] + [""]
+    out += _portfolio_markdown(res)
     if res.compliance or res.compliance_info:
         out += _compliance_markdown(res)
     for block, stories in _blocks(res):
@@ -3085,21 +3236,7 @@ def to_console(res: Result, files: dict) -> str:
         out += [f"  • {p.item}" + "".join(f" · {x}" for x in (p.owner, p.due) if x) + f" · {_status(p)}"
                 for p in res.pending]
         out.append("")
-    if res.portfolio:
-        out.append(f"{PF_TITLE.upper()} ({_pf_counts(res.portfolio)})")
-        for c in portfolio_order(res.portfolio):
-            out.append(f"  • {c.name}: {_sig_text(c)}")
-            out += [f"      {s.lead.title[:110]} ({_pf_meta(s)})" for s in c.stories]
-            out += [f"      GigaCode: {c.note}"] if c.note else []
-        quiet = _pf_quiet(res.portfolio)
-        out += [f"  No credit news: {', '.join(quiet)}"] if quiet else []
-        for sw in res.sector_watch:
-            out.append(f"  Sector: {sw.name} ({', '.join(sw.companies)})")
-            out += [f"      {s.lead.title[:110]} ({_pf_meta(s)})" for s in sw.stories]
-        if res.economy:
-            out.append("  Economy")
-            out += [f"      {s.lead.title[:110]} ({_pf_meta(s)})" for s in res.economy]
-        out.append("")
+    out += _portfolio_console(res)
     info = res.compliance_info
     if info:
         if info.get("error") and not res.compliance:
@@ -3208,31 +3345,7 @@ def to_html(res: Result) -> str:
                        for p in res.pending)
         pending = (f'<section class="panel pending"><h2>Pending items <span class="meta">{len(res.pending)}'
                    + (f" · {late} overdue" if late else "") + f'</span></h2><ul>{rows}</ul></section>')
-    pf = ""
-    if res.portfolio:
-        rows = []
-        for c in portfolio_order(res.portfolio):
-            lv = c.signal[1]
-            show = c.stories
-            news = "".join(f'<p class="pfn">{link(s.lead.link, s.lead.title, "", s.lead.title)} <span class="pm">'
-                           f'{e(_pf_meta(s))}</span></p>' for s in show)
-            rows.append(f'<li class="{lv or "news"}"><span class="it"><b>{e(c.name)}</b> '
-                        f'<span class="sig">{e(_sig_text(c))}</span></span>{news}'
-                        + (f'<p class="pm">GigaCode: {e(c.note)}</p>' if c.note else "") + "</li>")
-        quiet = _pf_quiet(res.portfolio)
-        pf = (f'<section class="panel pending pf"><h2>{e(PF_TITLE)} <span class="meta">'
-              f'{e(_pf_counts(res.portfolio))}</span></h2>'
-              + (f'<ul>{"".join(rows)}</ul>' if rows else "")
-              + (f'<p class="meta">No credit news this week: {e(", ".join(quiet))}</p>' if quiet else "")
-              + "".join(f'<h3 class="pfh">Sector: {e(sw.name)} <span class="meta">{e(", ".join(sw.companies))}'
-                        f'</span></h3><ul class="pfs">'
-                        + "".join(f'<li>{link(s.lead.link, s.lead.title, "", s.lead.title)} <span class="pm">'
-                                  f'{e(_pf_meta(s))}</span></li>' for s in sw.stories) + "</ul>"
-                        for sw in res.sector_watch)
-              + ('<h3 class="pfh">Economy</h3><ul class="pfs">'
-                 + "".join(f'<li>{link(s.lead.link, s.lead.title, "", s.lead.title)} <span class="pm">'
-                           f'{e(_pf_meta(s))}</span></li>' for s in res.economy) + "</ul>" if res.economy else "")
-              + "</section>")
+    pf = _portfolio_html(res, link, e)
     comp = ""
     info = res.compliance_info
     if info:
@@ -3810,6 +3923,19 @@ def _pending_table(slide, items: list[Pending], x: float, y: float, w: float, na
         note.text = f"{len(items) - len(shown)} more item(s) in the HTML page."
         note.paragraphs[0].runs[0].font.size = Pt(10)
         note.paragraphs[0].runs[0].font.color.rgb = grey
+
+
+def write_portfolio(res: Result, out_dir: Path | str | None = None) -> dict:
+    """`--portfolio-only`: risk-week-<date>-portfolio.html and .md."""
+    d = Path(out_dir) if out_dir else DEFAULT_OUT
+    d.mkdir(parents=True, exist_ok=True)
+    stem = f"{_file_stem(res)}-portfolio"
+    files = {"html": d / f"{stem}.html", "markdown": d / f"{stem}.md"}
+    files["html"].write_text(portfolio_page(res), encoding="utf-8")
+    md = [f"# {PF_TITLE} — {res.start.strftime('%d %b')} – {res.end.strftime('%d %b %Y')}", ""]
+    md += _portfolio_markdown(res) + [f"_Not read: {x}_" for x in res.errors]
+    files["markdown"].write_text("\n".join(md) + "\n", encoding="utf-8")
+    return {k: str(v) for k, v in files.items()}
 
 
 def write(res: Result, out_dir: Path | str | None = None) -> dict:
@@ -5030,6 +5156,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--no-deep-dive", action="store_true",
                    help="skip the CRO deep dive on the story of the week (the extra fetch and AI call; "
                         "it runs whenever AI ranks)")
+    p.add_argument("--portfolio-only", action="store_true",
+                   help="only the credit portfolio watch (top 20.txt): no news feeds, no AI, no Confluence")
     p.add_argument("--ai-check", action="store_true",
                    help="check which Gemini models answer (one tiny request each), then stop")
     p.add_argument("--no-prompt", action="store_true",
@@ -5044,6 +5172,22 @@ def main(argv: list[str] | None = None) -> int:
     if a.confluence_check:
         print(confluence_check(a))
         return 0
+    if a.portfolio_only:
+        sources = load_sources(a.sources)
+        if a.portfolio_file:
+            sources["portfolio"] = dict(sources.get("portfolio") or {}, file=str(Path(a.portfolio_file).resolve()))
+        print("Checking the credit portfolio (company, sector and economy searches)...", file=sys.stderr)
+        res = run_portfolio(days=a.days, sources=sources, log=lambda m: print(m, file=sys.stderr))
+        files = write_portfolio(res, a.out_dir)
+        lines = _portfolio_console(res) or [f"{PF_TITLE}: nothing to show"]
+        lines += [f"Not read: {x}" for x in res.errors]
+        lines += ["", "Written:"] + [f"  {k:9s} {v}" for k, v in files.items()]
+        lines.append(f"\nOpen the page (all links clickable): {Path(files['html']).resolve().as_uri()}")
+        print("\n".join(lines))
+        if a.open:
+            import webbrowser
+            webbrowser.open(Path(files["html"]).resolve().as_uri())
+        return 0 if res.portfolio else 1
     if a.ai_check:
         load_dotenv(Path(__file__).resolve().parent / ".env", Path.cwd() / ".env")
         try:
