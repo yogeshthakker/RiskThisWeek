@@ -261,6 +261,8 @@ class Result:
     events: list["Event"] = field(default_factory=list)            # Events & reports: upcoming
     consultations: list["Consultation"] = field(default_factory=list)  # Events & reports: comments due
     portfolio: list["Company"] = field(default_factory=list)          # credit portfolio watch (top 20.txt)
+    sector_watch: list["SectorNews"] = field(default_factory=list)    # sectors we lend to, this week's news
+    economy: list[Story] = field(default_factory=list)                # India's economy, for credit quality
     events_max: int = 10                # upcoming events shown; all of them on <stem>-events.html
     events_window: int = 60
     ai_log: list = field(default_factory=list)          # raw AI replies, saved next to the output
@@ -380,7 +382,10 @@ def load_sources(path: Path | str | None = None) -> dict:
 
 
 def google_news_url(query: str, days: int) -> str:
-    q = urllib.parse.quote_plus(f"{query} when:{max(1, int(days))}d")
+    # With brackets in the query, Google honours the date limit only when it comes first (tested
+    # 21 Nov 2026: 18 of 18 results in the week, against 1 of 26 with "when:" at the end).
+    when = f"when:{max(1, int(days))}d"
+    q = urllib.parse.quote_plus(f"{when} {query}" if "(" in query else f"{query} {when}")
     return f"https://news.google.com/rss/search?q={q}&hl=en-IN&gl=IN&ceid=IN:en"
 
 
@@ -1852,7 +1857,7 @@ EWS = [
         r"\bloss(?:es)?\b|loss[- ]making|(?:profit|revenue|sales|margin|ebitda)s? (?:fall|drop|decline|plunge|"
         r"slump|tank|shrink|dip)|shut ?down|\bstrike\b|lockout|fire (?:at|breaks|broke)|\bblaze\b|layoff|"
         r"job cuts|plant clos|halt(?:s|ed)? (?:production|operations|work)|(?:order|contract) cancel|"
-        r"penalt|litigation|lawsuit|(?:shares?|stock) (?:fall|plunge|crash|tumble|sink|slump|hit)|"
+        r"penalt|litigation|lawsuit|"
         r"cash crunch|liquidity (?:crunch|stress)|debt (?:rises|surges|swells)|working capital stress|"
         r"cut(?:s)? (?:guidance|forecast)|profit warning", re.I)),
     ("Positive", "green", re.compile(
@@ -1869,6 +1874,110 @@ PF_NOISE = re.compile(
     r"market (?:live|wrap|highlights)|price target|technical (?:pick|view)|buy or sell|share price (?:today|live)|"
     r"stock price (?:today|live)|multibagger|amfi (?:rejig|reshuffle)|large[- ]?cap upgrade|trade setup|"
     r"stocks? recommendations?|f&o ban|bulk deals?|block deals?|\(\w+\.(?:bo|ns)\)", re.I)
+# What decides a borrower's credit quality (user, 21 Nov 2026: "credit quality determinants based on
+# news, economy, sector, management", not share prices). In priority order: a story takes the first
+# driver it matches. The first four are "strong": they keep a story even when its headline is about
+# the share price ("…Supreme Court upholds rejection…; stock falls 3%").
+CREDIT_DRIVERS: list[tuple[str, bool, re.Pattern]] = [
+    ("Rating", True, re.compile(
+        r"credit rating|\bratings? (?:reaffirm|upgrad|downgrad|revis|watch|outlook|assign|withdraw|suspend)|"
+        r"(?:reaffirm|upgrad|downgrad|revis|assign)\w* (?:its |the )?(?:credit )?ratings?|"
+        r"outlook (?:to |revised |raised |cut |lowered )?(?:to )?(?:negative|positive|stable)|"
+        r"(?:negative|positive|stable) outlook|rating watch|credit watch|"
+        r"\b(?:crisil|icra|care ratings|careedge|india ratings|ind-ra|acuit[eé]|brickwork|infomerics|"
+        r"moody'?s|fitch)\b|\bs&p\b(?!\s*(?:500|bse))", re.I)),
+    ("Debt & liquidity", True, re.compile(
+        r"\bdebt\b|borrow|\bloans?\b|\blenders?\b|refinanc|\bncds?\b|debentures?|\bbonds?\b|"
+        r"commercial paper|default|repay|interest (?:payment|cost|burden|servicing)|liquidity|"
+        r"working capital|cash ?flow|delever|leverage|\bqip\b|rights issue|fund ?rais|"
+        r"raises? (?:₹|rs\.?|inr|\$|usd|us\$)|impairment|write[- ]?(?:off|down)|\bnpa\b|non[- ]performing|"
+        r"restructur|one[- ]time settlement|\bots\b|\becb\b|credit facilit|term loan|covenant", re.I)),
+    ("Legal & regulatory", True, re.compile(
+        r"\bcourt\b|\bnclt\b|\bnclat\b|\bibc\b|insolvenc|tribunal|arbitrat|\bsebi\b|enforcement directorate|"
+        r"\bed\b (?:raid|search|attach|summon|probe)|\bcbi\b|\bsfio\b|\bprobe|investigat|penalt|\bfine[ds]?\b|"
+        r"tax (?:demand|notice|dispute|raid)|\bgst\b (?:notice|demand|evasion)|show[- ]cause|litigation|"
+        r"lawsuit|\bpetition|verdict|\bruling|licen[cs]e|anti[- ]dumping|\bduty\b|tariff|\bban(?:s|ned)?\b|"
+        r"sanction|regulator|\brules?\b|\bnorms\b|regulations?|government(?:'s)? (?:decision|order|move)|"
+        r"ministry", re.I)),
+    ("Management & governance", True, re.compile(
+        r"\b(?:ceo|cfo|coo|md|managing director|chairman|chairperson|director|auditor|president)s?\b[^.;]{0,40}?"
+        r"\b(?:resign|quit|steps? down|exit|appoint|named|elevat|replac|succe)|"
+        r"\b(?:resign|quit|steps? down|appoint|names|elevat)\w*[^.;]{0,40}?"
+        r"\b(?:ceo|cfo|coo|md|managing director|chairman|director|auditor)\b|"
+        r"pledge|governance|related[- ]party|whistle[- ]?blower|promoter (?:stake|sells|exit|infus)|stake sale|"
+        r"auditors?\b|management (?:change|rejig|exit|shake)|succession|forensic audit", re.I)),
+    ("Results", False, re.compile(
+        r"\bq[1-4](?:\s?fy\s?\d{2,4})?\b|quarter|half[- ]year|\bresults?\b|\bprofit|\bloss(?:es)?\b|revenue|"
+        r"\bebitda\b|margins?\b|earnings|guidance|net (?:income|sales)|turnover|"
+        r"sales (?:volume|growth|fall|rise)|performance", re.I)),
+    ("Business & operations", False, re.compile(
+        r"capacity|expan|capex|investment plan|invest(?:s|ing)? (?:₹|rs|\$)|\bplant|factory|facilit|project|"
+        r"\borders?\b|contracts?\b|acqui|merger|amalgamat|demerger|divest|\bstake\b|joint venture|\bjv\b|"
+        r"\bdeal\b|\bbid\b|tender|shut ?down|\bstrike\b|lockout|\bfire\b|blaze|accident|outage|exports?\b|"
+        r"imports?\b|demand\b|prices?\b|supply|commission|ramp|\bmines?\b|\bblock\b|\boutput\b|production", re.I)),
+]
+# Share-price and stock-market talk: not credit news (user, 21 Nov 2026). Dropped unless a strong
+# driver is also in the headline.
+MARKET_CHATTER = re.compile(
+    r"share price|stock price|price target|target price|\btgt\b|stop[- ]?loss|"
+    r"\bshares?\b[^.;:]{0,40}?\b(?:rise|rises|rose|fall|falls|fell|gain|gains|drop|drops|jump|jumps|surge|surges|"
+    r"slide|slides|slip|slips|rally|rallies|tank|tanks|climb|climbs|plunge|plunges|zoom|zooms|soar|soars|tumble|"
+    r"tumbles|decline|declines|dip|dips|trade|trades|ends?|close[sd]?|opens?|hits?|crash|recover|rebound|sinks?|"
+    r"in focus|up \d|down \d)\b|"
+    r"\bstocks?\b[^.;:]{0,40}?\b(?:rise|rises|fall|falls|gain|gains|drop|drops|jump|jumps|surge|surges|slide|slides|"
+    r"slip|slips|rally|rallies|climb|climbs|plunge|plunges|tumble|tumbles|decline|declines|to watch|to buy|"
+    r"in focus|in news|picks?|forecast|of the day|list)\b|"
+    r"top (?:\d+ )?(?:stocks?|shares?|gainers|losers|picks)|analysts? (?:recommend|see|predict)|buy calls?|"
+    r"\brated (?:buy|sell|hold|neutral|overweight|underweight)|"
+    r"\b(?:buy|sell|hold|accumulate|reduce|neutral|overweight|underweight|outperform|underperform) "
+    r"(?:rating|call|recommendation)|"
+    r"(?:upgrade|downgrade)s?[^.]{0,30}\bto (?:buy|sell|hold|neutral|overweight|underweight|accumulate|reduce|add|"
+    r"outperform|underperform)|brokerage|\b(?:jefferies|nomura|clsa|macquarie|motilal|nuvama|emkay|bernstein)\b|"
+    r"\bupside\b|\bdownside\b|market (?:cap|value)|\bm-?cap\b|52[- ]week|sensex|nifty|\bf&o\b|"
+    r"options? (?:data|chain|trading)|technical|\bcharts?\b|share(?:holding)? pattern|"
+    r"mutual funds? (?:buy|sell|hike|cut|add)|\bfiis?\b|\bdiis?\b|dividend|bonus (?:issue|shares)|stock split|"
+    r"record date|\bipo\b|\bgmp\b|live (?:nse|bse)|\b(?:nse|bse|nsei)\s*:|\.(?:ns|bo)\)|quote and history|"
+    r"returns? (?:chart|of)|multibagger|seasonal returns|at a glance", re.I)
+# The search for each company: its names plus the topics above (tested live on 21 Nov 2026: 16
+# relevant items for Vedanta instead of 70 that were mostly price pages and broker calls).
+CREDIT_QUERY = ("(debt OR rating OR lenders OR loan OR bonds OR default OR court OR NCLT OR probe OR penalty "
+                "OR results OR profit OR loss OR CEO OR CFO OR resigns OR auditor OR pledge OR plant OR capacity "
+                "OR capex OR acquisition OR merger OR order OR impairment OR insolvency)")
+SECTOR_DRIVERS = re.compile(
+    r"demand|prices?\b|outlook|capacity|utili[sz]ation|imports?|exports?|dumping|\bduty\b|tariff|policy|"
+    r"regulat|slowdown|stress|default|rating|margins?|inventor|oversupply|glut|subsid|incentive|\bpli\b|"
+    r"monsoon|consolidat|credit growth|\bnpa\b|delinquen|order book|production|output|sales", re.I)
+SECTOR_QUERY = "(demand OR prices OR imports OR duty OR capacity OR outlook OR margins OR policy OR slowdown)"
+MACRO = re.compile(
+    r"\bgdp\b|inflation|\bcpi\b|\bwpi\b|\biip\b|industrial (?:output|production)|\bpmi\b|fiscal deficit|"
+    r"current account|trade deficit|credit growth|bank credit|deposit growth|repo rate|interest rates?|"
+    r"rate (?:hike|cut)|\bmpc\b|rupee|forex reserves|crude|oil prices|monsoon|\beconomy\b|economic growth|"
+    r"slowdown|recession|core sector|gst collection|private (?:capex|investment)", re.I)
+MACRO_QUERY = 'India (GDP OR inflation OR "credit growth" OR IIP OR PMI OR "fiscal deficit" OR "interest rates")'
+MACRO_NOISE = re.compile(r"sensex|nifty|\bstocks?\b|\bshares?\b|market (?:live|wrap|today)|\bipo\b|"
+                         r"\bgold (?:price|rate)|newsletter|live updates", re.I)
+
+
+def credit_driver(title: str) -> tuple[str, bool] | None:
+    """The first credit driver a headline matches, and whether it is a strong one; None if none."""
+    for label, strong, pat in CREDIT_DRIVERS:
+        if pat.search(title):
+            return label, strong
+    return None
+
+
+def credit_news(title: str) -> str:
+    """The driver label when a borrower headline is credit news, '' when it is not: market chatter
+    without a strong driver, or no driver at all."""
+    d = credit_driver(title)
+    if d is None:
+        return ""
+    if (MARKET_CHATTER.search(title) or PF_NOISE.search(title)) and not any(
+            strong and pat.search(title) for _, strong, pat in CREDIT_DRIVERS):
+        return ""
+    return d[0]
+
+
 _SUFFIX = re.compile(r"[\s,.]+(?:limited|ltd|pvt|private|plc|inc|llp|corporation|corp|company|co)\.?\s*$", re.I)
 
 
@@ -1899,6 +2008,7 @@ class Company:
     aliases: list[str] = field(default_factory=list)
     stories: list[Story] = field(default_factory=list)   # this week's news on it, worst signal first
     sectors: list[str] = field(default_factory=list)     # "sector: steel, power" in top 20.txt (local only)
+    dropped: int = 0                                     # this week's headlines on it that were not credit news
     note: str = ""                                       # GigaCode's view (MCP), optional
     ai_level: str = ""                                   # GigaCode's signal ("red/amber/green/none"), overrides
 
@@ -1926,6 +2036,11 @@ class Company:
             if s and s.lower() not in [x.lower() for x in short]:
                 short.append(s)
         return " OR ".join(f'"{s}"' for s in short)
+
+    @property
+    def search_query(self) -> str:
+        """The Google News search: the names, limited to credit topics (CREDIT_QUERY)."""
+        return f"({self.query}) {CREDIT_QUERY}"
 
     @property
     def signal(self) -> tuple[str, str]:
@@ -1976,7 +2091,7 @@ def scan_portfolio(companies: list[Company], items: list[Item], start: datetime,
         if not search:
             return c, [], None
         try:
-            return c, parse_feed(fetcher(google_news_url(c.query, days)), "Google News", 1.0, False, True), None
+            return c, parse_feed(fetcher(google_news_url(c.search_query, days)), "Google News", 1.0, False, True), None
         except Exception as e:  # noqa: BLE001 — one failed search must not stop the rest
             return c, [], e
 
@@ -1986,22 +2101,132 @@ def scan_portfolio(companies: list[Company], items: list[Item], start: datetime,
     for c, got, err in found:
         if err is not None:
             errors.append(f"Portfolio search ({c.name}): {type(err).__name__}: {err}"[:300])
-        pat, links, mine = c.pattern, set(), []
+        pat, links, mine, dropped = c.pattern, set(), [], set()
         for it in [*got, *items]:
             if (it.link in links or not it.published or not (start <= it.published <= end + timedelta(hours=12))
-                    or not pat.search(it.title) or PF_NOISE.search(it.title)):
+                    or not pat.search(it.title)):
                 continue
             links.add(it.link)
+            if not credit_news(it.title):        # share prices, broker calls, or nothing about credit
+                dropped.add(it.title.lower())
+                continue
             new = Item(it.title, it.link, it.source, it.published, it.summary, it.weight, it.primary,
                        it.publisher, kind="portfolio")
             new.score = it.published.timestamp() / 1e9      # newest first within a signal level
             mine.append(new)
         stories = group(mine)
-        stories.sort(key=lambda s: (-LEVELS[_story_signal(s)[1]], -max(i.published.timestamp() for i in s.items)))
+        order = [label for label, _, _ in CREDIT_DRIVERS]
         for s in stories:
-            s.category = "Credit portfolio"
+            s.category = credit_news(s.lead.title)
+        # Worst signal first, then the stronger driver (rating, debt, legal, management), then newest.
+        stories.sort(key=lambda s: (-LEVELS[_story_signal(s)[1]], order.index(s.category),
+                                    -max(i.published.timestamp() for i in s.items)))
         c.stories = stories[:max(1, per_company)]
+        c.dropped = len(dropped)
     return errors
+
+
+@dataclass
+class SectorNews:
+    """This week's news on a sector we lend to (top 20.txt 'sector:'), with the borrowers in it."""
+    name: str
+    companies: list[str]
+    stories: list[Story]
+
+
+_INDUSTRY = (SECTOR_DRIVERS.pattern + r"|sector|industry|makers|producers|manufacturers|companies|firms|"
+             r"plants?|mills?|ministry|minister|association")
+
+
+def sector_hit(title: str, sector: str) -> bool:
+    """The sector word next to an industry term (at most one word between): 'Chinese steel imports',
+    'cement demand', 'aluminium P1020 prices' count; 'Mumbai man ports his mediclaim policy' does not."""
+    sec = rf"(?<!\w){re.escape(sector)}s?(?!\w)"
+    drv = rf"\w*(?:{_INDUSTRY})\w*"
+    gap = r"(?:\W+\w+)?\W+"
+    return bool(re.search(rf"{sec}{gap}{drv}|{drv}{gap}{sec}", title, re.I))
+
+
+def scan_sectors(companies: list[Company], items: list[Item], start: datetime, end: datetime, days: int,
+                 fetcher: Callable[[str], bytes], per_sector: int = 3,
+                 search: bool = True) -> tuple[list[SectorNews], list[str]]:
+    """One Google News search per sector (the sector word plus SECTOR_QUERY), plus the week's
+    collected news: headlines that name the sector and a sector driver, not market chatter, and
+    not already shown under a company."""
+    sectors: dict[str, SectorNews] = {}
+    for c in companies:
+        for sec in c.sectors:
+            entry = sectors.setdefault(sec.lower(), SectorNews(sec, [], []))
+            short = _short_name(c.name) or c.name
+            if short not in entry.companies:
+                entry.companies.append(short)
+    shown = {i.link for c in companies for s in c.stories for i in s.items}
+    errors: list[str] = []
+    for key, entry in sectors.items():
+        got: list[Item] = []
+        if search:
+            try:
+                got = parse_feed(fetcher(google_news_url(f'"{entry.name}" India {SECTOR_QUERY}', days)),
+                                 "Google News", 1.0, False, True)
+            except Exception as e:  # noqa: BLE001
+                errors.append(f"Sector search ({entry.name}): {type(e).__name__}: {e}"[:300])
+        pat, links, mine = _sector_pattern(entry.name), set(), []
+        for it in [*got, *items]:
+            t = it.title
+            if (it.link in links or it.link in shown or not it.published
+                    or not (start <= it.published <= end + timedelta(hours=12)) or not pat.search(t)
+                    or not sector_hit(t, entry.name) or MARKET_CHATTER.search(t) or PF_NOISE.search(t)):
+                continue
+            links.add(it.link)
+            new = Item(t, it.link, it.source, it.published, it.summary, it.weight, it.primary, it.publisher,
+                       kind="portfolio")
+            mine.append(new)
+        stories = group(mine)
+        stories.sort(key=lambda s: (-len(s.sources), -max(i.published.timestamp() for i in s.items)))
+        for s in stories:
+            s.category = f"Sector: {entry.name}"
+        entry.stories = stories[:max(1, per_sector)]
+    return [e for e in sectors.values() if e.stories], errors
+
+
+def scan_economy(items: list[Item], start: datetime, end: datetime, days: int, fetcher: Callable[[str], bytes],
+                 n: int = 4, search: bool = True) -> tuple[list[Story], list[str]]:
+    """India's economy this week, as it bears on borrowers: GDP, inflation, rates, credit growth,
+    the rupee, crude. Widest coverage first."""
+    errors: list[str] = []
+    got: list[Item] = []
+    if search:
+        try:
+            got = parse_feed(fetcher(google_news_url(MACRO_QUERY, days)), "Google News", 1.0, False, True)
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"Economy search: {type(e).__name__}: {e}"[:300])
+    links, mine = set(), []
+    for it in [*got, *items]:
+        t = it.title
+        if (it.link in links or not it.published or not (start <= it.published <= end + timedelta(hours=12))
+                or not MACRO.search(t) or not INDIA.search(t) or MACRO_NOISE.search(t)):
+            continue
+        links.add(it.link)
+        mine.append(Item(t, it.link, it.source, it.published, it.summary, it.weight, it.primary, it.publisher,
+                         kind="portfolio"))
+    stories = merge_same_story(group(mine), min_stories=2)
+    stories.sort(key=lambda s: (-len(s.sources), -max(i.published.timestamp() for i in s.items)))
+    # The same release in other words ("CPI inflation rises to 6.1%" / "inflation climbs to 6.1%"):
+    # one indicator and one figure in common is one story.
+    merged: list[tuple[set[str], set[str], Story]] = []
+    for st in stories:
+        terms = {m.lower() for m in MACRO.findall(st.lead.title)}
+        nums = set(re.findall(r"\d+\.\d+%?|\d+%", st.lead.title))
+        same = next((m for m in merged if terms & m[0] and nums & m[1]), None)
+        if same:
+            same[2].items.extend(st.items)
+        else:
+            merged.append((terms, nums, st))
+    stories = [m[2] for m in merged]
+    stories.sort(key=lambda s: (-len(s.sources), -max(i.published.timestamp() for i in s.items)))
+    for s in stories:
+        s.category = "Economy"
+    return stories[:max(1, n)], errors
 
 
 BORROWER_IMPACT, SECTOR_IMPACT = 2, 1          # added to an AI impact (capped at 10)
@@ -2069,7 +2294,16 @@ def _pf_counts(companies: list[Company]) -> str:
     parts += [f"{n['red']} red"] if n["red"] else []
     parts += [f"{n['amber']} amber"] if n["amber"] else []
     parts += [f"{n['green']} positive"] if n["green"] else []
+    left = sum(c.dropped for c in companies)
+    parts += [f"{left} share-price or non-credit headline{'s' if left != 1 else ''} left out"] if left else []
     return " · ".join(parts)
+
+
+def _pf_meta(s: Story) -> str:
+    """'Debt & liquidity · ET Markets, 20 Nov' for a borrower, sector or economy story."""
+    who = f"{s.lead.publisher or s.lead.source}, {_when(s.lead)}"
+    label = "" if s.category.startswith(("Sector:", "Economy", "Credit portfolio")) else s.category
+    return f"{label} · {who}" if label else who
 
 
 def _pf_quiet(companies: list[Company]) -> list[str]:
@@ -2116,7 +2350,9 @@ def portfolio_prompt(companies: list[Company]) -> str:
         return ""
     out = ["## Credit portfolio watch (optional, the bank's own borrowers)",
            "For each company below, judge whether this week's news is an early-warning signal for a "
-           "lender to it. Add to your ranking a key \"portfolio\": a list of {\"company\": name exactly as "
+           "lender to it: what changes its credit quality (debt and liquidity, ratings, results, management "
+           "and governance, legal or regulatory action, operations, its sector and the economy), not its "
+           "share price. Add to your ranking a key \"portfolio\": a list of {\"company\": name exactly as "
            "written, \"signal\": \"red\" (default, insolvency, downgrade, fraud), \"amber\" (stress worth a "
            "call), \"green\" (positive) or \"none\" (not about the company or not credit-relevant), "
            "\"note\": at most 25 words: what happened and what the credit team should check}.", ""]
@@ -2124,7 +2360,7 @@ def portfolio_prompt(companies: list[Company]) -> str:
         label, level = c.signal
         out.append(f"- {c.name} (local flag: {LEVEL_LABEL[level]}{' · ' + label if label else ''})")
         for s in c.stories:
-            out.append(f"  · {s.lead.title} — {s.lead.publisher or s.lead.source}, {_when(s.lead)}")
+            out.append(f"  · {s.lead.title} — {_pf_meta(s)}")
     return "\n".join(out)
 
 
@@ -2143,6 +2379,8 @@ class Week:
     events: list["Event"] = field(default_factory=list)
     consultations: list["Consultation"] = field(default_factory=list)
     portfolio: list["Company"] = field(default_factory=list)    # credit portfolio watch (never sent to Gemini)
+    sector_watch: list["SectorNews"] = field(default_factory=list)  # sectors we lend to (top 20.txt)
+    economy: list[Story] = field(default_factory=list)              # India's economy, for credit quality
     events_max: int = 10                # upcoming events shown; the rest are on the events page
     events_window: int = 60
 
@@ -2191,6 +2429,14 @@ def prepare_week(days: int = 7, sources: dict | None = None, fetcher: Callable[[
             week.errors.extend(scan_portfolio(week.portfolio, raw, start, end, days, fetcher,
                                               int(pf.get("per_company", PORTFOLIO_MAX)),
                                               bool(pf.get("search", True))))
+            if pf.get("sectors", True):
+                week.sector_watch, more = scan_sectors(week.portfolio, raw, start, end, days, fetcher,
+                                                       int(pf.get("per_sector", 3)), bool(pf.get("search", True)))
+                week.errors.extend(more)
+            if pf.get("economy", True):
+                week.economy, more = scan_economy(raw, start, end, days, fetcher, int(pf.get("economy_max", 4)),
+                                                  bool(pf.get("search", True)))
+                week.errors.extend(more)
     return week
 
 
@@ -2325,7 +2571,7 @@ def finish_week(week: Week, top: int = 3, picked: "AiPick | None" = None, ai: st
                   cro_notes=list(cro_notes or []), cro_focus=focus, ai_log=ai_log,
                   pending=list(pending or []), blocks=blocks, reports=week.reports, events=week.events,
                   consultations=add_news_deadlines(week.consultations, flatten(blocks), week.end.date()),
-                  portfolio=week.portfolio,
+                  portfolio=week.portfolio, sector_watch=week.sector_watch, economy=week.economy,
                   events_max=week.events_max, events_window=week.events_window, deep_dive=dd)
 
 
@@ -2720,7 +2966,7 @@ def to_markdown(res: Result) -> str:
             out += ["| Company | Signal | This week |", "|---|---|---|"]
             for c in rows:
                 news = "<br>".join(f"[{s.lead.title.replace('|', '/')}]({s.lead.link}) "
-                                   f"({s.lead.publisher or s.lead.source}, {_when(s.lead)})" for s in c.stories)
+                                   f"({_pf_meta(s)})" for s in c.stories)
                 if c.note:
                     news += f"<br>_GigaCode: {c.note.replace('|', '/')}_"
                 sig = _sig_text(c)
@@ -2728,7 +2974,13 @@ def to_markdown(res: Result) -> str:
             out.append("")
         quiet = _pf_quiet(res.portfolio)
         if quiet:
-            out += [f"_No news this week: {', '.join(quiet)}._", ""]
+            out += [f"_No credit news this week: {', '.join(quiet)}._", ""]
+        for sw in res.sector_watch:
+            out += [f"**Sector: {sw.name}** ({', '.join(sw.companies)})", ""]
+            out += [f"- [{s.lead.title}]({s.lead.link}) ({_pf_meta(s)})" for s in sw.stories] + [""]
+        if res.economy:
+            out += ["**Economy**", ""]
+            out += [f"- [{s.lead.title}]({s.lead.link}) ({_pf_meta(s)})" for s in res.economy] + [""]
     if res.compliance or res.compliance_info:
         out += _compliance_markdown(res)
     for block, stories in _blocks(res):
@@ -2804,11 +3056,16 @@ def to_console(res: Result, files: dict) -> str:
         out.append(f"{PF_TITLE.upper()} ({_pf_counts(res.portfolio)})")
         for c in portfolio_order(res.portfolio):
             out.append(f"  • {c.name}: {_sig_text(c)}")
-            out += [f"      {s.lead.title[:110]} ({s.lead.publisher or s.lead.source}, {_when(s.lead)})"
-                    for s in c.stories]
+            out += [f"      {s.lead.title[:110]} ({_pf_meta(s)})" for s in c.stories]
             out += [f"      GigaCode: {c.note}"] if c.note else []
         quiet = _pf_quiet(res.portfolio)
-        out += [f"  No news: {', '.join(quiet)}"] if quiet else []
+        out += [f"  No credit news: {', '.join(quiet)}"] if quiet else []
+        for sw in res.sector_watch:
+            out.append(f"  Sector: {sw.name} ({', '.join(sw.companies)})")
+            out += [f"      {s.lead.title[:110]} ({_pf_meta(s)})" for s in sw.stories]
+        if res.economy:
+            out.append("  Economy")
+            out += [f"      {s.lead.title[:110]} ({_pf_meta(s)})" for s in res.economy]
         out.append("")
     info = res.compliance_info
     if info:
@@ -2925,7 +3182,7 @@ def to_html(res: Result) -> str:
             lv = c.signal[1]
             show = c.stories
             news = "".join(f'<p class="pfn">{link(s.lead.link, s.lead.title, "", s.lead.title)} <span class="pm">'
-                           f'{e(s.lead.publisher or s.lead.source)} · {e(_when(s.lead))}</span></p>' for s in show)
+                           f'{e(_pf_meta(s))}</span></p>' for s in show)
             rows.append(f'<li class="{lv or "news"}"><span class="it"><b>{e(c.name)}</b> '
                         f'<span class="sig">{e(_sig_text(c))}</span></span>{news}'
                         + (f'<p class="pm">GigaCode: {e(c.note)}</p>' if c.note else "") + "</li>")
@@ -2933,7 +3190,16 @@ def to_html(res: Result) -> str:
         pf = (f'<section class="panel pending pf"><h2>{e(PF_TITLE)} <span class="meta">'
               f'{e(_pf_counts(res.portfolio))}</span></h2>'
               + (f'<ul>{"".join(rows)}</ul>' if rows else "")
-              + (f'<p class="meta">No news this week: {e(", ".join(quiet))}</p>' if quiet else "") + "</section>")
+              + (f'<p class="meta">No credit news this week: {e(", ".join(quiet))}</p>' if quiet else "")
+              + "".join(f'<h3 class="pfh">Sector: {e(sw.name)} <span class="meta">{e(", ".join(sw.companies))}'
+                        f'</span></h3><ul class="pfs">'
+                        + "".join(f'<li>{link(s.lead.link, s.lead.title, "", s.lead.title)} <span class="pm">'
+                                  f'{e(_pf_meta(s))}</span></li>' for s in sw.stories) + "</ul>"
+                        for sw in res.sector_watch)
+              + ('<h3 class="pfh">Economy</h3><ul class="pfs">'
+                 + "".join(f'<li>{link(s.lead.link, s.lead.title, "", s.lead.title)} <span class="pm">'
+                           f'{e(_pf_meta(s))}</span></li>' for s in res.economy) + "</ul>" if res.economy else "")
+              + "</section>")
     comp = ""
     info = res.compliance_info
     if info:
@@ -3020,7 +3286,8 @@ h2{{font-size:1.05rem;margin:0 0 6px}}
 .radar li{{padding:2px 0}}
 .pf .sig{{font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--muted)}}
 .pf li.red .sig{{color:var(--late)}} .pf li.amber .sig{{color:var(--amber)}} .pf li.green .sig{{color:var(--ok)}}
-.pf .pfn{{font-size:.85rem}} .pf .pfn .pm{{white-space:nowrap}}
+.pf .pfn{{font-size:.85rem}} .pf .pfh{{font-size:.9rem;margin:12px 0 4px}}
+.pf .pfs{{margin:0;padding-left:18px}} .pf .pfs li{{display:list-item;border:0;padding:2px 0;font-size:.85rem}} .pf .pfn .pm{{white-space:nowrap}}
 .evr h3{{font-size:.78rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:10px 0 2px}}
 .evr li.late .meta{{color:var(--late);font-weight:600}}
 .mainc{{display:flex;flex-direction:column;gap:14px;min-width:0}} .below{{display:grid;gap:14px}}
@@ -3149,6 +3416,8 @@ def to_pptx(res: Result, path: Path) -> bool:
         _compliance_slide(prs, blank, header, res, period, navy, grey, red, white)
     if res.portfolio:
         _portfolio_slide(prs, blank, header, res, period, navy, grey, red, white)
+    if res.sector_watch or res.economy:
+        _sector_slide(prs, blank, header, res, period, navy, grey)
 
     # Slide 2: the six blocks, three across
     s2 = prs.slides.add_slide(blank)
@@ -3317,6 +3586,40 @@ the report shows the nearest {res.events_max}</p>
 </main></body></html>"""
 
 
+def _sector_slide(prs, layout, header, res: Result, period: str, navy, grey) -> None:
+    """Sector & economy watch: the sectors we lend to, then India's economy (credit drivers)."""
+    from pptx.util import Inches, Pt
+    slide = prs.slides.add_slide(layout)
+    header(slide, "Sector & economy watch", f"What moves our borrowers' credit quality · {period}")
+    tf = slide.shapes.add_textbox(Inches(0.5), Inches(1.4), Inches(12.3), Inches(5.6)).text_frame
+    tf.word_wrap = True
+    groups = [(f"Sector: {sw.name}", ", ".join(sw.companies), sw.stories) for sw in res.sector_watch]
+    groups += [("Economy", "", res.economy)] if res.economy else []
+    size = 13 if sum(len(g[2]) for g in groups) <= 10 else 11
+    first = True
+    for title, who, stories in groups:
+        p = tf.paragraphs[0] if first else tf.add_paragraph()
+        first = False
+        r = p.add_run()
+        r.text = title
+        r.font.size, r.font.bold, r.font.color.rgb = Pt(size + 2), True, navy
+        if who:
+            m = p.add_run()
+            m.text = f"   {who}"
+            m.font.size, m.font.color.rgb = Pt(size - 1), grey
+        p.space_before = Pt(6)
+        for st in stories:
+            q = tf.add_paragraph()
+            r = q.add_run()
+            r.text = f"• {_clean(st.lead.title, 130)}"
+            r.font.size, r.font.color.rgb = Pt(size), navy
+            if st.lead.link:
+                r.hyperlink.address = st.lead.link
+            m = q.add_run()
+            m.text = f"   {_pf_meta(st)}"
+            m.font.size, m.font.color.rgb = Pt(size - 2), grey
+
+
 def _portfolio_slide(prs, layout, header, res: Result, period: str, navy, grey, red, white) -> None:
     """Credit portfolio watch: one row per company with news, worst signal first."""
     from pptx.dml.color import RGBColor
@@ -3365,7 +3668,7 @@ def _portfolio_slide(prs, layout, header, res: Result, period: str, navy, grey, 
                         if st.lead.link:
                             run.hyperlink.address = st.lead.link
                         m = q.add_run()
-                        m.text = f"  {st.lead.publisher or st.lead.source}, {_when(st.lead)}"
+                        m.text = f"  {_pf_meta(st)}"
                         m.font.size, m.font.color.rgb = Pt(size - 1.5), grey
                     continue
                 text = (co.name, _sig_text(co), "", _clean(co.note, 160))[c]
@@ -3378,7 +3681,7 @@ def _portfolio_slide(prs, layout, header, res: Result, period: str, navy, grey, 
     note.word_wrap = True
     more = len(portfolio_order(res.portfolio)) - len(shown)
     note.text = ((f"{more} more company(ies) with news in the HTML page. " if more > 0 else "")
-                 + (f"No news this week: {', '.join(quiet)}" if quiet else "")) or " "
+                 + (f"No credit news this week: {', '.join(quiet)}" if quiet else "")) or " "
     for run in note.paragraphs[0].runs:
         run.font.size, run.font.color.rgb = Pt(10), grey
 
@@ -3661,8 +3964,7 @@ def to_confluence(res: Result) -> str:
         for c in portfolio_order(res.portfolio):
             lv = c.signal[1]
             colour = {"red": "Red", "amber": "Yellow", "green": "Green"}.get(lv, "Grey")
-            news = "".join(f"<p>{a(s.lead.link, s.lead.title)} · <em>{e(s.lead.publisher or s.lead.source)}, "
-                           f"{e(_when(s.lead))}</em></p>" for s in c.stories)
+            news = "".join(f"<p>{a(s.lead.link, s.lead.title)} · <em>{e(_pf_meta(s))}</em></p>" for s in c.stories)
             rows.append(f"<tr><td><strong>{e(c.name)}</strong></td><td>{_status_macro(LEVEL_LABEL[lv], colour)}"
                         f"{(' ' + e(c.signal[0])) if c.signal[0] else ''}</td><td>{news}</td>"
                         f"<td>{e(c.note)}</td></tr>")
@@ -3670,7 +3972,13 @@ def to_confluence(res: Result) -> str:
         out.append(f"<h3>{e(PF_TITLE)}</h3><p><em>{e(_pf_counts(res.portfolio))}</em></p>"
                    + ("<table><tbody><tr><th>Company</th><th>Signal</th><th>This week</th><th>GigaCode</th></tr>"
                       + "".join(rows) + "</tbody></table>" if rows else "")
-                   + (f"<p><em>No news this week: {e(', '.join(quiet))}</em></p>" if quiet else ""))
+                   + (f"<p><em>No credit news this week: {e(', '.join(quiet))}</em></p>" if quiet else "")
+                   + "".join(f"<p><strong>Sector: {e(sw.name)}</strong> <em>({e(', '.join(sw.companies))})</em></p><ul>"
+                             + "".join(f"<li>{a(s.lead.link, s.lead.title)} · <em>{e(_pf_meta(s))}</em></li>"
+                                       for s in sw.stories) + "</ul>" for sw in res.sector_watch)
+                   + ("<p><strong>Economy</strong></p><ul>" + "".join(
+                       f"<li>{a(s.lead.link, s.lead.title)} · <em>{e(_pf_meta(s))}</em></li>" for s in res.economy)
+                      + "</ul>" if res.economy else ""))
     if res.routine:
         out.append(_macro("expand", "<ul>" + "".join(
             f"<li>{a(i.link, i.title)} · <em>{e(i.publisher or i.source)}, {e(_when(i))}</em></li>"

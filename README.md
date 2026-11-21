@@ -26,7 +26,7 @@ flowchart LR
         direction TB
         entry["<b>Entry</b><br/>CLI [--ai] · MCP server --mcp"]
         pipe["<b>News pipeline</b><br/>collect → filter → set aside fines<br/>→ group same story"]
-        side["<b>Side sections</b><br/>events &amp; reports · portfolio watch<br/>ISE items · pending · CRO notes"]
+        side["<b>Side sections</b><br/>events &amp; reports · portfolio, sector &amp; economy watch<br/>ISE items · pending · CRO notes"]
         entry --> pipe
     end
 
@@ -185,13 +185,35 @@ read is named at the end of the page; the rest still run.
 ## Credit portfolio watch
 
 Put the companies you lend to in **`top 20.txt`** next to `risk_week.py` (copy
-`top20.example.txt`). Write one company per line, with other names after `|` if needed, for
-example `Larsen & Toubro Limited | L&T`. The file is git-ignored and never committed.
+`top20.example.txt`). Write one company per line, with other names after `|` if needed, and
+optionally the sectors it is in, for example `Larsen & Toubro Limited | L&T | sector: construction`.
+The file is git-ignored and never committed. Use distinctive names: a short alias such as
+"Airtel" also matches Airtel Africa.
 
-Each run searches Google News once per company, sending only the company's name in quotes. It
-also checks the week's collected news. A story counts only if its headline names the company;
-stock tips and market lists are skipped. Each company gets an early-warning flag from its
-headlines:
+**Credit news, not share prices** (21 Nov 2026). Each run searches Google News once per company
+for its name **together with credit topics** (debt, rating, lenders, loan, bonds, default, court,
+NCLT, probe, penalty, results, CEO, CFO, resigns, auditor, pledge, plant, capacity, capex,
+acquisition, merger, order, impairment, insolvency), and also checks the week's collected news.
+A story counts only if its headline names the company, and only if it is about **what drives the
+borrower's credit quality**. Each story is labelled with its driver:
+
+| Driver | Examples |
+|---|---|
+| **Rating** | rating reaffirmed, upgraded or downgraded, outlook changed, CRISIL, ICRA, CARE, Fitch, Moody's, S&P |
+| **Debt & liquidity** | debt, lenders, loans, bonds, default, repayment, refinancing, fund raising, impairment, write-off |
+| **Legal & regulatory** | court, NCLT, insolvency, probe, penalty, tax demand, anti-dumping duty, licence, new rules |
+| **Management & governance** | CEO or CFO resigns or is appointed, auditor, pledge, related-party, governance |
+| **Results** | quarterly results, profit or loss, revenue, EBITDA, margins, guidance |
+| **Business & operations** | capacity, capex, plants, orders, acquisitions, shutdowns, production, demand, prices |
+
+**Market chatter is left out:** share-price moves, price targets, broker calls ("rated Hold", "buy
+calls", "stocks to watch"), live price pages, market cap, dividends, IPOs. A share-price headline
+stays only if it also carries one of the first four drivers ("Supreme Court upholds rejection…;
+stock falls 3%"). The section's first line says how many headlines were left out. A share-price
+fall alone no longer raises an amber flag. Within a company, stories are ordered by signal, then
+by driver (rating, debt, legal, management first), then newest first.
+
+Each company also gets an early-warning flag from its headlines:
 
 - **Red**: default or insolvency (NCLT, IBC, NPA, missed payment, OTS), rating downgrade or
   negative watch, fraud or enforcement (ED, CBI, SFIO, raids, money laundering).
@@ -208,6 +230,17 @@ line. The flags come from keywords, so read each story.
 and a one-line note for each (`"portfolio": [...]` in the ranking). The signal replaces the
 keyword flag.
 
+**Sector & economy watch.** For every sector named in `top 20.txt`, one search for the sector and
+its industry topics (demand, prices, imports, duty, capacity, outlook, margins, policy): a headline
+counts when the sector word sits next to an industry term ("Chinese steel imports", "cement
+demand", "steel ministry"), so "Mumbai man ports his policy" does not count for "ports". Up to 3
+per sector, widest coverage first, with the borrowers in that sector. Then **Economy**: India's
+GDP, inflation, interest rates, credit growth, the rupee and crude, up to 4, the same release from
+several outlets shown once. Both appear under the companies on the page, in Markdown, the
+console and Confluence, and on a "Sector & economy watch" slide after the portfolio slide.
+`"sectors": false` or `"economy": false` in `sources.json` switch them off; `per_sector` and
+`economy_max` set the counts. Nothing here goes to Gemini.
+
 **News that touches our book.** The same file also raises the week's news in the six blocks.
 Add the sectors you lend to after a company's names, for example
 `Example Steel Limited | Example Steel | sector: steel, power`. A story in the blocks that names
@@ -218,6 +251,10 @@ reach Gemini, and the boost shows in the impact line ("… · +2 our borrower").
 
 Use `--portfolio-file PATH` to read another file, or `--no-portfolio` to skip the section.
 `"portfolio"` in `sources.json` sets the file name and `per_company` (default 3).
+
+**Google News and dates:** in a search with brackets, Google honours the "last 7 days" limit only
+when it comes first, so the tool puts it there (without that, 25 of 26 results for one company
+were months old).
 
 ## Events & reports
 

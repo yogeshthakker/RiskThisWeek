@@ -10,7 +10,7 @@ web page for the weekly status meeting ("This week in risk"). The user runs it o
 ```bash
 pip install -r requirements.txt
 python risk_week.py --ai --open        # Gemini free tier; --open opens the web page
-python -m unittest test_risk_week      # 125 tests, no network or key needed
+python -m unittest test_risk_week      # 133 tests, no network or key needed
 ```
 
 Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
@@ -275,6 +275,40 @@ Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
      it. `--ai-check` (`ai_check()`): one tiny `_call` per model, no retries, then "Next --ai run
      starts with: …". The MCP Gemini factory uses the same file.
 
+16. **Credit drivers, not share prices** (user, 21 Nov 2026: "most of the stories are stocks or
+   market price specific. What we need is credit quality determinants based on news, economy,
+   sector, management"). Live check that day: the plain name search gave Vedanta 70 items, mostly
+   price pages and broker calls; `PF_NOISE` caught ~10%.
+   - **Search:** `Company.search_query` = names + `CREDIT_QUERY` (debt, rating, lenders, court,
+     results, CEO, auditor, plant, acquisition, impairment…). `google_news_url` puts `when:Nd`
+     **first** when the query has brackets: at the end Google ignored it (1 of 26 results in the
+     week for Adani Ports; 18 of 18 with it first). Plain queries keep it at the end.
+   - **Filter:** `credit_news(title)` = the first `CREDIT_DRIVERS` label (Rating, Debt &
+     liquidity, Legal & regulatory, Management & governance (strong); Results, Business &
+     operations), or "" when there is no driver, or when `MARKET_CHATTER` / `PF_NOISE` matches and
+     no strong driver does. Dropped headlines are counted per company (`Company.dropped`, shown in
+     `_pf_counts`: "74 share-price or non-credit headlines left out"). `Story.category` holds the
+     driver; `_pf_meta(s)` = "Debt & liquidity · Outlet, date" everywhere. Stories sort by signal,
+     then driver order, then newest. The amber EWS pattern no longer flags share-price falls.
+     `TestCreditDrivers` holds real headlines from that day, kept and dropped. Watch for substring
+     traps ("com**petition**" matched `petition`; now `\bpetition`).
+   - **Sector watch:** `scan_sectors()` (per sector in `top 20.txt`, `SECTOR_QUERY`, plus the
+     week's items): `sector_hit()` needs the sector word within one word of an industry term
+     (`_INDUSTRY` = `SECTOR_DRIVERS` + sector, industry, makers, ministry…); not chatter, not a link
+     already shown under a company; widest coverage first, `per_sector` (3). `SectorNews(name,
+     companies, stories)` in `Week/Result.sector_watch`.
+   - **Economy:** `scan_economy()` (`MACRO_QUERY` + the week's items; `MACRO` and `INDIA` in the
+     title, not `MACRO_NOISE`), `merge_same_story` plus "one indicator and one figure in common"
+     ("6.1%"), `economy_max` (4). `Result.economy`.
+   - Shown under the companies on the page (`.pfh` / `.pfs`), Markdown, console, Confluence, and
+     `_sector_slide` ("Sector & economy watch") after the portfolio slide. `sources.json`
+     `portfolio`: `sectors`, `per_sector`, `economy`, `economy_max`. Nothing here goes to Gemini;
+     GigaCode's portfolio prompt now asks for credit quality, not share price.
+   - Live run (21 Nov 2026, six public names): all six had credit news (Fitch affirms UltraTech
+     BBB-, S&P on Adani Ports' Evos cost, JSW Energy's APTEL win, Vedanta's Videocon ruling);
+     74 headlines left out. Known limits: a short alias ("Airtel") matches other firms; a sector
+     word with two meanings ("ports") can still let in a loose story.
+
 ## Decisions the user made
 
 - Focus on **impact for a foreign bank**, not routine penalties, co-op banks, microfinance,
@@ -300,6 +334,9 @@ Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
   `profile.bank` and `profile.guidance` from `sources.json` are sent; `cro_desk.txt` and
   `pending_items.txt` never are (`TestPrivacy` checks this).
 - Links must be clickable in every format.
+- **Credit portfolio watch is about credit quality** (21 Nov 2026): debt, ratings, results,
+  management, legal action, operations, the sector and the economy, never share prices or
+  broker calls.
 - The report (with CRO notes and pending items) is published to the user's Confluence page
   with history, one dated entry per run; the PAT stays in `Confluence PAT.txt` on their machine.
 - **The India test** (11 Nov 2026, after a UK detention/sanctions story became the story of

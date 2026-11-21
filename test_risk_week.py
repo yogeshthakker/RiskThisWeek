@@ -1183,12 +1183,13 @@ class TestPortfolio(unittest.TestCase):
             self.assertEqual(len(bharat.stories), 1)               # "bpl" is not "BPL"
             self.assertEqual(quiet.stories, [])
             self.assertEqual([c.name for c in rw.portfolio_order(res.portfolio)], ["Acme Steel Limited", "Bharat Power Ltd"])
-            self.assertEqual(rw._pf_counts(res.portfolio), "3 names · 2 with news · 1 red · 1 positive")
+            self.assertEqual(rw._pf_counts(res.portfolio),
+                             "3 names · 2 with news · 1 red · 1 positive · 1 share-price or non-credit headline left out")
             self.assertNotIn("https://pf/1", [s.lead.link for s in res.top])   # not in the six blocks
             md = rw.to_markdown(res)
             self.assertIn("## Credit portfolio watch", md)
             self.assertIn("**Red · Default / insolvency**", md)
-            self.assertIn("No news this week: Quiet Co", md)
+            self.assertIn("No credit news this week: Quiet Co", md)
             page = rw.to_html(res)
             self.assertIn('<li class="red">', page)
             self.assertIn("CREDIT PORTFOLIO WATCH", rw.to_console(res, {}))
@@ -2070,6 +2071,138 @@ class TestModelHealth(unittest.TestCase):
             rw.ai_check(self.provider())
         report, _ = rw.ai_check(self.provider())
         self.assertIn("Next --ai run starts with: gemini-3.5-flash-lite (gemini-3.8-flash skipped", report)
+
+
+class TestCreditDrivers(unittest.TestCase):
+    """Real headlines from the 21 Nov 2026 company searches (Vedanta, Tata Steel, Adani Ports)."""
+    KEPT = {
+        "ONGC takes charge of Cambay block as Vedanta records ₹379 crore impairment": "Debt & liquidity",
+        "India's Supreme Court Sends Vedanta's $358 Million Videocon Deal Back to Lenders": "Debt & liquidity",
+        "Setback for Vedanta as Supreme Court upholds rejection of Twin Star's Videocon plan; stock falls nearly 3%":
+            "Legal & regulatory",
+        "Adani Ports ADANIPORTS Credit Rating Reaffirmed AAA": "Rating",
+        "S&P says Adani Ports can absorb INR 27,000 crore Evos acquisition costs": "Rating",
+        "Tata Steel shares slide nearly 2% as EU anti-dumping duty and bearish technicals weigh": "Legal & regulatory",
+        "Vedanta Aluminium posts record Q2FY27 output, alumina up 37%": "Results",
+        "Tata Steel and Utility Global Join Forces for Hydrogen Production at Kalinganagar": "Business & operations",
+        "Tata Steel eyes 50 MT capacity, to direct 75% capex to India: TV Narendran": "Business & operations",
+        "Adani Ports to acquire 100% stake in Evos in €2.56 billion deal": "Business & operations",
+        "Chinese steel imports remain a threat to Indian industry, Tata Steel CEO says": "Business & operations",
+        "Acme Infra CFO resigns with immediate effect": "Management & governance",
+        "Finolex Cables maintains 12-12.5% margin outlook, expects competition from UltraTech to intensify": "Results",
+        "Fitch Affirms UltraTech Cement's BBB- Ratings, Maintains Stable Outlook": "Rating",
+        "UltraTech moves Supreme Court against BAI's role in CCI cement cartel probe": "Legal & regulatory",
+    }
+    DROPPED = [
+        "Vedanta Share Price - Live NSE: VEDL Stock Price & Chart",
+        "Vedanta shares fall over 3%, lead Nifty 100 losses as Citi cuts target price, flags zinc demand concerns",
+        "Vedanta Aluminium, Hindustan Zinc: All 6 Vedanta Group stocks slide as global metal prices tumble; here is why",
+        "Adani Ports & Special Economic Zone Ltd is Rated Hold",
+        "Top stock picks: Analysts recommend Adani Ports, HDFC Bank, Reliance, M&M and 2 more stocks",
+        "Billionaire Gautam Adani's group gets Jefferies buy calls",
+        "Adani Ports and Special Economic Zone (NSEI:ADANIPORTS) Stock Forecast & Analyst Predictions",
+        "Tata Steel Limited (TATASTEEL.NS) stock price, news, quote and history",
+        "Vedanta Group Grants Additional 10% Salary to Nearly One Lakh Employees",
+        "Vedanta Aluminium increases renewable energy use by 63% in FY26",
+        "Adani: the billionaire at the heart of Modi’s India",
+    ]
+
+    def test_credit_news_kept_with_its_driver(self):
+        for title, driver in self.KEPT.items():
+            self.assertEqual(rw.credit_news(title), driver, title)
+
+    def test_market_chatter_and_non_credit_news_dropped(self):
+        for title in self.DROPPED:
+            self.assertEqual(rw.credit_news(title), "", title)
+
+    def test_share_price_fall_is_not_an_amber_flag(self):
+        self.assertEqual(rw.ews_flags("Acme Steel shares fall 5% in weak market"), [])
+        self.assertEqual(rw.ews_flags("Acme Steel posts Q2 loss")[0][1], "amber")
+
+    def test_sector_word_must_sit_next_to_an_industry_term(self):
+        self.assertTrue(rw.sector_hit("Are Chinese steel imports a threat to India?", "steel"))
+        self.assertTrue(rw.sector_hit("India: NALCO cuts aluminium P1020 prices", "aluminium"))
+        self.assertTrue(rw.sector_hit("Infrastructure spending driving robust cement demand", "cement"))
+        self.assertFalse(rw.sector_hit("Mumbai man ports 26-year-old mediclaim policy", "ports"))
+        self.assertFalse(rw.sector_hit("Adani Cement Deploys Heavy-Duty Electric Trucks", "cement"))
+
+    def test_date_limit_first_when_the_query_has_brackets(self):
+        import urllib.parse
+        q = lambda url: urllib.parse.parse_qs(urllib.parse.urlparse(url).query)["q"][0]  # noqa: E731
+        self.assertTrue(q(rw.google_news_url('("Acme") (debt OR rating)', 7)).startswith("when:7d "))
+        self.assertTrue(q(rw.google_news_url("bank risk", 7)).endswith(" when:7d"))
+
+    def test_search_asks_for_credit_topics(self):
+        c = rw.Company("Acme Steel Limited", ["ASL"])
+        self.assertTrue(c.search_query.startswith('("Acme Steel" OR "ASL") ('))
+        self.assertIn("lenders", c.search_query)
+
+
+SW_NEWS = {
+    "steel": rss(
+        ("Steel prices fall as Chinese imports surge", "https://sw/1", "", "Wed, 04 Nov 2026 08:00:00 GMT", "ET"),
+        ("Steel stocks to watch as Nifty Metal rises", "https://sw/2", "", "Wed, 04 Nov 2026 08:00:00 GMT", "ET"),
+        ("Steel ministry plans safeguard duty on imports", "https://sw/3", "", "Tue, 03 Nov 2026 08:00:00 GMT", "BS")),
+    "economy": rss(
+        ("India's CPI inflation rises to 6.1% in October", "https://ec/1", "", "Wed, 04 Nov 2026 08:00:00 GMT", "Mint"),
+        ("India inflation climbs to 6.1%, above RBI band", "https://ec/2", "", "Wed, 04 Nov 2026 09:00:00 GMT", "ET"),
+        ("Sensex, Nifty fall as inflation worries weigh", "https://ec/3", "", "Wed, 04 Nov 2026 09:00:00 GMT", "ET"),
+        ("US inflation cools in October", "https://ec/4", "", "Wed, 04 Nov 2026 09:00:00 GMT", "Reuters")),
+}
+
+
+def sw_fetcher(url):
+    import urllib.parse
+    if url.startswith("https://news.google.com/"):
+        q = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)["q"][0]
+        if '"steel"' in q:
+            return SW_NEWS["steel"]
+        if "GDP" in q:
+            return SW_NEWS["economy"]
+    return pf_fetcher(url)
+
+
+class TestSectorAndEconomy(unittest.TestCase):
+    def run_it(self, d, provider=None):
+        f = pathlib.Path(d) / "top 20.txt"
+        f.write_text("Acme Steel Limited | sector: steel\nBharat Power Ltd | BPL\n", encoding="utf-8")
+        return rw.run(top=3, sources=dict(SOURCES, portfolio={"file": str(f)}), fetcher=sw_fetcher, now=NOW,
+                      provider=provider, deep_dive=False)
+
+    def test_sector_and_economy_found_and_shown(self):
+        with tempfile.TemporaryDirectory() as d:
+            res = self.run_it(d)
+            (steel,) = res.sector_watch
+            self.assertEqual((steel.name, steel.companies), ("steel", ["Acme Steel"]))
+            self.assertEqual({s.lead.link for s in steel.stories}, {"https://sw/1", "https://sw/3"})  # no stock tip
+            self.assertEqual(len(res.economy), 1)                     # two outlets, one story; no Sensex, no US
+            self.assertEqual(len(res.economy[0].items), 2)
+            md = rw.to_markdown(res)
+            self.assertIn("**Sector: steel** (Acme Steel)", md)
+            self.assertIn("**Economy**", md)
+            self.assertIn("Debt & liquidity · BS, 04 Nov", md)          # the driver on a borrower's story
+            self.assertIn("Sector: steel", rw.to_html(res))
+            self.assertIn("  Economy", rw.to_console(res, {}))
+            body = rw.to_confluence(res)
+            import xml.etree.ElementTree as ET
+            ET.fromstring('<r xmlns:ac="a" xmlns:ri="b">' + body + "</r>")
+            self.assertIn("<strong>Sector: steel</strong>", body)
+            try:
+                from pptx import Presentation
+            except ImportError:
+                return
+            files = rw.write(res, d)
+            titles = [sh.text_frame.text for sl in Presentation(files["pptx"]).slides for sh in sl.shapes
+                      if sh.has_text_frame and sh.text_frame.text.startswith("Sector & economy watch")]
+            self.assertEqual(len(titles), 1)
+
+    def test_never_sent_to_the_ai(self):
+        ai = TitleAI([("RBI issues draft", "Compliance risk", CHK(3, 2, 2, 2))])
+        with tempfile.TemporaryDirectory() as d:
+            self.run_it(d, provider=ai)
+        for text in ai.sent:
+            for secret in ("Steel prices fall as Chinese", "safeguard duty", "Acme Steel", "CPI inflation rises"):
+                self.assertNotIn(secret, text)
 
 
 if __name__ == "__main__":
