@@ -1911,6 +1911,71 @@ class TestChecklist(unittest.TestCase):
         self.assertEqual(rw.impact_label(st.as_dict()), "Impact 7/10")
 
 
+class TestPortfolioOnly(unittest.TestCase):
+    def test_only_the_searches_run_and_two_files_are_written(self):
+        asked = []
+
+        def spy(url):
+            asked.append(url)
+            return sw_fetcher(url)
+
+        with tempfile.TemporaryDirectory() as d:
+            f = pathlib.Path(d) / "top 20.txt"
+            f.write_text("Acme Steel Limited | sector: steel\nBharat Power Ltd | BPL\nQuiet Co\n", encoding="utf-8")
+            res = rw.run_portfolio(sources=dict(SOURCES, portfolio={"file": str(f)}), fetcher=spy, now=NOW)
+            self.assertTrue(asked and all(u.startswith("https://news.google.com/") for u in asked))  # no feeds
+            self.assertEqual(len(asked), 3 + 1 + 1)               # 3 companies, 1 sector, the economy
+            self.assertEqual((res.top, res.ai), ([], "portfolio only"))
+            self.assertEqual([c.name for c in rw.portfolio_order(res.portfolio)], ["Acme Steel Limited", "Bharat Power Ltd"])
+            self.assertEqual(res.sector_watch[0].name, "steel")
+            files = rw.write_portfolio(res, d)
+            self.assertTrue(files["html"].endswith("-portfolio.html") and files["markdown"].endswith("-portfolio.md"))
+            page = pathlib.Path(files["html"]).read_text(encoding="utf-8")
+            self.assertIn('<section class="panel pending pf">', page)
+            self.assertIn("Sector: steel", page)
+            self.assertIn("Debt &amp; liquidity", page)
+            md = pathlib.Path(files["markdown"]).read_text(encoding="utf-8")
+            self.assertIn("| Acme Steel Limited | **Red · Default / insolvency** |", md)
+            self.assertIn("CREDIT PORTFOLIO WATCH", "\n".join(rw._portfolio_console(res)))
+
+    def test_missing_file_is_reported(self):
+        with tempfile.TemporaryDirectory() as d:
+            res = rw.run_portfolio(sources=dict(SOURCES, portfolio={"file": str(pathlib.Path(d) / "none.txt")}),
+                                   fetcher=sw_fetcher, now=NOW)
+        self.assertEqual(res.portfolio, [])
+        self.assertTrue(any("No borrowers loaded" in x for x in res.errors))
+
+    def test_full_report_unchanged(self):
+        with tempfile.TemporaryDirectory() as d:
+            f = pathlib.Path(d) / "top 20.txt"
+            f.write_text("Acme Steel Limited | sector: steel\n", encoding="utf-8")
+            res = rw.run(top=3, sources=dict(SOURCES, portfolio={"file": str(f)}), fetcher=sw_fetcher, now=NOW)
+        md = rw.to_markdown(res)
+        self.assertIn("## Credit portfolio watch", md)
+        self.assertIn("**Sector: steel** (Acme Steel)", md)
+        self.assertIn("## Credit risk", md)                       # the six blocks are still there
+
+
+class TestCalibration(unittest.TestCase):
+    def test_prompt_has_anchors_and_a_cap_on_top_scores(self):
+        ai = TitleAI([("RBI issues draft", "Compliance risk", CHK(3, 2, 2, 2))])
+        rw.run(top=3, sources=SOURCES, fetcher=fetcher, now=NOW, provider=ai, deep_dive=False)
+        p = ai.sent[0]
+        self.assertIn("another bank's own results or outlook, or a data release", p)   # business 1
+        self.assertIn(f"Score 9 or 10 for at most {rw.TOP_SCORES} stories", p)
+        self.assertIn("most picks should land between 5 and 7", p)
+
+    def test_spread_logged(self):
+        ai = TitleAI([("RBI issues draft", "Compliance risk", CHK(3, 3, 2, 2)),
+                      ("Major private bank", "Cyber security risk", CHK(3, 1, 1, 1))])
+        res = rw.run(top=3, sources=SOURCES, fetcher=fetcher, now=NOW, provider=ai, deep_dive=False)
+        spread = next(e for e in res.ai_log if e.get("request") == "rank")["score_spread"]
+        self.assertEqual(spread["impacts"], {"10": 1, "6": 1})
+        self.assertEqual(spread["high"], 1)
+        self.assertEqual(spread["at_top"]["India"], 2)
+        self.assertEqual(list(spread["impacts"]), ["10", "6"])          # highest first
+
+
 class TestNewsDeadlines(unittest.TestCase):
     def story(self, title, summary=""):
         return rw.Story([rw.Item(title, "https://x/1", "RBI", NOW, summary)], "Compliance risk", 1.0)
@@ -2114,6 +2179,23 @@ class TestCreditDrivers(unittest.TestCase):
         "Dixon Technologies (india) Stock Price Forecast. Should You Buy DIXON.NS?",
         "Dixon Technologies down 3.56% on Wednesday after Q2 profit dips",   # a price move, not results news
     ]
+
+    def test_price_moves_without_the_word_shares(self):
+        amber = re.compile(r"Amber Enterprises", re.I)
+        emerald = re.compile(r"Emerald Tyre", re.I)
+        self.assertTrue(rw.price_move("Amber Enterprises Falls 7% Despite Strong Electronics Growth", amber))
+        self.assertTrue(rw.price_move("Day after 9% surge Amber Enterprises dips 8%; analysts flag margin worries", amber))
+        self.assertFalse(rw.price_move("Emerald Tyre H1 profit fell 74% as costs rose faster than income", emerald))
+        self.assertFalse(rw.price_move("Amber Enterprises Q2 revenue jumps 60%", amber))
+
+    def test_daily_gold_rate_pages_are_chatter(self):
+        self.assertTrue(rw.MARKET_CHATTER.search("Gold price in India: Rates on November 19"))
+        self.assertTrue(rw.MARKET_CHATTER.search("Gold prices fall in India today, FXStreet data show"))
+        self.assertFalse(rw.MARKET_CHATTER.search("Gold price correction may support jewellery demand: WGC"))
+
+    def test_foreign_sector_news_needs_india(self):
+        self.assertTrue(rw.ABROAD.search("Arabian Pipes Signs Steel Pipe Contract with Saudi Aramco"))
+        self.assertTrue(rw.INDIA.search("Swiss chemical export growth highlights opportunities for India’s chemical sector"))
 
     def test_stock_tip_sites_skipped(self):
         self.assertTrue(rw.stock_site("MarketsMojo"))

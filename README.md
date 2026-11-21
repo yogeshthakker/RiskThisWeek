@@ -208,8 +208,10 @@ borrower's credit quality**. Each story is labelled with its driver:
 
 **Market chatter is left out:** share-price moves, price targets, broker calls ("rated Hold", "buy
 calls", "stocks to watch"), live price pages, market cap, dividends, IPOs, and anything from
-stock-tip sites (MarketsMojo, Kalkine, StockInvest.us, Simply Wall St, Trendlyne and similar; add
-more under `"skip_publishers"` in `sources.json`). A share-price headline
+stock-tip sites (MarketsMojo, Kalkine, StockInvest.us, Simply Wall St, Trendlyne, openPR,
+FXStreet and similar; add more under `"skip_publishers"` in `sources.json`). A share-price move
+without the word "shares" ("Amber Enterprises falls 7%") counts as chatter too, but "profit fell
+74%" stays: a business figure between the name and the percentage makes it results news. A share-price headline
 stays only if it also carries one of the first four drivers ("Supreme Court upholds rejection…;
 stock falls 3%"). The section's first line says how many headlines were left out. A share-price
 fall alone no longer raises an amber flag. Within a company, stories are ordered by signal, then
@@ -250,6 +252,11 @@ one of your borrowers gets **+2** on its AI impact (and is tagged "Our borrower:
 mentions a borrower's sector gets **+1** ("Our sector: steel"). Without AI, the keyword score
 is raised instead. This happens on your computer after the AI has ranked, so the names never
 reach Gemini, and the boost shows in the impact line ("… · +2 our borrower").
+
+**Just the portfolio:** `python risk_week.py --portfolio-only --open` runs only this section: the
+company, sector and economy searches, no news feeds, no AI, no Confluence and no pending-items
+questions. It takes under a minute (17 seconds for 30 names) and writes
+`output/risk-week-<date>-portfolio.html` and `.md`.
 
 Use `--portfolio-file PATH` to read another file, or `--no-portfolio` to skip the section.
 `"portfolio"` in `sources.json` sets the file name and `per_company` (default 3).
@@ -307,7 +314,10 @@ first and without any keyword scores, and judges them itself. It scores each pic
 | Action | 0–2 | Must we act, or does a deadline apply to us? |
 | Size | 0–2 | One small firm, one large firm or segment, or the whole sector or market? |
 
-The page shows the breakdown: "Impact 8/10 (India 3 · Business 2 · Action 2 · Size 1)". A story
+The page shows the breakdown: "Impact 8/10 (India 3 · Business 2 · Action 2 · Size 1)". The AI is
+told to be strict: a rule for other kinds of firms, another bank's results or a data release is
+Business 1; most picks should score 5–7, and only one or two stories a week 9–10. The spread of
+scores is saved in `ai-reply.json` (`score_spread`). A story
 scoring **India 0** counts at most 4, so the safety net drops it: the India test is built into
 the score. The AI also gives the block each pick belongs in, the 3 highest-impact items per
 block, "also on the radar", and the story of the week with its action point.
@@ -544,6 +554,7 @@ prefer `CA_BUNDLE` pointing at the bank's root certificate.
 | `--pending-file FILE` | `pending_items.txt` | Pending items: `Item \| Owner \| Due \| Status` per line |
 | `--no-prompt` | off | Don't ask for pending-item updates at the start |
 | `--ai-check` | off | Only check which Gemini models answer (one tiny request each) |
+| `--portfolio-only` | off | Only the credit portfolio watch: no news feeds, no AI, no Confluence |
 | `--confluence-check` | off | Only check the Confluence settings (reads the page; changes nothing) |
 | `--no-confluence` | off | Don't publish to Confluence on this run |
 | `--confluence-dry-run` | off | Write the Confluence page content to a file instead of uploading |
