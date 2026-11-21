@@ -3267,34 +3267,37 @@ def to_confluence(res: Result) -> str:
            f"<p><em>{e(_title(res))} · Indian banking risk management, {res.start.strftime('%d %b')} – "
            f"{res.end.strftime('%d %b %Y')} · {res.collected} items read, {res.kept} relevant · "
            f"ranked by: {e(res.ai)}</em></p>"]
+    # Single CRO deep-dive panel: story of the week + notes + deep dive sections + actions + sources
     box = cro_box(res)
-    if box:
+    has_cro = box and (box["focus"] or box["notes"])
+    if has_cro or res.deep_dive:
+        title = "CRO deep dive" if res.deep_dive else CRO_TITLE
         body = ""
-        if box["focus"]:
-            f = box["focus"]
-            body += (f"<p><strong>★ {e(STORY_LABEL)}</strong> · {e(f['block'])}</p>"
-                     f"<p><strong>{a(f['link'], f['headline'])}</strong><br/><em>{e(f['meta'])}</em></p>"
-                     + (f"<p>{e(f['why'])}</p>" if f["why"] else "")
-                     + (f"<p><strong>Action point:</strong> {e(f['action'])}</p>" if f["action"] else ""))
-        if box["notes"]:
+        # -- story of the week (and notes) --
+        focus = box["focus"] if box else None
+        if focus:
+            body += (f"<p><strong>★ {e(STORY_LABEL)}</strong> · {e(focus['block'])}</p>"
+                     f"<p><strong>{a(focus['link'], focus['headline'])}</strong><br/><em>{e(focus['meta'])}</em></p>"
+                     + (f"<p>{e(focus['why'])}</p>" if focus["why"] else "")
+                     + (f"<p><strong>Action point:</strong> {e(focus['action'])}</p>" if focus["action"] else ""))
+        if box and box["notes"]:
             body += "<p><strong>Notes</strong></p><ul>" + "".join(f"<li>{e(n)}</li>" for n in box["notes"]) + "</ul>"
-        out.append(_macro("info", body, title=CRO_TITLE))
-    if res.deep_dive:
-        dd, d = res.deep_dive, res.deep_dive.story.as_dict()
-        body = (f"<p><strong>★ {e(DD_TITLE)}</strong></p>"
-                f"<p><strong>{a(d['link'], d['headline'])}</strong><br/><em>{e(d['source'])} · {e(d['date'])}</em></p>"
-                + (f"<p><em>{e(dd.note)}</em></p>" if dd.note else ""))
-        for label, text in deep_dive_sections(dd):
-            body += f"<p><strong>{e(label)}:</strong> {e(text)}</p>"
-        acts = dd.fields.get("recommended_actions") or []
-        if acts:
-            body += ("<p><strong>Recommended actions</strong></p><ul>"
-                     + "".join(f"<li>{e(x)}</li>" for x in acts) + "</ul>")
-        if dd.articles:
-            body += ("<p><em>Sources consulted: "
-                     + "; ".join(a(x["link"], _clean(x["title"], 70)) for x in dd.articles if x.get("link"))
-                     + "</em></p>")
-        out.append(_macro("info", body, title=f"{DD_TITLE} · {_clean(d['headline'], 60)}"))
+        # -- deep dive sections --
+        if res.deep_dive:
+            dd, d = res.deep_dive, res.deep_dive.story.as_dict()
+            body += (f"<p><strong>{a(d['link'], d['headline'])}</strong><br/><em>{e(d['source'])} · {e(d['date'])}</em></p>"
+                     + (f"<p><em>{e(dd.note)}</em></p>" if dd.note else ""))
+            for label, text in deep_dive_sections(dd):
+                body += f"<p><strong>{e(label)}:</strong> {e(text)}</p>"
+            acts = dd.fields.get("recommended_actions") or []
+            if acts:
+                body += ("<p><strong>Recommended actions</strong></p><ul>"
+                         + "".join(f"<li>{e(x)}</li>" for x in acts) + "</ul>")
+            if dd.articles:
+                body += ("<p><em>Sources consulted: "
+                         + "; ".join(a(x["link"], _clean(x["title"], 70)) for x in dd.articles if x.get("link"))
+                         + "</em></p>")
+        out.append(_macro("info", body, title=title))
 
     def cell(block: str, stories: list[Story]) -> str:
         if not stories:
