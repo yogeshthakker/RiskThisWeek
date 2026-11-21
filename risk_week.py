@@ -4738,7 +4738,10 @@ MCP_TOOLS = [
      "inputSchema": {"type": "object", "properties": {
          "days": {"type": "integer", "description": "Period in days (default 7)"},
          "per_block": {"type": "integer", "description": "Items per block (default 3)"},
-         "page_size": {"type": "integer", "description": f"Candidates per page (default {MCP_PAGE})"}}}},
+         "page_size": {"type": "integer", "description": f"Candidates per page (default {MCP_PAGE})"},
+         "batch": {"type": "string", "description": "A batch code the user was given by `python risk_week.py` "
+                   "(they chose GigaCode at the start of a run): returns that prepared list instead of "
+                   "collecting the news again"}}}},
     {"name": "risk_week_candidates",
      "description": "Step 1b. Returns one more page of the candidates from risk_week_prepare (the list is "
                     "split into pages so no reply is too long to read). Call it for every page that "
@@ -4911,18 +4914,35 @@ class McpServer:
 
     # --- tools ------------------------------------------------------------
     def prepare(self, args: dict) -> str:
+        batch = str(args.get("batch") or "").strip()
+        if batch:                     # prepared by `python risk_week.py`, where the user chose GigaCode
+            if getattr(self, "batch", None) != batch and not self._load(batch):
+                return (f"Batch {batch} was not found (it may have been replaced by a later run). Call "
+                        f"risk_week_prepare without a batch to collect this week's news again.", True)
+            return self._prepare_reply()
         days = int(args.get("days") or 7)
         self.top = max(1, int(args.get("per_block") or 3))
         self.page = max(2, int(args.get("page_size") or MCP_PAGE))
-        self.week = prepare_week(days, self.sources, self.fetcher, self.now,
-                                 lambda m: print(m, file=sys.stderr))
-        self.pool = self.week.pool()
-        if not self.pool:
+        week = prepare_week(days, self.sources, self.fetcher, self.now, lambda m: print(m, file=sys.stderr))
+        if not self.adopt(week, self.top):
             return "No candidate stories this week (all feeds empty or unreachable).", True
+        return self._prepare_reply()
+
+    def adopt(self, week: "Week", top: int = 3) -> str:
+        """Take a prepared week as the current batch and save it, so GigaCode can rank it from any server
+        process. Returns the batch code ('' when the week has no candidates)."""
+        self.week, self.top = week, max(1, int(top))
+        self.page = getattr(self, "page", MCP_PAGE) or MCP_PAGE
+        self.pool = week.pool()
+        if not self.pool:
+            return ""
         import hashlib
         self.batch = hashlib.sha1("\n".join(s.lead.link or s.lead.title for s in self.pool)
                                   .encode("utf-8")).hexdigest()[:8]
         self._save()
+        return self.batch
+
+    def _prepare_reply(self) -> str:
         prof = self.week.profile
         intro = ranking_prompt(self.pool, self.top, prof.bank, list(prof.topics),
                                deep_dive=True).split("\n\nCandidates:\n")[0]
@@ -5102,6 +5122,89 @@ class McpServer:
         return confluence_check(a)
 
 
+RANKERS = ("gemini", "gigacode", "keywords")
+RANKER_TIMEOUT = 30      # seconds to answer the "Gemini or GigaCode?" question (user, 21 Nov 2026)
+
+
+def ask_with_timeout(prompt: str, timeout: float = RANKER_TIMEOUT, out=None, stdin=None) -> str | None:
+    """Ask on the console and wait at most `timeout` seconds. Returns the typed line, or None when
+    nothing was typed in time. Windows consoles are read key by key (msvcrt); others with select."""
+    out = out or sys.stderr
+    stdin = stdin or sys.stdin
+    out.write(prompt)
+    out.flush()
+    import time
+    if os.name == "nt" and stdin is sys.stdin:
+        import msvcrt
+        end, buf = time.time() + timeout, ""
+        while time.time() < end:
+            if msvcrt.kbhit():
+                ch = msvcrt.getwche()
+                if ch in "\r\n":
+                    out.write("\n")
+                    return buf.strip()
+                if ch == "\b":
+                    buf = buf[:-1]
+                elif ch.isprintable():
+                    buf += ch
+            else:
+                time.sleep(0.05)
+        out.write("\n")
+        return None
+    import select
+    ready, _, _ = select.select([stdin], [], [], timeout)
+    if not ready:
+        out.write("\n")
+        return None
+    return stdin.readline().strip()
+
+
+def parse_ranker(answer: str | None) -> str:
+    """'' or no answer -> gemini (the first choice); 2 / c / g... -> gigacode; 3 / k -> keywords."""
+    a = (answer or "").strip().lower()
+    if a in ("2", "c", "gc", "giga") or a.startswith("gigacode") or a.startswith("giga"):
+        return "gigacode"
+    if a in ("3", "k", "n", "no", "none", "keywords", "keyword", "off"):
+        return "keywords"
+    return "gemini"
+
+
+def choose_ranker(a, interactive: bool, ask: Callable[[str], str | None] = ask_with_timeout) -> str:
+    """Who ranks this run: --ranker or --ai decide; otherwise ask (Gemini after RANKER_TIMEOUT s);
+    otherwise Gemini, the first choice."""
+    if getattr(a, "ranker", None):
+        return a.ranker
+    if getattr(a, "ai", False):
+        return "gemini"
+    if not interactive:
+        return "gemini"
+    answer = ask(f"Rank this week's news with  [1] Gemini (default)  [2] GigaCode  [3] keywords only?  "
+                 f"Gemini in {RANKER_TIMEOUT} s: ")
+    choice = parse_ranker(answer)
+    print(f"[risk-week] ranking with {choice}" + (" (no answer in time)" if answer is None else ""),
+          file=sys.stderr)
+    return choice
+
+
+def gigacode_handover(week: "Week", top: int, out_dir: Path) -> str:
+    """Save the prepared week as an MCP batch and say what to ask GigaCode. GigaCode then ranks it with
+    risk_week_prepare(batch) / risk_week_candidates / risk_week_publish, which write the report."""
+    batch = McpServer(out_dir=out_dir).adopt(week, top)
+    if not batch:
+        return "No candidate stories this week (all feeds empty or unreachable): nothing to hand to GigaCode."
+    pages = -(-len(week.pool()) // MCP_PAGE)
+    return ("\n".join([
+        f"Prepared for GigaCode: batch {batch} ({len(week.pool())} candidate stories, {pages} pages).",
+        "In GigaCode chat, ask:",
+        "",
+        f'  Use the risk-week tools: call risk_week_prepare with batch "{batch}", read every page with '
+        f"risk_week_candidates, rank them as instructed, then call risk_week_publish.",
+        "",
+        "GigaCode writes the report (page, slides, Confluence) when it publishes. The batch stays valid until "
+        "the next run prepares a new one.",
+    ]))
+
+
 def safe_console(*streams) -> None:
     """Never crash on a character the console cannot show (e.g. '₹' in a Windows console set
     to a Russian or Western code page): print '?' for it instead."""
@@ -5157,6 +5260,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--no-deep-dive", action="store_true",
                    help="skip the CRO deep dive on the story of the week (the extra fetch and AI call; "
                         "it runs whenever AI ranks)")
+    p.add_argument("--ranker", choices=list(RANKERS),
+                   help="who ranks: gemini (default), gigacode (hand the list to GigaCode via MCP) or keywords; "
+                        "without it an interactive run asks, and takes Gemini after 30 s")
     p.add_argument("--portfolio-only", action="store_true",
                    help="only the credit portfolio watch (top 20.txt): no news feeds, no AI, no Confluence")
     p.add_argument("--ai-check", action="store_true",
@@ -5200,13 +5306,27 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if ok else 1
 
     load_dotenv(Path(__file__).resolve().parent / ".env", Path.cwd() / ".env")
+    interactive = not a.no_prompt and sys.stdin.isatty()
+    ranker = choose_ranker(a, interactive)
     pending_path = Path(a.pending_file)
-    if not a.no_prompt and sys.stdin.isatty():
+    if interactive:
         pending = review_pending(pending_path)     # before the news, so updates are not a wait
     else:
         pending = load_pending(pending_path)
+    if ranker == "gigacode":
+        sources = load_sources(a.sources)
+        if a.no_portfolio:
+            sources.pop("portfolio", None)
+        elif a.portfolio_file:
+            sources["portfolio"] = dict(sources.get("portfolio") or {}, file=str(Path(a.portfolio_file).resolve()))
+        print("Reading sources (GigaCode will rank them):", file=sys.stderr)
+        week = prepare_week(a.days, sources, log=lambda m: print(m, file=sys.stderr))
+        mcp_out = (Path(a.out_dir) if a.out_dir != str(DEFAULT_OUT) else
+                   Path(__file__).resolve().parent / DEFAULT_OUT)   # where the MCP server looks
+        print(gigacode_handover(week, a.top, mcp_out))
+        return 0
     provider = None
-    if a.ai:
+    if ranker == "gemini":
         try:
             provider = (GeminiProvider(a.model, health=Path(a.out_dir) / HEALTH_FILE) if a.provider == "gemini"
                         else ClaudeProvider(a.model))

@@ -438,6 +438,28 @@ To use Claude instead: set `ANTHROPIC_API_KEY`, `pip install anthropic`, and run
 `python risk_week.py --ai --provider claude` (default model `claude-opus-5-5`).
 Change either model with `--model` or `RISK_WEEK_MODEL`.
 
+## Who ranks: Gemini or GigaCode
+
+A run started by hand asks first:
+
+```
+Rank this week's news with  [1] Gemini (default)  [2] GigaCode  [3] keywords only?  Gemini in 30 s:
+```
+
+Press Enter, type 1, or wait 30 seconds for **Gemini** (the first choice). Type **2** for
+**GigaCode**: the tool collects and filters the week's news, saves the list under a batch code and
+prints the line to paste into GigaCode chat, for example:
+
+```
+Use the risk-week tools: call risk_week_prepare with batch "3f9a1c2e", read every page with
+risk_week_candidates, rank them as instructed, then call risk_week_publish.
+```
+
+GigaCode then ranks the list and writes the report (page, slides, Confluence) when it publishes,
+without collecting the news again. Type **3** for the keyword ranking alone. To skip the question
+(for example in a scheduled run), pass `--ranker gemini`, `--ranker gigacode` or `--ranker keywords`;
+`--ai` still means Gemini. A run with no one at the keyboard uses Gemini.
+
 ## Using GigaCode instead of Gemini (MCP)
 
 GigaCode can rank the news with its own model, so no Google key is needed and the news stays
@@ -544,7 +566,8 @@ prefer `CA_BUNDLE` pointing at the bank's root certificate.
 | `--top N` | 3 | Items per block |
 | `--out-dir DIR` | `output` | Where the files go |
 | `--sources FILE` | `sources.json` | A different source list |
-| `--ai` | off | An AI picks and explains the items |
+| `--ai` | off | Gemini (or `--provider claude`) ranks; skips the question below |
+| `--ranker NAME` | asked | `gemini`, `gigacode` or `keywords`; skips the 30-second question |
 | `--provider` | `gemini` | `gemini` (free tier) or `claude` |
 | `--no-deep-dive` | off | Skip the CRO deep dive on the story of the week (runs whenever AI ranks) |
 | `--json` | off | Also print the items as JSON |

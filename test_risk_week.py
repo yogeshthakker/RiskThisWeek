@@ -1956,6 +1956,82 @@ class TestPortfolioOnly(unittest.TestCase):
         self.assertIn("## Credit risk", md)                       # the six blocks are still there
 
 
+class TestRankerChoice(unittest.TestCase):
+    """The question at the start of a run: Gemini (default after 30 s), GigaCode or keywords."""
+
+    def args(self, **kw):
+        import types
+        return types.SimpleNamespace(ranker=kw.get("ranker"), ai=kw.get("ai", False))
+
+    def test_answers(self):
+        for answer, want in [(None, "gemini"), ("", "gemini"), ("1", "gemini"), ("g", "gemini"),
+                             ("2", "gigacode"), ("GigaCode", "gigacode"), ("giga", "gigacode"),
+                             ("3", "keywords"), ("k", "keywords"), ("what?", "gemini")]:
+            self.assertEqual(rw.parse_ranker(answer), want, answer)
+
+    def test_who_decides(self):
+        never = lambda prompt: self.fail("should not ask")  # noqa: E731
+        self.assertEqual(rw.choose_ranker(self.args(ranker="gigacode"), True, never), "gigacode")
+        self.assertEqual(rw.choose_ranker(self.args(ai=True), True, never), "gemini")
+        self.assertEqual(rw.choose_ranker(self.args(), False, never), "gemini")     # no one to ask
+        asked = []
+        self.assertEqual(rw.choose_ranker(self.args(), True, lambda p: asked.append(p) or "2"), "gigacode")
+        self.assertIn("Gemini in 30 s", asked[0])
+        self.assertEqual(rw.choose_ranker(self.args(), True, lambda p: None), "gemini")  # timed out
+
+    @unittest.skipIf(os.name == "nt", "select() on pipes is POSIX only; Windows reads the console key by key")
+    def test_timeout_and_answer(self):
+        r, w = os.pipe()
+        with os.fdopen(r) as rf, os.fdopen(w, "w") as wf:
+            out = io.StringIO()
+            self.assertIsNone(rw.ask_with_timeout("Q? ", 0.1, out=out, stdin=rf))      # nothing typed
+            self.assertEqual(out.getvalue(), "Q? \n")
+            wf.write("2\n")
+            wf.flush()
+            self.assertEqual(rw.ask_with_timeout("Q? ", 1, out=io.StringIO(), stdin=rf), "2")
+
+
+class TestGigaCodeHandover(unittest.TestCase):
+    def test_cli_prepares_and_gigacode_ranks_the_same_batch(self):
+        with tempfile.TemporaryDirectory() as d:
+            base = pathlib.Path(d)
+            week = rw.prepare_week(7, SOURCES, fetcher, NOW)
+            text = rw.gigacode_handover(week, 3, base / "out")
+            batch = re.search(r"batch ([0-9a-f]{8})", text).group(1)
+            self.assertIn(f'call risk_week_prepare with batch "{batch}"', text)
+
+            def no_feeds(url):
+                raise AssertionError(f"the news must not be collected again: {url}")
+
+            srv = rw.McpServer(fetcher=no_feeds, sources=SOURCES, now=NOW, out_dir=base / "out", base_dir=base)
+            call = lambda name, args: srv.handle({"jsonrpc": "2.0", "id": 1, "method": "tools/call",  # noqa: E731
+                                                  "params": {"name": name, "arguments": args}})["result"]
+            got = call("risk_week_prepare", {"batch": batch})
+            reply = got["content"][0]["text"]
+            self.assertFalse(got["isError"])
+            self.assertTrue(reply.startswith(f"Batch: {batch}"))
+            self.assertIn("The India test", reply)
+            lines = {int(l[1:l.index("]")]): l for l in reply.split("Candidates:\n")[1].splitlines()
+                     if l.startswith("[")}
+            ecl = next(k for k, v in lines.items() if "expected credit loss" in v)
+            ranking = {"items": [{"id": ecl, "category": "Compliance risk", "headline": "ECL draft",
+                                  "checks": {"india": 3, "business": 3, "action": 2, "size": 2},
+                                  "why_it_matters": "Provisioning changes for us."}],
+                       "radar": [], "cro_focus": {"id": ecl, "message": "Ask Finance to size the ECL impact."}}
+            done = call("risk_week_publish", {"batch": batch, "ranking": ranking, "publish": False})
+            self.assertFalse(done["isError"], done["content"][0]["text"])
+            self.assertIn("story of the week: ECL draft", done["content"][0]["text"])
+            self.assertTrue(list((base / "out").glob("risk-week-*.html")))
+
+    def test_unknown_batch(self):
+        with tempfile.TemporaryDirectory() as d:
+            srv = rw.McpServer(fetcher=fetcher, sources=SOURCES, now=NOW, out_dir=pathlib.Path(d))
+            got = srv.handle({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                              "params": {"name": "risk_week_prepare", "arguments": {"batch": "deadbeef"}}})["result"]
+            self.assertTrue(got["isError"])
+            self.assertIn("was not found", got["content"][0]["text"])
+
+
 class TestCalibration(unittest.TestCase):
     def test_prompt_has_anchors_and_a_cap_on_top_scores(self):
         ai = TitleAI([("RBI issues draft", "Compliance risk", CHK(3, 2, 2, 2))])
