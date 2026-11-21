@@ -10,7 +10,7 @@ web page for the weekly status meeting ("This week in risk"). The user runs it o
 ```bash
 pip install -r requirements.txt
 python risk_week.py --ai --open        # Gemini free tier; --open opens the web page
-python -m unittest test_risk_week      # 134 tests, no network or key needed
+python -m unittest test_risk_week      # 136 tests, no network or key needed
 ```
 
 Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
@@ -252,6 +252,12 @@ Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
      Markdown, console and Confluence (the slide keeps it short). A reply with only `impact`
      (an older GigaCode prompt) still works. `AI_SCHEMA` requires `checks`; the MCP example
      reply shows them.
+     **Calibration** (21 Nov 2026, after the first real run: Gemini 3.5 Flash-Lite gave India 3 to
+     all 16 picks and Business 3 to 10; 11 of 16 scored 9–10). The prompt now anchors each level
+     (business 1 = a rule for other kinds of firms, another bank's own results or outlook, a data
+     release) and says most picks land at 5–7, 9–10 for at most `TOP_SCORES` (2). `score_spread()`
+     is added to the rank entry of `ai-reply.json` (`impacts` per score, `at_top` per check, `high`
+     = picks at 9–10), so the next run shows whether the spread improved.
    - **Deadlines.** Optional `deadline {date YYYY-MM-DD, kind}` per pick (`DEADLINE_KINDS`:
      comments due, takes effect, compliance deadline; anything else becomes "deadline").
      `news_deadline()` keeps it only when `stated_dates()` finds that date in the story's own

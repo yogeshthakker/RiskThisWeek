@@ -1911,6 +1911,26 @@ class TestChecklist(unittest.TestCase):
         self.assertEqual(rw.impact_label(st.as_dict()), "Impact 7/10")
 
 
+class TestCalibration(unittest.TestCase):
+    def test_prompt_has_anchors_and_a_cap_on_top_scores(self):
+        ai = TitleAI([("RBI issues draft", "Compliance risk", CHK(3, 2, 2, 2))])
+        rw.run(top=3, sources=SOURCES, fetcher=fetcher, now=NOW, provider=ai, deep_dive=False)
+        p = ai.sent[0]
+        self.assertIn("another bank's own results or outlook, or a data release", p)   # business 1
+        self.assertIn(f"Score 9 or 10 for at most {rw.TOP_SCORES} stories", p)
+        self.assertIn("most picks should land between 5 and 7", p)
+
+    def test_spread_logged(self):
+        ai = TitleAI([("RBI issues draft", "Compliance risk", CHK(3, 3, 2, 2)),
+                      ("Major private bank", "Cyber security risk", CHK(3, 1, 1, 1))])
+        res = rw.run(top=3, sources=SOURCES, fetcher=fetcher, now=NOW, provider=ai, deep_dive=False)
+        spread = next(e for e in res.ai_log if e.get("request") == "rank")["score_spread"]
+        self.assertEqual(spread["impacts"], {"10": 1, "6": 1})
+        self.assertEqual(spread["high"], 1)
+        self.assertEqual(spread["at_top"]["India"], 2)
+        self.assertEqual(list(spread["impacts"]), ["10", "6"])          # highest first
+
+
 class TestNewsDeadlines(unittest.TestCase):
     def story(self, title, summary=""):
         return rw.Story([rw.Item(title, "https://x/1", "RBI", NOW, summary)], "Compliance risk", 1.0)

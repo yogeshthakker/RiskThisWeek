@@ -763,6 +763,18 @@ def flatten(blocks: dict[str, list[Story]]) -> list[Story]:
 # NO_INDIA_CAP, so the safety net's "4 or lower is dropped" rule also enforces the India test.
 CHECKS = (("india", "India", 3), ("business", "Business", 3), ("action", "Action", 2), ("size", "Size", 2))
 NO_INDIA_CAP = 4
+TOP_SCORES = 2       # stories a week the AI may score 9-10 (calibration, user 21 Nov 2026: 11 of 16 were 9-10)
+
+
+def score_spread(stories: list["Story"]) -> dict:
+    """How the shown impacts are spread: {"10": 1, "9": 2, ...}, plus how many checks hit their top."""
+    out: dict = {}
+    for s in stories:
+        if s.impact is not None:
+            out[str(s.impact)] = out.get(str(s.impact), 0) + 1
+    tops = {label: sum(1 for s in stories if s.checks and s.checks[key] == top) for key, label, top in CHECKS}
+    return {"impacts": dict(sorted(out.items(), key=lambda kv: -int(kv[0]))), "at_top": tops,
+            "high": sum(v for k, v in out.items() if int(k) >= 9)}
 
 
 def score_checks(raw) -> dict | None:
@@ -960,16 +972,20 @@ def ranking_prompt(stories: list[Story], per_block: int, bank: str = DEFAULT_PRO
         f"news from several outlets has already been merged, and 'N outlets' shows how widely it was "
         f"covered.\n"
         f"1. Read every candidate and judge its impact for us, {bank}, with four checks (whole numbers):\n"
-        f"   india 0-3: a direct effect on our India operations (0 none: abroad, another country's own "
-        f"banks or courts; 3 it changes a rule we answer to in India, an Indian market we trade in, our "
-        f"Indian clients or a corridor to or from India);\n"
-        f"   business 0-3: a link to our business lines and this week's priorities (0 none, 3 core);\n"
-        f"   action 0-2: what it asks of us (0 nothing, 1 worth checking, 2 we must act or a deadline "
-        f"applies to us);\n"
-        f"   size 0-2: how wide (0 one small firm, 1 one large firm or one segment, 2 sector- or "
-        f"market-wide).\n"
-        f"   The impact is their total, out of 10 (worked out by the report); a story with india 0 counts "
-        f"at most 4.\n"
+        f"   india 0-3: 3 = it changes a rule we answer to in India, an Indian market we trade in, our "
+        f"Indian clients or a corridor to or from India; 2 = an Indian banking or market development that "
+        f"reaches us indirectly; 1 = Indian news with little effect on us; 0 = abroad, or another "
+        f"country's own banks or courts.\n"
+        f"   business 0-3: 3 = it changes how we lend, trade, fund or pay in our own business lines, or the "
+        f"CRO's priorities named above; 2 = it touches our clients, counterparties or the markets we "
+        f"price in; 1 = a rule or event for other kinds of firms (NBFCs, payment operators, co-operative "
+        f"or small banks), another bank's own results or outlook, or a data release; 0 = none.\n"
+        f"   action 0-2: 2 = a new obligation or deadline applies to us; 1 = worth checking or "
+        f"monitoring; 0 = information only.\n"
+        f"   size 0-2: 2 = sector- or market-wide; 1 = one large firm or one segment; 0 = one small firm.\n"
+        f"   Be strict: the impact is the total, out of 10 (worked out by the report), and most picks "
+        f"should land between 5 and 7. Score 9 or 10 for at most {TOP_SCORES} stories this week, the ones "
+        f"that must reach the CRO. A story with india 0 counts at most 4.\n"
         f"2. For each block, pick the {per_block} items with the highest impact that belong in it (fewer "
         f"only if fewer are worth showing). For each pick give: id (the number in brackets), category: "
         f"the block (one of: {', '.join(BLOCKS)}), checks: the four scores, a headline of at most 12 "
@@ -2554,6 +2570,10 @@ def finish_week(week: Week, top: int = 3, picked: "AiPick | None" = None, ai: st
         boost_for_portfolio(flatten(picked.blocks), ai=True)
         picked, notes = apply_rules(picked, week, top)
         link_portfolio(flatten(picked.blocks), week.portfolio)      # replacements from the keyword list
+        spread = score_spread(flatten(picked.blocks))
+        rank = next((e for e in reversed(ai_log) if e.get("request") == "rank"), None)
+        if spread["impacts"] and rank is not None:
+            rank["score_spread"] = spread           # next to the reply it describes
         for b in picked.blocks:                                     # highest impact first, after boosts
             picked.blocks[b].sort(key=lambda st: -(st.impact or 0))
         if notes:

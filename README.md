@@ -307,7 +307,10 @@ first and without any keyword scores, and judges them itself. It scores each pic
 | Action | 0–2 | Must we act, or does a deadline apply to us? |
 | Size | 0–2 | One small firm, one large firm or segment, or the whole sector or market? |
 
-The page shows the breakdown: "Impact 8/10 (India 3 · Business 2 · Action 2 · Size 1)". A story
+The page shows the breakdown: "Impact 8/10 (India 3 · Business 2 · Action 2 · Size 1)". The AI is
+told to be strict: a rule for other kinds of firms, another bank's results or a data release is
+Business 1; most picks should score 5–7, and only one or two stories a week 9–10. The spread of
+scores is saved in `ai-reply.json` (`score_spread`). A story
 scoring **India 0** counts at most 4, so the safety net drops it: the India test is built into
 the score. The AI also gives the block each pick belongs in, the 3 highest-impact items per
 block, "also on the radar", and the story of the week with its action point.
