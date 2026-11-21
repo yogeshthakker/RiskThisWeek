@@ -10,7 +10,7 @@ web page for the weekly status meeting ("This week in risk"). The user runs it o
 ```bash
 pip install -r requirements.txt
 python risk_week.py --ai --open        # Gemini free tier; --open opens the web page
-python -m unittest test_risk_week      # 133 tests, no network or key needed
+python -m unittest test_risk_week      # 134 tests, no network or key needed
 ```
 
 Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
@@ -292,6 +292,12 @@ Output goes to `output/`: `risk-week-<date>.pptx`, `.html`, `.md`, and
      then driver order, then newest. The amber EWS pattern no longer flags share-price falls.
      `TestCreditDrivers` holds real headlines from that day, kept and dropped. Watch for substring
      traps ("com**petition**" matched `petition`; now `\bpetition`).
+     After the user's Confluence screenshot (21 Nov 2026: Dabur "Rated Sell by MarketsMOJO",
+     "Technical Momentum", Dixon "down 3.56% on Wednesday", "Stock Price Forecast"; a run on the
+     old `main` code): `stock_site()` skips outlets in `STOCK_SITES` (MarketsMojo, Kalkine,
+     StockInvest.us, Simply Wall St, Trendlyne…) plus `portfolio.skip_publishers`, and
+     `MARKET_CHATTER` also catches a bare "% move on/in/at/today", "should you buy", "technical
+     momentum", "postal ballot". Live after: Dabur 2 kept / 11 out, Dixon 2 kept / 11 out.
    - **Sector watch:** `scan_sectors()` (per sector in `top 20.txt`, `SECTOR_QUERY`, plus the
      week's items): `sector_hit()` needs the sector word within one word of an industry term
      (`_INDUSTRY` = `SECTOR_DRIVERS` + sector, industry, makers, ministry…); not chatter, not a link

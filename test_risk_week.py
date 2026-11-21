@@ -2105,7 +2105,22 @@ class TestCreditDrivers(unittest.TestCase):
         "Vedanta Group Grants Additional 10% Salary to Nearly One Lakh Employees",
         "Vedanta Aluminium increases renewable energy use by 63% in FY26",
         "Adani: the billionaire at the heart of Modi’s India",
+        # the user's Confluence screenshot, 21 Nov 2026 (run on the old code)
+        "Dabur India (NSE:DABUR): What Is the Postal Ballot Notice Dispatched in November 2026 About?",
+        "Dabur India Ltd. is Rated Sell by MarketsMOJO",
+        "Dabur India (NSE:DABUR) in Focus in the Consumer Space",
+        "Dixon Technologies (India) Ltd: Technical Momentum Shifts Signal Cautious Optimism",
+        "Dixon Technologies (India) down 3.56% on Wednesday",
+        "Dixon Technologies (india) Stock Price Forecast. Should You Buy DIXON.NS?",
+        "Dixon Technologies down 3.56% on Wednesday after Q2 profit dips",   # a price move, not results news
     ]
+
+    def test_stock_tip_sites_skipped(self):
+        self.assertTrue(rw.stock_site("MarketsMojo"))
+        self.assertTrue(rw.stock_site("Kalkine India"))
+        self.assertTrue(rw.stock_site("StockInvest.us"))
+        self.assertFalse(rw.stock_site("Business Standard"))
+        self.assertTrue(rw.stock_site("Some Blog", ("some blog",)))
 
     def test_credit_news_kept_with_its_driver(self):
         for title, driver in self.KEPT.items():

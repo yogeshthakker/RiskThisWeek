@@ -207,7 +207,9 @@ borrower's credit quality**. Each story is labelled with its driver:
 | **Business & operations** | capacity, capex, plants, orders, acquisitions, shutdowns, production, demand, prices |
 
 **Market chatter is left out:** share-price moves, price targets, broker calls ("rated Hold", "buy
-calls", "stocks to watch"), live price pages, market cap, dividends, IPOs. A share-price headline
+calls", "stocks to watch"), live price pages, market cap, dividends, IPOs, and anything from
+stock-tip sites (MarketsMojo, Kalkine, StockInvest.us, Simply Wall St, Trendlyne and similar; add
+more under `"skip_publishers"` in `sources.json`). A share-price headline
 stays only if it also carries one of the first four drivers ("Supreme Court upholds rejection…;
 stock falls 3%"). The section's first line says how many headlines were left out. A share-price
 fall alone no longer raises an amber flag. Within a company, stories are ordered by signal, then

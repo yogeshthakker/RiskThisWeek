@@ -1937,7 +1937,18 @@ MARKET_CHATTER = re.compile(
     r"options? (?:data|chain|trading)|technical|\bcharts?\b|share(?:holding)? pattern|"
     r"mutual funds? (?:buy|sell|hike|cut|add)|\bfiis?\b|\bdiis?\b|dividend|bonus (?:issue|shares)|stock split|"
     r"record date|\bipo\b|\bgmp\b|live (?:nse|bse)|\b(?:nse|bse|nsei)\s*:|\.(?:ns|bo)\)|quote and history|"
-    r"returns? (?:chart|of)|multibagger|seasonal returns|at a glance", re.I)
+    r"returns? (?:chart|of)|multibagger|seasonal returns|at a glance|"
+    r"\b(?:up|down|higher|lower|gains?|falls?|rises?|slips?|jumps?)\s+(?:by\s+)?\d+(?:\.\d+)?\s?%\s+(?:on|in|at|today)\b|"
+    r"\bshould you buy\b|\btechnical momentum\b|\bpostal ballot\b", re.I)
+# Sites that write about share prices and stock calls, almost never about credit (user's screenshot,
+# 21 Nov 2026). Matched against the outlet name; `portfolio.skip_publishers` in sources.json adds more.
+STOCK_SITES = ("marketsmojo", "kalkine", "stockinvest", "simply wall st", "trendlyne", "smart investello",
+               "stock titan", "marketbeat", "investing.com", "tipranks", "zacks", "stockanalysis")
+
+
+def stock_site(publisher: str, extra: tuple[str, ...] = ()) -> bool:
+    p = (publisher or "").lower()
+    return any(x and x.lower() in p for x in (*STOCK_SITES, *extra))
 # The search for each company: its names plus the topics above (tested live on 21 Nov 2026: 16
 # relevant items for Vedanta instead of 70 that were mostly price pages and broker calls).
 CREDIT_QUERY = ("(debt OR rating OR lenders OR loan OR bonds OR default OR court OR NCLT OR probe OR penalty "
@@ -2082,7 +2093,7 @@ def load_portfolio(path: Path | str) -> list[Company]:
 
 def scan_portfolio(companies: list[Company], items: list[Item], start: datetime, end: datetime, days: int,
                    fetcher: Callable[[str], bytes], per_company: int = PORTFOLIO_MAX,
-                   search: bool = True) -> list[str]:
+                   search: bool = True, skip_publishers: tuple[str, ...] = ()) -> list[str]:
     """Fill each company's `stories`: one Google News search per company (its names only, in quotes)
     plus the week's collected news, kept when the headline names the company. Returns errors."""
     errors: list[str] = []
@@ -2107,7 +2118,8 @@ def scan_portfolio(companies: list[Company], items: list[Item], start: datetime,
                     or not pat.search(it.title)):
                 continue
             links.add(it.link)
-            if not credit_news(it.title):        # share prices, broker calls, or nothing about credit
+            if not credit_news(it.title) or stock_site(it.publisher, skip_publishers):
+                # share prices, broker calls, stock-tip sites, or nothing about credit
                 dropped.add(it.title.lower())
                 continue
             new = Item(it.title, it.link, it.source, it.published, it.summary, it.weight, it.primary,
@@ -2428,7 +2440,8 @@ def prepare_week(days: int = 7, sources: dict | None = None, fetcher: Callable[[
             log(f"  Portfolio: {len(week.portfolio)} names from {path.name}")
             week.errors.extend(scan_portfolio(week.portfolio, raw, start, end, days, fetcher,
                                               int(pf.get("per_company", PORTFOLIO_MAX)),
-                                              bool(pf.get("search", True))))
+                                              bool(pf.get("search", True)),
+                                              tuple(pf.get("skip_publishers") or ())))
             if pf.get("sectors", True):
                 week.sector_watch, more = scan_sectors(week.portfolio, raw, start, end, days, fetcher,
                                                        int(pf.get("per_sector", 3)), bool(pf.get("search", True)))
